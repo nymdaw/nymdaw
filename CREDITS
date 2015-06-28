@@ -1,0 +1,21 @@
+dseq internal source code is copyright 2015 Thomas Smith.
+
+Some dseq dependencies are included in the source tree.
+Their respective licenses are compatible with the GPL V3.
+
+Waf build system:
+https://waf.io/
+Authors: Thomas Nagy et al.
+License: New BSD
+
+The dlang-jack wrapper is distributed as a git submodule:
+https://github.com/martinez/dlang-jack
+http://code.dlang.org/packages/jack
+Author: Denis Martinez
+License: BSL-1.0
+
+The libsndfile wrapper is adapted from:
+https://github.com/p0nce/DerelictSndFile
+http://code.dlang.org/packages/derelict_extras-sndfile
+Author: ponce
+License: Boost
