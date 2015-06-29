@@ -204,8 +204,7 @@ private:
     bool _playing;
 }
 
-void main(string[] args)
-{
+void main(string[] args) {
     string appName = "dseq";
 
     if(!(args.length >= 2)) {

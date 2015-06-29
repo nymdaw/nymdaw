@@ -34,17 +34,23 @@ def configure( ctx ):
         ctx.env.append_value( "DFLAGS", "-O2" )
     ctx.env.append_value( "DFLAGS", "-I/usr/local/include" )
 
-    # Find jack
+    # Check for jack
     ctx.check_cfg( package = "jack",
                    args = [ "jack >= 0.120.0", "--cflags", "--libs" ],
-                   uselib_store = "JACK",
+                   uselib_store = "jack",
                    mandatory = True )
 
-    # Find libsndfile
+    # Check for libsndfile
     ctx.check_cfg( package = "sndfile",
                    args = [ "sndfile >= 1.0.18", "--cflags", "--libs" ],
-                   uselib_store = "SNDFILE",
+                   uselib_store = "sndfile",
                    mandatory = True )
+
+    # Check for libsamplerate
+    ctx.check_cfg( package = "samplerate",
+                   args = [ "samplerate >= 0.1.0", "--cflags", "--libs" ],
+                   uselib_store = "samplerate",
+                   mandatory = True )    
 
 def build( ctx ):
     deps_dir = "deps"
@@ -53,17 +59,25 @@ def build( ctx ):
     dlang_jack_dir = os.path.join( deps_dir, "jack" )
     ctx.stlib( source = ctx.path.ant_glob( os.path.join( dlang_jack_dir, "**", "*.d" ) ),
                includes = deps_dir,
-               target = "DLANG-JACK" )
+               target = "dlang_jack" )
 
     # Build libsndfile wrapper
     dlang_sndfile_dir = os.path.join( deps_dir, "sndfile" )
     ctx.stlib( source = ctx.path.ant_glob( os.path.join( dlang_sndfile_dir, "**", "*.d" ) ),
                includes = deps_dir,
-               target = "DLANG-SNDFILE" )
+               target = "dlang_sndfile" )
+
+    # Build libsamplerate wrapper
+    dlang_samplerate_dir = os.path.join( deps_dir, "samplerate" )
+    ctx.stlib( source = ctx.path.ant_glob( os.path.join( dlang_samplerate_dir, "**", "*.d" ) ),
+               includes = deps_dir,
+               target = "dlang_samplerate" )
 
     # Build the executable
     ctx.program( name = APPNAME,
                  target = APPNAME.lower(),
                  source = ctx.path.ant_glob( "src/**/*.d" ),
                  includes = [ "src", deps_dir ],
-                 use = [ "JACK", "DLANG-JACK", "SNDFILE", "DLANG-SNDFILE" ] )
+                 use = [ "jack", "dlang_jack",
+                         "sndfile", "dlang_sndfile",
+                         "samplerate", "dlang_samplerate" ] )
