@@ -29,7 +29,7 @@
  * MUST comply with the libsndfile licence terms if you use it.
  * http://www.mega-nerd.com/libsndfile/
  */
-module sndfile;
+module sndfile.sndfile;
 
 extern(C) @nogc nothrow
 {
