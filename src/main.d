@@ -80,8 +80,9 @@ public:
     // normalize region to the given maximum gain, in dBFS
     void normalize(sample_t maxGain = -0.1) {
         sample_t minSample, maxSample;
-        _analyze(minSample, maxSample);
+        _minMax(minSample, maxSample);
         maxSample = max(abs(minSample), abs(maxSample));
+
         sample_t sampleFactor =  pow(10, (maxGain > 0 ? 0 : maxGain) / 20) / maxSample;
         foreach(ref s; _audioBuffer) {
             s *= sampleFactor;
@@ -158,22 +159,82 @@ public:
     @property const(nframes_t) offset() const { return _offset; }
 
 private:
-    void _analyze(out sample_t minSample, out sample_t maxSample) {
+    static void _minMax(out sample_t minSample, out sample_t maxSample, const(sample_t[]) sourceData) {
         minSample = 1;
         maxSample = -1;
-        foreach(s; _audioBuffer) {
+        foreach(s; sourceData) {
             if(s > maxSample) maxSample = s;
             if(s < minSample) minSample = s;
         }
     }
+    void _minMax(out sample_t minSample, out sample_t maxSample) const {
+        _minMax(minSample, maxSample, _audioBuffer);
+    }
 
-    void _analyzeChannel(channels_t channelIndex, out sample_t minSample, out sample_t maxSample) {
+    static void _minMaxChannel(channels_t channelIndex,
+                               channels_t nChannels,
+                               out sample_t minSample,
+                               out sample_t maxSample,
+                               const(sample_t[]) sourceData) {
         minSample = 1;
         maxSample = -1;
-        for(size_t i = channelIndex; i < _audioBuffer.length; i += _nChannels) {
-            if(_audioBuffer[i] > maxSample) maxSample = _audioBuffer[i];
-            if(_audioBuffer[i] < minSample) minSample = _audioBuffer[i];
+        for(size_t i = channelIndex; i < sourceData.length; i += nChannels) {
+            if(sourceData[i] > maxSample) maxSample = sourceData[i];
+            if(sourceData[i] < minSample) minSample = sourceData[i];
         }
+    }
+    void _minMaxChannel(channels_t channelIndex,
+                        out sample_t minSample,
+                        out sample_t maxSample) const {
+        _minMaxChannel(channelIndex, _nChannels, minSample, maxSample, _audioBuffer);
+    }
+
+    static struct WaveformCache {
+    public:
+        this(nframes_t sampleSize, channels_t channels, sample_t[] audioData) {
+            assert(sampleSize > 0);
+
+            _sampleSize = sampleSize;
+            _length = (audioData.length / channels) / sampleSize;
+            _minValues = new sample_t[](_length);
+            _maxValues = new sample_t[](_length);
+
+            for(size_t i = 0; i < audioData.length; i += sampleSize) {
+                _minMax(_minValues[i], _maxValues[i], audioData[i .. i + sampleSize]);
+            }
+        }
+
+        this(nframes_t sampleSize, sample_t[] srcMinValues, sample_t[] srcMaxValues) {
+            assert(sampleSize > 0);
+            assert(srcMinValues.length == srcMaxValues.length);
+
+            _sampleSize = sampleSize;
+            _minValues = new sample_t[](srcMinValues.length / sampleSize);
+            _maxValues = new sample_t[](srcMaxValues.length / sampleSize);
+
+            immutable(size_t) count = min(srcMinValues.length, srcMaxValues.length);
+            for(size_t i = 0, j = 0; i < count; i += sampleSize, ++j) {
+                for(size_t k = 0; k < sampleSize; ++k) {
+                    _minValues[j] = 1;
+                    _maxValues[j] = -1;
+                    if(srcMinValues[i + k] < _minValues[j]) {
+                        _minValues[j] = srcMinValues[i + k];
+                    }
+                    if(srcMaxValues[i + k] > _maxValues[j]) {
+                        _maxValues[j] = srcMaxValues[i + k];
+                    }
+                }
+            }
+        }
+
+        @property const(nframes_t) sampleSize() const { return _sampleSize; }
+        @property size_t length() const { return _length; }
+
+    private:
+        nframes_t _sampleSize;
+        size_t _length;
+        sample_t[] _minValues;
+        sample_t[] _maxValues;
     }
 
     nframes_t _sampleRate; // sample rate of the audio data
