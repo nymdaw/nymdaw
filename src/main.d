@@ -1,6 +1,7 @@
 module dseq;
 
 import std.stdio;
+import std.algorithm;
 import std.math;
 
 import jack.client;
@@ -76,7 +77,18 @@ public:
         return region;
     }
 
-    void convertSampleRate(nframes_t newSampleRate) {
+    // normalize region to the given maximum gain, in dBFS
+    void normalize(sample_t maxGain = -0.1) {
+        sample_t minSample, maxSample;
+        _analyze(minSample, maxSample);
+        maxSample = max(abs(minSample), abs(maxSample));
+        sample_t sampleFactor =  pow(10, (maxGain > 0 ? 0 : maxGain) / 20) / maxSample;
+        foreach(ref s; _audioBuffer) {
+            s *= sampleFactor;
+        }
+    }
+
+    void convertSampleRate(nframes_t newSampleRate, bool normalize = true) {
         if(newSampleRate != _sampleRate && newSampleRate > 0) {
             // constant indicating the algorithm to use for sample rate conversion
             enum converter = SRC_SINC_MEDIUM_QUALITY;
@@ -126,6 +138,11 @@ public:
                     _audioBuffer[i] = sample;
                 }
             }
+
+            // normalize, if requested
+            if(normalize) {
+                this.normalize();
+            }
         }
     }
 
@@ -141,6 +158,24 @@ public:
     @property const(nframes_t) offset() const { return _offset; }
 
 private:
+    void _analyze(out sample_t minSample, out sample_t maxSample) {
+        minSample = 1;
+        maxSample = -1;
+        foreach(s; _audioBuffer) {
+            if(s > maxSample) maxSample = s;
+            if(s < minSample) minSample = s;
+        }
+    }
+
+    void _analyzeChannel(channels_t channelIndex, out sample_t minSample, out sample_t maxSample) {
+        minSample = 1;
+        maxSample = -1;
+        for(size_t i = channelIndex; i < _audioBuffer.length; i += _nChannels) {
+            if(_audioBuffer[i] > maxSample) maxSample = _audioBuffer[i];
+            if(_audioBuffer[i] < minSample) minSample = _audioBuffer[i];
+        }
+    }
+
     nframes_t _sampleRate; // sample rate of the audio data
     channels_t _nChannels; // number of channels in the audio data
     sample_t[] _audioBuffer; // raw audio data for all channels
