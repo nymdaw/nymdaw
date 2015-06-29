@@ -20,7 +20,7 @@
 /*
 ** This code is part of Secret Rabbit Code aka libsamplerate. A commercial
 ** use license for this code is available, please see:
-**		http://www.mega-nerd.com/SRC/procedure.html
+**      http://www.mega-nerd.com/SRC/procedure.html
 */
 
 /*
@@ -30,26 +30,29 @@
 
 module samplerate.samplerate;
 
+extern(C) @nogc nothrow
+{
+
 /* Opaque data type SRC_STATE. */
 struct SRC_STATE ;
 
 /* SRC_DATA is used to pass data to src_simple() and src_process(). */
 struct SRC_DATA
-{	float	*data_in ;
+{   float   *data_in ;
     float   *data_out ;
 
-	long	input_frames, output_frames ;
-	long	input_frames_used, output_frames_gen ;
+    long    input_frames, output_frames ;
+    long    input_frames_used, output_frames_gen ;
 
-	int		end_of_input ;
+    int     end_of_input ;
 
-	double	src_ratio ;
+    double  src_ratio ;
 }
 
 /* SRC_CB_DATA is used with callback based API. */
 struct SRC_CB_DATA
-{	long	frames ;
-	float	*data_in ;
+{   long    frames ;
+    float   *data_in ;
 }
 
 /*
@@ -64,49 +67,49 @@ struct SRC_CB_DATA
 alias src_callback_t = long function (void *cb_data, float **data) ;
 
 /*
-**	Standard initialisation function : return an anonymous pointer to the
-**	internal state of the converter. Choose a converter from the enums below.
-**	Error returned in *error.
+**  Standard initialisation function : return an anonymous pointer to the
+**  internal state of the converter. Choose a converter from the enums below.
+**  Error returned in *error.
 */
 
 SRC_STATE* src_new (int converter_type, int channels, int *error) ;
 
 /*
-**	Initilisation for callback based API : return an anonymous pointer to the
-**	internal state of the converter. Choose a converter from the enums below.
-**	The cb_data pointer can point to any data or be set to NULL. Whatever the
-**	value, when processing, user supplied function "func" gets called with
-**	cb_data as first parameter.
+**  Initilisation for callback based API : return an anonymous pointer to the
+**  internal state of the converter. Choose a converter from the enums below.
+**  The cb_data pointer can point to any data or be set to NULL. Whatever the
+**  value, when processing, user supplied function "func" gets called with
+**  cb_data as first parameter.
 */
 
 SRC_STATE* src_callback_new (src_callback_t func, int converter_type, int channels,
                              int *error, void* cb_data) ;
 
 /*
-**	Cleanup all internal allocations.
-**	Always returns NULL.
+**  Cleanup all internal allocations.
+**  Always returns NULL.
 */
 
 SRC_STATE* src_delete (SRC_STATE *state) ;
 
 /*
-**	Standard processing function.
-**	Returns non zero on error.
+**  Standard processing function.
+**  Returns non zero on error.
 */
 
 int src_process (SRC_STATE *state, SRC_DATA *data) ;
 
 /*
-**	Callback based processing function. Read up to frames worth of data from
-**	the converter int *data and return frames read or -1 on error.
+**  Callback based processing function. Read up to frames worth of data from
+**  the converter int *data and return frames read or -1 on error.
 */
 long src_callback_read (SRC_STATE *state, double src_ratio, long frames, float *data) ;
 
 /*
-**	Simple interface for performing a single conversion from input buffer to
-**	output buffer at a fixed conversion ratio.
-**	Simple interface does not require initialisation as it can only operate on
-**	a single buffer worth of audio.
+**  Simple interface for performing a single conversion from input buffer to
+**  output buffer at a fixed conversion ratio.
+**  Simple interface does not require initialisation as it can only operate on
+**  a single buffer worth of audio.
 */
 
 int src_simple (SRC_DATA *data, int converter_type, int channels) ;
@@ -125,18 +128,18 @@ const(char) *src_get_description (int converter_type) ;
 const(char) *src_get_version () ;
 
 /*
-**	Set a new SRC ratio. This allows step responses
-**	in the conversion ratio.
-**	Returns non zero on error.
+**  Set a new SRC ratio. This allows step responses
+**  in the conversion ratio.
+**  Returns non zero on error.
 */
 
 int src_set_ratio (SRC_STATE *state, double new_ratio) ;
 
 /*
-**	Reset the internal SRC state.
-**	Does not modify the quality settings.
-**	Does not free any memory allocations.
-**	Returns non zero on error.
+**  Reset the internal SRC state.
+**  Does not modify the quality settings.
+**  Does not free any memory allocations.
+**  Returns non zero on error.
 */
 
 int src_reset (SRC_STATE *state) ;
@@ -149,13 +152,13 @@ int src_reset (SRC_STATE *state) ;
 int src_is_valid_ratio (double ratio) ;
 
 /*
-**	Return an error number.
+**  Return an error number.
 */
 
 int src_error (SRC_STATE *state) ;
 
 /*
-**	Convert the error number into a string.
+**  Convert the error number into a string.
 */
 const(char)* src_strerror (int error) ;
 
@@ -166,11 +169,11 @@ const(char)* src_strerror (int error) ;
 
 enum
 {
-	SRC_SINC_BEST_QUALITY		= 0,
-	SRC_SINC_MEDIUM_QUALITY		= 1,
-	SRC_SINC_FASTEST			= 2,
-	SRC_ZERO_ORDER_HOLD			= 3,
-	SRC_LINEAR					= 4,
+    SRC_SINC_BEST_QUALITY       = 0,
+    SRC_SINC_MEDIUM_QUALITY     = 1,
+    SRC_SINC_FASTEST            = 2,
+    SRC_ZERO_ORDER_HOLD         = 3,
+    SRC_LINEAR                  = 4,
 } ;
 
 /*
@@ -183,3 +186,5 @@ void src_float_to_short_array (const float *in_, short *out_, int len) ;
 
 void src_int_to_float_array (const int *in_, float *out_, int len) ;
 void src_float_to_int_array (const float *in_, int *out_, int len) ;
+
+}

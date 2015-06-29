@@ -29,6 +29,7 @@
  * MUST comply with the libsndfile licence terms if you use it.
  * http://www.mega-nerd.com/libsndfile/
  */
+
 module sndfile.sndfile;
 
 extern(C) @nogc nothrow
@@ -162,85 +163,85 @@ enum
 
 enum
 {    SFC_GET_LIB_VERSION            = 0x1000,
-    SFC_GET_LOG_INFO                = 0x1001,
-    SFC_GET_CURRENT_SF_INFO         = 0x1002,
+     SFC_GET_LOG_INFO                = 0x1001,
+     SFC_GET_CURRENT_SF_INFO         = 0x1002,
 
 
-    SFC_GET_NORM_DOUBLE             = 0x1010,
-    SFC_GET_NORM_FLOAT              = 0x1011,
-    SFC_SET_NORM_DOUBLE             = 0x1012,
-    SFC_SET_NORM_FLOAT              = 0x1013,
-    SFC_SET_SCALE_FLOAT_INT_READ    = 0x1014,
-    SFC_SET_SCALE_INT_FLOAT_WRITE   = 0x1015,
+     SFC_GET_NORM_DOUBLE             = 0x1010,
+     SFC_GET_NORM_FLOAT              = 0x1011,
+     SFC_SET_NORM_DOUBLE             = 0x1012,
+     SFC_SET_NORM_FLOAT              = 0x1013,
+     SFC_SET_SCALE_FLOAT_INT_READ    = 0x1014,
+     SFC_SET_SCALE_INT_FLOAT_WRITE   = 0x1015,
 
-    SFC_GET_SIMPLE_FORMAT_COUNT     = 0x1020,
-    SFC_GET_SIMPLE_FORMAT           = 0x1021,
+     SFC_GET_SIMPLE_FORMAT_COUNT     = 0x1020,
+     SFC_GET_SIMPLE_FORMAT           = 0x1021,
 
-    SFC_GET_FORMAT_INFO             = 0x1028,
+     SFC_GET_FORMAT_INFO             = 0x1028,
 
-    SFC_GET_FORMAT_MAJOR_COUNT      = 0x1030,
-    SFC_GET_FORMAT_MAJOR            = 0x1031,
-    SFC_GET_FORMAT_SUBTYPE_COUNT    = 0x1032,
-    SFC_GET_FORMAT_SUBTYPE          = 0x1033,
+     SFC_GET_FORMAT_MAJOR_COUNT      = 0x1030,
+     SFC_GET_FORMAT_MAJOR            = 0x1031,
+     SFC_GET_FORMAT_SUBTYPE_COUNT    = 0x1032,
+     SFC_GET_FORMAT_SUBTYPE          = 0x1033,
 
-    SFC_CALC_SIGNAL_MAX             = 0x1040,
-    SFC_CALC_NORM_SIGNAL_MAX        = 0x1041,
-    SFC_CALC_MAX_ALL_CHANNELS       = 0x1042,
-    SFC_CALC_NORM_MAX_ALL_CHANNELS  = 0x1043,
-    SFC_GET_SIGNAL_MAX              = 0x1044,
-    SFC_GET_MAX_ALL_CHANNELS        = 0x1045,
+     SFC_CALC_SIGNAL_MAX             = 0x1040,
+     SFC_CALC_NORM_SIGNAL_MAX        = 0x1041,
+     SFC_CALC_MAX_ALL_CHANNELS       = 0x1042,
+     SFC_CALC_NORM_MAX_ALL_CHANNELS  = 0x1043,
+     SFC_GET_SIGNAL_MAX              = 0x1044,
+     SFC_GET_MAX_ALL_CHANNELS        = 0x1045,
 
-    SFC_SET_ADD_PEAK_CHUNK          = 0x1050,
-    SFC_SET_ADD_HEADER_PAD_CHUNK    = 0x1051,
+     SFC_SET_ADD_PEAK_CHUNK          = 0x1050,
+     SFC_SET_ADD_HEADER_PAD_CHUNK    = 0x1051,
 
-    SFC_UPDATE_HEADER_NOW           = 0x1060,
-    SFC_SET_UPDATE_HEADER_AUTO      = 0x1061,
+     SFC_UPDATE_HEADER_NOW           = 0x1060,
+     SFC_SET_UPDATE_HEADER_AUTO      = 0x1061,
 
-    SFC_FILE_TRUNCATE               = 0x1080,
+     SFC_FILE_TRUNCATE               = 0x1080,
 
-    SFC_SET_RAW_START_OFFSET        = 0x1090,
+     SFC_SET_RAW_START_OFFSET        = 0x1090,
 
-    SFC_SET_DITHER_ON_WRITE         = 0x10A0,
-    SFC_SET_DITHER_ON_READ          = 0x10A1,
+     SFC_SET_DITHER_ON_WRITE         = 0x10A0,
+     SFC_SET_DITHER_ON_READ          = 0x10A1,
 
-    SFC_GET_DITHER_INFO_COUNT       = 0x10A2,
-    SFC_GET_DITHER_INFO             = 0x10A3,
+     SFC_GET_DITHER_INFO_COUNT       = 0x10A2,
+     SFC_GET_DITHER_INFO             = 0x10A3,
 
-    SFC_GET_EMBED_FILE_INFO         = 0x10B0,
+     SFC_GET_EMBED_FILE_INFO         = 0x10B0,
 
-    SFC_SET_CLIPPING                = 0x10C0,
-    SFC_GET_CLIPPING                = 0x10C1,
+     SFC_SET_CLIPPING                = 0x10C0,
+     SFC_GET_CLIPPING                = 0x10C1,
 
-    SFC_GET_INSTRUMENT              = 0x10D0,
-    SFC_SET_INSTRUMENT              = 0x10D1,
+     SFC_GET_INSTRUMENT              = 0x10D0,
+     SFC_SET_INSTRUMENT              = 0x10D1,
 
-    SFC_GET_LOOP_INFO               = 0x10E0,
+     SFC_GET_LOOP_INFO               = 0x10E0,
 
-    SFC_GET_BROADCAST_INFO          = 0x10F0,
-    SFC_SET_BROADCAST_INFO          = 0x10F1,
+     SFC_GET_BROADCAST_INFO          = 0x10F0,
+     SFC_SET_BROADCAST_INFO          = 0x10F1,
 
-    SFC_GET_CHANNEL_MAP_INFO        = 0x1100,
-    SFC_SET_CHANNEL_MAP_INFO        = 0x1101,
+     SFC_GET_CHANNEL_MAP_INFO        = 0x1100,
+     SFC_SET_CHANNEL_MAP_INFO        = 0x1101,
 
-    SFC_RAW_DATA_NEEDS_ENDSWAP      = 0x1110,
+     SFC_RAW_DATA_NEEDS_ENDSWAP      = 0x1110,
 
-    /* Support for Wavex Ambisonics Format */
-    SFC_WAVEX_SET_AMBISONIC         = 0x1200,
-    SFC_WAVEX_GET_AMBISONIC         = 0x1201,
+     /* Support for Wavex Ambisonics Format */
+     SFC_WAVEX_SET_AMBISONIC         = 0x1200,
+     SFC_WAVEX_GET_AMBISONIC         = 0x1201,
 
-    SFC_SET_VBR_ENCODING_QUALITY    = 0x1300,
+     SFC_SET_VBR_ENCODING_QUALITY    = 0x1300,
 
-    /* Following commands for testing only. */
-    SFC_TEST_IEEE_FLOAT_REPLACE     = 0x6001,
+     /* Following commands for testing only. */
+     SFC_TEST_IEEE_FLOAT_REPLACE     = 0x6001,
 
-    /*
-    ** SFC_SET_ADD_* values are deprecated and will disappear at some
-    ** time in the future. They are guaranteed to be here up to and
-    ** including version 1.0.8 to avoid breakage of existng software.
-    ** They currently do nothing and will continue to do nothing.
-    */
-    SFC_SET_ADD_DITHER_ON_WRITE     = 0x1070,
-    SFC_SET_ADD_DITHER_ON_READ      = 0x1071
+     /*
+     ** SFC_SET_ADD_* values are deprecated and will disappear at some
+     ** time in the future. They are guaranteed to be here up to and
+     ** including version 1.0.8 to avoid breakage of existng software.
+     ** They currently do nothing and will continue to do nothing.
+     */
+     SFC_SET_ADD_DITHER_ON_WRITE     = 0x1070,
+     SFC_SET_ADD_DITHER_ON_READ      = 0x1071
 }
 
 
@@ -252,15 +253,15 @@ enum
 
 enum
 {    SF_STR_TITLE                   = 0x01,
-    SF_STR_COPYRIGHT                = 0x02,
-    SF_STR_SOFTWARE                 = 0x03,
-    SF_STR_ARTIST                   = 0x04,
-    SF_STR_COMMENT                  = 0x05,
-    SF_STR_DATE                     = 0x06,
-    SF_STR_ALBUM                    = 0x07,
-    SF_STR_LICENSE                  = 0x08,
-    SF_STR_TRACKNUMBER              = 0x09,
-    SF_STR_GENRE                    = 0x10
+     SF_STR_COPYRIGHT                = 0x02,
+     SF_STR_SOFTWARE                 = 0x03,
+     SF_STR_ARTIST                   = 0x04,
+     SF_STR_COMMENT                  = 0x05,
+     SF_STR_DATE                     = 0x06,
+     SF_STR_ALBUM                    = 0x07,
+     SF_STR_LICENSE                  = 0x08,
+     SF_STR_TRACKNUMBER              = 0x09,
+     SF_STR_GENRE                    = 0x10
 }
 
 /*
@@ -302,7 +303,7 @@ enum
 
 
 /* Channel map values (used with SFC_SET/GET_CHANNEL_MAP).
-*/
+ */
 
 enum
 {
@@ -366,11 +367,11 @@ struct SF_FORMAT_INFO
 
 enum
 {    SFD_DEFAULT_LEVEL  = 0,
-    SFD_CUSTOM_LEVEL    = 0x40000000,
+     SFD_CUSTOM_LEVEL    = 0x40000000,
 
-    SFD_NO_DITHER       = 500,
-    SFD_WHITE           = 501,
-    SFD_TRIANGULAR_PDF  = 502
+     SFD_NO_DITHER       = 500,
+     SFD_WHITE           = 501,
+     SFD_TRIANGULAR_PDF  = 502
 }
 
 struct SF_DITHER_INFO

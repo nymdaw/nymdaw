@@ -1,10 +1,11 @@
 module dseq;
 
 import std.stdio;
-import core.stdc.string;
+import std.math;
 
 import jack.client;
 import sndfile.sndfile;
+import samplerate.samplerate;
 
 class AudioError: Exception {
     this(string msg) {
@@ -24,12 +25,14 @@ alias channels_t = uint;
 
 class Region {
 public:
-    this(sample_t[] audioBuffer, channels_t nChannels) {
-        _audioBuffer = audioBuffer;
+    this(nframes_t sampleRate, channels_t nChannels, sample_t[] audioBuffer) {
+        _sampleRate = sampleRate;
         _nChannels = nChannels;
+        _audioBuffer = audioBuffer;
         _nframes = cast(nframes_t)(audioBuffer.length / nChannels);
     }
 
+    // create a region from a file, leaving the sample rate unaltered
     static Region fromFile(string fileName) {
         SNDFILE* infile;
         SF_INFO sfinfo;
@@ -63,7 +66,67 @@ public:
             throw new FileError("Could not read file: " ~ fileName);
         }
 
-        return new Region(audioBuffer, cast(channels_t)(sfinfo.channels));
+        return new Region(cast(nframes_t)(sfinfo.samplerate), cast(channels_t)(sfinfo.channels), audioBuffer);
+    }
+
+    // create a region from a file, converting to the given sample rate if necessary
+    static Region fromFile(string fileName, nframes_t sampleRate) {
+        Region region = fromFile(fileName);
+        region.convertSampleRate(sampleRate);
+        return region;
+    }
+
+    void convertSampleRate(nframes_t newSampleRate) {
+        if(newSampleRate != _sampleRate && newSampleRate > 0) {
+            // constant indicating the algorithm to use for sample rate conversion
+            enum converter = SRC_SINC_MEDIUM_QUALITY;
+
+            // allocate audio buffers for input/output
+            float[] dataIn = new float[](_audioBuffer.length);
+            float[] dataOut;
+
+            // libsamplerate requires floats
+            static if(is(sample_t == float)) {
+                dataIn = _audioBuffer.dup;
+                dataOut = _audioBuffer;
+            }
+            else if(is(sample_t == double)) {
+                foreach(i, sample; dataIn) {
+                    sample = _audioBuffer[i];
+                }
+                dataOut = new float[](_audioBuffer.length);
+            }
+            else {
+                static assert(0);
+            }
+
+            // compute the parameters for libsamplerate
+            double srcRatio = (1.0 * newSampleRate) / _sampleRate;
+            if(!src_is_valid_ratio(srcRatio)) {
+                throw new AudioError("Invalid sample rate requested: " ~ to!string(newSampleRate));
+            }
+            SRC_DATA srcData;
+            srcData.data_in = dataIn.ptr;
+            srcData.data_out = dataOut.ptr;
+            srcData.input_frames = cast(long)(_nframes);
+            srcData.output_frames = cast(long)(ceil(nframes * srcRatio));
+            srcData.src_ratio = srcRatio;
+
+            // compute the sample rate conversion
+            int error = src_simple(&srcData, converter, cast(int)(_nChannels));
+            if(error) {
+                throw new AudioError("Sample rate conversion failed: " ~ to!string(src_strerror(error)));
+            }
+            dataOut.length = srcData.output_frames_gen;
+
+            // convert the float buffer back to sample_t if necessary
+            static if(is(sample_t == double)) {
+                _audioBuffer.length = dataOut.length;
+                foreach(i, sample; dataOut) {
+                    _audioBuffer[i] = sample;
+                }
+            }
+        }
     }
 
     const(sample_t) opIndex(nframes_t frame, channels_t channelIndex) const {
@@ -72,13 +135,15 @@ public:
     }
 
     @property const(sample_t[]) audioBuffer() const { return _audioBuffer; }
+    @property const(nframes_t) sampleRate() const { return _sampleRate; }
     @property const(channels_t) nChannels() const { return _nChannels; }
     @property const(nframes_t) nframes() const { return _nframes; }
     @property const(nframes_t) offset() const { return _offset; }
 
 private:
-    sample_t[] _audioBuffer; // raw audio data for all channels
+    nframes_t _sampleRate; // sample rate of the audio data
     channels_t _nChannels; // number of channels in the audio data
+    sample_t[] _audioBuffer; // raw audio data for all channels
     nframes_t _nframes; // number of frames in the audio data, where 1 frame contains 1 sample for each channel
 
     nframes_t _offset; // the offset, in frames, for the start of this region
@@ -138,6 +203,8 @@ public:
         return false;
     }
 
+    @property nframes_t sampleRate() { return _client.get_sample_rate(); }
+
     @property const(nframes_t) nframes() const { return _nframes; }
     @property nframes_t nframes(nframes_t newNFrames) { return (_nframes = newNFrames); }
 
@@ -147,7 +214,6 @@ public:
     @property bool playing() const { return _playing; }
     void play() { _playing = true; }
     void pause() { _playing = false; }
-    
     
 private:
     void _openJack(string appName) {
@@ -161,6 +227,9 @@ private:
         _client.process_callback = delegate int(jack_nframes_t bufNFrames) {
             float* mixBuf1 = mixOut1.get_audio_buffer(bufNFrames);
             float* mixBuf2 = mixOut2.get_audio_buffer(bufNFrames);
+
+            // initialize the buffers to silence
+            import core.stdc.string: memset;
             memset(mixBuf1, 0, jack_nframes_t.sizeof * bufNFrames);
             memset(mixBuf2, 0, jack_nframes_t.sizeof * bufNFrames);
 
@@ -217,7 +286,7 @@ void main(string[] args) {
 
         Region testRegion;
         try {
-            testRegion = Region.fromFile(args[1]);
+            testRegion = Region.fromFile(args[1], mixer.sampleRate);
         }
         catch(FileError e) {
             writeln("Fatal file error: ", e.msg);
