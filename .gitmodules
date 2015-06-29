@@ -1,3 +1,0 @@
-[submodule "deps/dlang-jack"]
-	path = deps/dlang-jack
-	url = https://github.com/martinez/dlang-jack

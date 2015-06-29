@@ -8,7 +8,7 @@ https://waf.io/
 Authors: Thomas Nagy et al.
 License: New BSD
 
-The dlang-jack wrapper is distributed as a git submodule:
+The dlang-jack wrapper is adapted from:
 https://github.com/martinez/dlang-jack
 http://code.dlang.org/packages/jack
 Author: Denis Martinez
@@ -18,4 +18,4 @@ The libsndfile wrapper is adapted from:
 https://github.com/p0nce/DerelictSndFile
 http://code.dlang.org/packages/derelict_extras-sndfile
 Author: ponce
-License: Boost
+License: Public Domain

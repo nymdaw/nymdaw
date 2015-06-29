@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 from waflib import Options
-import sys
+import sys, os
 
 APPNAME = "dseq"
 VERSION = "0.0.1"
@@ -28,17 +28,11 @@ def configure( ctx ):
     opts = Options.options
 
     ctx.load( "compiler_d" )    
-    if( opts.debug ):
+    if opts.debug :
         ctx.env.append_value( "DFLAGS", ["-gc", "-debug"] )
     else:
         ctx.env.append_value( "DFLAGS", "-O2" )
     ctx.env.append_value( "DFLAGS", "-I/usr/local/include" )
-
-    # Check if compiling on OSX
-    if sys.platform == "darwin":
-        # Add /opt to the include and library paths
-        ctx.env.append_value( "CXXFLAGS", "-I/opt/local/include" )
-        ctx.env.append_value( "LIBPATH", "/opt/local/lib" )
 
     # Find jack
     ctx.check_cfg( package = "jack",
@@ -53,8 +47,23 @@ def configure( ctx ):
                    mandatory = True )
 
 def build( ctx ):
+    deps_dir = "deps"
+
+    # Build JACK wrapper
+    dlang_jack_dir = os.path.join( deps_dir, "jack" )
+    ctx.stlib( source = ctx.path.ant_glob( os.path.join( dlang_jack_dir, "**", "*.d" ) ),
+               includes = deps_dir,
+               target = "DLANG-JACK" )
+
+    # Build libsndfile wrapper
+    dlang_sndfile_dir = os.path.join( deps_dir, "sndfile" )
+    ctx.stlib( source = ctx.path.ant_glob( os.path.join( dlang_sndfile_dir, "**", "*.d" ) ),
+               includes = deps_dir,
+               target = "DLANG-SNDFILE" )
+
+    # Build the executable
     ctx.program( name = APPNAME,
                  target = APPNAME.lower(),
-                 source = ctx.path.ant_glob( "src/*.d" ),
-                 includes = "src",
-                 use = [ "SNDFILE" ] )
+                 source = ctx.path.ant_glob( "src/**/*.d" ),
+                 includes = [ "src", deps_dir ],
+                 use = [ "JACK", "DLANG-JACK", "SNDFILE", "DLANG-SNDFILE" ] )
