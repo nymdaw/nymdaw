@@ -31,6 +31,8 @@ public:
         _nChannels = nChannels;
         _audioBuffer = audioBuffer;
         _nframes = cast(nframes_t)(audioBuffer.length / nChannels);
+
+        _initCache();
     }
 
     // create a region from a file, leaving the sample rate unaltered
@@ -216,12 +218,12 @@ private:
             _minValues = new sample_t[](_length);
             _maxValues = new sample_t[](_length);
 
-            for(size_t i = 0; i < audioData.length; i += sampleSize) {
+            for(size_t i = 0, j = 0; i < audioData.length; i += sampleSize * nChannels, ++j) {
                 _minMaxChannel(channelIndex,
                                nChannels,
-                               _minValues[i],
-                               _maxValues[i],
-                               audioData[i .. i + sampleSize]);
+                               _minValues[j],
+                               _maxValues[j],
+                               audioData[i .. i + sampleSize * nChannels]);
             }
         }
 
@@ -233,9 +235,11 @@ private:
             _minValues = new sample_t[](srcMinValues.length / sampleSize);
             _maxValues = new sample_t[](srcMaxValues.length / sampleSize);
 
-            immutable(size_t) count = min(srcMinValues.length, srcMaxValues.length);
-            for(size_t i = 0, j = 0; i < count; i += sampleSize, ++j) {
-                for(size_t k = 0; k < sampleSize; ++k) {
+            immutable(size_t) srcCount = min(srcMinValues.length, srcMaxValues.length);
+            immutable(size_t) destCount = srcCount / sampleSize;
+            for(size_t i = 0, j = 0; i < srcCount && j < destCount; i += sampleSize, ++j) {
+                immutable(size_t) sampleCount = i + sampleSize < srcCount ? sampleSize : srcCount - i;
+                for(size_t k = 0; k < sampleCount; ++k) {
                     _minValues[j] = 1;
                     _maxValues[j] = -1;
                     if(srcMinValues[i + k] < _minValues[j]) {
