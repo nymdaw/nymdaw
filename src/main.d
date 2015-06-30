@@ -189,22 +189,43 @@ private:
         _minMaxChannel(channelIndex, _nChannels, minSample, maxSample, _audioBuffer);
     }
 
-    static struct WaveformCache {
+    void _initCache() {
+        immutable(nframes_t[]) cacheSampleSizes = [ 10, 100, 1000, 10000 ];
+        static assert(cacheSampleSizes.length > 0);
+        _waveformCacheList = null;
+
+        for(channels_t c = 0; c < _nChannels; ++c) {
+            WaveformCache[] channelCache;
+            channelCache ~= new WaveformCache(cacheSampleSizes[0], c, _nChannels, _audioBuffer);
+            foreach(sampleSize; cacheSampleSizes[1 .. $]) {
+                channelCache ~= new WaveformCache(sampleSize,
+                                                  channelCache[$ - 1].minValues,
+                                                  channelCache[$ - 1].maxValues);
+            }
+            _waveformCacheList ~= channelCache;
+        }
+    }
+
+    static class WaveformCache {
     public:
-        this(nframes_t sampleSize, channels_t channels, sample_t[] audioData) {
+        this(nframes_t sampleSize, channels_t channelIndex, channels_t nChannels, const(sample_t[]) audioData) {
             assert(sampleSize > 0);
 
             _sampleSize = sampleSize;
-            _length = (audioData.length / channels) / sampleSize;
+            _length = (audioData.length / nChannels) / sampleSize;
             _minValues = new sample_t[](_length);
             _maxValues = new sample_t[](_length);
 
             for(size_t i = 0; i < audioData.length; i += sampleSize) {
-                _minMax(_minValues[i], _maxValues[i], audioData[i .. i + sampleSize]);
+                _minMaxChannel(channelIndex,
+                               nChannels,
+                               _minValues[i],
+                               _maxValues[i],
+                               audioData[i .. i + sampleSize]);
             }
         }
 
-        this(nframes_t sampleSize, sample_t[] srcMinValues, sample_t[] srcMaxValues) {
+        this(nframes_t sampleSize, const(sample_t[]) srcMinValues, const(sample_t[]) srcMaxValues) {
             assert(sampleSize > 0);
             assert(srcMinValues.length == srcMaxValues.length);
 
@@ -229,6 +250,8 @@ private:
 
         @property const(nframes_t) sampleSize() const { return _sampleSize; }
         @property size_t length() const { return _length; }
+        @property const(sample_t[]) minValues() const { return _minValues; }
+        @property const(sample_t[]) maxValues() const { return _maxValues; }
 
     private:
         nframes_t _sampleSize;
@@ -236,6 +259,8 @@ private:
         sample_t[] _minValues;
         sample_t[] _maxValues;
     }
+
+    WaveformCache[][] _waveformCacheList; // indexed as [channel, waveform]
 
     nframes_t _sampleRate; // sample rate of the audio data
     channels_t _nChannels; // number of channels in the audio data
