@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 from waflib import Options
-import sys, os
+import sys, os, re
 
 APPNAME = "dseq"
 VERSION = "0.0.1"
@@ -50,7 +50,13 @@ def configure( ctx ):
     ctx.check_cfg( package = "samplerate",
                    args = [ "samplerate >= 0.1.0", "--cflags", "--libs" ],
                    uselib_store = "samplerate",
-                   mandatory = True )    
+                   mandatory = True )
+
+    # Check for GtkD
+    ctx.check_cfg( package = "gtkd-3",
+                   args = [ "gtkd-3 >= 3.1.3", "--cflags", "--libs" ],
+                   uselib_store = "gtkd",
+                   mandatory = True )
 
 def build( ctx ):
     deps_dir = "deps"
@@ -73,6 +79,18 @@ def build( ctx ):
                includes = deps_dir,
                target = "dlang_samplerate" )
 
+    # Add flags for GtkD on OSX
+    if sys.platform == "darwin":
+        home = os.getenv("HOME")
+        ctx.env.append_value( "LINKFLAGS_gtkd",
+                              [ "-L-L" + home + "/gtk/inst/lib", "-L-rpath", "-L" + home + "/gtk/inst/lib",
+                                "-L-lgtk-3", "-L-lgdk-3", "-L-latk-1.0", "-L-lgio-2.0",
+                                "-L-lpangocairo-1.0", "-L-lgdk_pixbuf-2.0", "-L-lcairo-gobject",
+                                "-L-lpango-1.0", "-L-lcairo", "-L-lgobject-2.0", "-L-lglib-2.0" ] )
+        # Try to fix the output from the gtkd-3 pkg-config entry on OSX
+        ctx.env.append_value( "LINKFLAGS_gtk", ctx.env.LIBPATH_gtkd )
+        ctx.env.LIBPATH_gtkd = []
+
     # Build the executable
     ctx.program( name = APPNAME,
                  target = APPNAME.lower(),
@@ -80,4 +98,5 @@ def build( ctx ):
                  includes = [ "src", deps_dir ],
                  use = [ "jack", "dlang_jack",
                          "sndfile", "dlang_sndfile",
-                         "samplerate", "dlang_samplerate" ] )
+                         "samplerate", "dlang_samplerate",
+                         "gtkd" ] )
