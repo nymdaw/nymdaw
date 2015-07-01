@@ -11,6 +11,14 @@ import samplerate.samplerate;
 import gtk.MainWindow;
 import gtk.Main;
 import gtk.Widget;
+import gtk.VBox;
+import gtk.DrawingArea;
+import gtk.Adjustment;
+import gtk.Scrollbar;
+import gtkc.gtktypes;
+
+import cairo.Surface;
+import cairo.Context;
 
 class AudioError: Exception {
     this(string msg) {
@@ -402,6 +410,35 @@ private:
     bool _playing;
 }
 
+class ArrangeView : VBox {
+public:
+    this() {
+        super(false, 0);
+
+        _canvas = new Canvas();
+        _hAdjust = new Adjustment(0, 0, 100, 1, 1, 10);
+        _hScroll = new Scrollbar(Orientation.HORIZONTAL, _hAdjust);
+
+        packStart(_canvas, true, true, 0);
+        packEnd(_hScroll, false, false, 0);
+    }
+
+private:
+    class Canvas : DrawingArea {
+        this() {
+            addOnDraw(&drawCallback);
+        }
+
+        bool drawCallback(Scoped!Context cr, Widget widget) {
+            return true;
+        }
+    }
+
+    Canvas _canvas;
+    Adjustment _hAdjust;
+    Scrollbar _hScroll;
+}
+
 void main(string[] args) {
     string appName = "dseq";
 
@@ -431,6 +468,11 @@ void main(string[] args) {
 
     Main.init(args);
     MainWindow win = new MainWindow(appName);
+    win.setDefaultSize(960, 600);
+
+    ArrangeView arrangeView = new ArrangeView();
+    win.add(arrangeView);
+
     win.showAll();
     Main.run();
 }
