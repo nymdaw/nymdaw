@@ -412,9 +412,10 @@ private:
 
 class ArrangeView : VBox {
 public:
-    this() {
-        super(false, 0);
+    this(Mixer mixer) {
+        _mixer = mixer;
 
+        super(false, 0);
         _canvas = new Canvas();
         _hAdjust = new Adjustment(0, 0, 100, 1, 1, 10);
         _hScroll = new Scrollbar(Orientation.HORIZONTAL, _hAdjust);
@@ -430,9 +431,42 @@ private:
         }
 
         bool drawCallback(Scoped!Context cr, Widget widget) {
+            cr.setSourceRgb(0, 0, 0);
+            cr.paint();
+
+            drawTransport(cr);
+
             return true;
         }
+
+        void drawTransport(ref Scoped!Context cr) {
+            enum transportHeadWidth = 16;
+            enum transportHeadHeight = 10;
+
+            GtkAllocation size;
+            getAllocation(size);
+
+            double xOffset = 10; // TODO implement
+
+            cr.setSourceRgb(1.0, 0.0, 0.0);
+            cr.setLineWidth(1.0);
+            cr.moveTo(xOffset, 0);
+            cr.lineTo(xOffset, size.height);
+            cr.stroke();
+
+            cr.moveTo(xOffset - transportHeadWidth / 2, 0);
+            cr.lineTo(xOffset + transportHeadWidth / 2, 0);
+            cr.lineTo(xOffset, transportHeadHeight);
+            cr.closePath();
+            cr.fill();
+        }
     }
+
+    void _resetHScroll() {
+        //_hAdjust.configure(_hAdjust.getValue()
+    }
+
+    Mixer _mixer;
 
     Canvas _canvas;
     Adjustment _hAdjust;
@@ -447,8 +481,9 @@ void main(string[] args) {
         return;
     }
 
+    Mixer mixer;
     try {
-        Mixer mixer = new Mixer(appName);
+        mixer = new Mixer(appName);
 
         Region testRegion;
         try {
@@ -456,6 +491,7 @@ void main(string[] args) {
         }
         catch(FileError e) {
             writeln("Fatal file error: ", e.msg);
+            return;
         }
 
         Track track = mixer.createTrack();
@@ -464,13 +500,14 @@ void main(string[] args) {
     }
     catch(AudioError e) {
         writeln("Fatal audio error: ", e.msg);
+        return;
     }
 
     Main.init(args);
     MainWindow win = new MainWindow(appName);
     win.setDefaultSize(960, 600);
 
-    ArrangeView arrangeView = new ArrangeView();
+    ArrangeView arrangeView = new ArrangeView(mixer);
     win.add(arrangeView);
 
     win.showAll();
