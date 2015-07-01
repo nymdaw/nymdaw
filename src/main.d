@@ -8,6 +8,10 @@ import jack.client;
 import sndfile.sndfile;
 import samplerate.samplerate;
 
+import gtk.MainWindow;
+import gtk.Main;
+import gtk.Widget;
+
 class AudioError: Exception {
     this(string msg) {
         super(msg);
@@ -50,7 +54,7 @@ public:
         scope(exit) sf_close(infile);
 
         // allocate contiguous audio buffer
-        sample_t[] audioBuffer = new sample_t[](sfinfo.frames * sfinfo.channels);
+        sample_t[] audioBuffer = new sample_t[](cast(size_t)(sfinfo.frames * sfinfo.channels));
 
         // read the file into the audio buffer
         sf_count_t readcount;
@@ -132,7 +136,7 @@ public:
             if(error) {
                 throw new AudioError("Sample rate conversion failed: " ~ to!string(src_strerror(error)));
             }
-            dataOut.length = srcData.output_frames_gen;
+            dataOut.length = cast(size_t)(srcData.output_frames_gen);
 
             // convert the float buffer back to sample_t if necessary
             static if(is(sample_t == double)) {
@@ -218,7 +222,7 @@ private:
             _minValues = new sample_t[](_length);
             _maxValues = new sample_t[](_length);
 
-            for(size_t i = 0, j = 0; i < audioData.length; i += sampleSize * nChannels, ++j) {
+            for(size_t i = 0, j = 0; i < audioData.length && j < _length; i += sampleSize * nChannels, ++j) {
                 _minMaxChannel(channelIndex,
                                nChannels,
                                _minValues[j],
@@ -425,5 +429,8 @@ void main(string[] args) {
         writeln("Fatal audio error: ", e.msg);
     }
 
-    stdin.readln();
+    Main.init(args);
+    MainWindow win = new MainWindow(appName);
+    win.showAll();
+    Main.run();
 }

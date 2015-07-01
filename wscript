@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 from waflib import Options
-import sys, os, re
+import sys, os
 
 APPNAME = "dseq"
 VERSION = "0.0.1"
@@ -29,10 +29,9 @@ def configure( ctx ):
 
     ctx.load( "compiler_d" )    
     if opts.debug :
-        ctx.env.append_value( "DFLAGS", ["-gc", "-debug"] )
+        ctx.env.append_value( "DFLAGS", [ "-gc", "-debug" ] )
     else:
         ctx.env.append_value( "DFLAGS", "-O2" )
-    ctx.env.append_value( "DFLAGS", "-I/usr/local/include" )
 
     # Check for jack
     ctx.check_cfg( package = "jack",
@@ -58,6 +57,19 @@ def configure( ctx ):
                    uselib_store = "gtkd",
                    mandatory = True )
 
+    # Configure GtkD on OSX
+    if sys.platform == "darwin":
+        # Try to fix the output from the gtkd-3 pkg-config entry on OSX
+        ctx.env.LIB_gtkd = map(lambda x: x[2:], filter(lambda x: x[:2] == "-l", ctx.env.LIBPATH_gtkd))
+        ctx.env.LIBPATH_gtkd = map(lambda x: x[2:], filter(lambda x: x[:2] == "-L", ctx.env.LIBPATH_gtkd))
+
+        # Add flags for GTK-OSX
+        home = os.getenv("HOME")
+        ctx.env.LIBPATH_gtkd = [ home + "/gtk/inst/lib" ]
+        ctx.env.append_value( "LIB_gtkd", [ "gtk-3", "gdk-3", "atk-1.0", "gio-2.0",
+                                            "pangocairo-1.0", "gdk_pixbuf-2.0", "cairo-gobject",
+                                            "pango-1.0", "cairo", "gobject-2.0", "glib-2.0" ] )
+
 def build( ctx ):
     deps_dir = "deps"
 
@@ -78,18 +90,6 @@ def build( ctx ):
     ctx.stlib( source = ctx.path.ant_glob( os.path.join( dlang_samplerate_dir, "**", "*.d" ) ),
                includes = deps_dir,
                target = "dlang_samplerate" )
-
-    # Add flags for GtkD on OSX
-    if sys.platform == "darwin":
-        home = os.getenv("HOME")
-        ctx.env.append_value( "LINKFLAGS_gtkd",
-                              [ "-L-L" + home + "/gtk/inst/lib", "-L-rpath", "-L" + home + "/gtk/inst/lib",
-                                "-L-lgtk-3", "-L-lgdk-3", "-L-latk-1.0", "-L-lgio-2.0",
-                                "-L-lpangocairo-1.0", "-L-lgdk_pixbuf-2.0", "-L-lcairo-gobject",
-                                "-L-lpango-1.0", "-L-lcairo", "-L-lgobject-2.0", "-L-lglib-2.0" ] )
-        # Try to fix the output from the gtkd-3 pkg-config entry on OSX
-        ctx.env.append_value( "LINKFLAGS_gtk", ctx.env.LIBPATH_gtkd )
-        ctx.env.LIBPATH_gtkd = []
 
     # Build the executable
     ctx.program( name = APPNAME,
