@@ -36,6 +36,8 @@ alias nframes_t = jack_nframes_t;
 alias sample_t = jack_default_audio_sample_t;
 alias channels_t = uint;
 
+alias pixels_t = int;
+
 class Region {
 public:
     this(nframes_t sampleRate, channels_t nChannels, sample_t[] audioBuffer) {
@@ -161,16 +163,16 @@ public:
         }
     }
 
-    const(sample_t) opIndex(nframes_t frame, channels_t channelIndex) const {
+    sample_t opIndex(nframes_t frame, channels_t channelIndex) const {
         return frame >= offset ?
             (frame < _offset + _nframes ? _audioBuffer[(frame - _offset) * _nChannels + channelIndex] : 0 ) : 0;
     }
 
     @property const(sample_t[]) audioBuffer() const { return _audioBuffer; }
-    @property const(nframes_t) sampleRate() const { return _sampleRate; }
-    @property const(channels_t) nChannels() const { return _nChannels; }
-    @property const(nframes_t) nframes() const { return _nframes; }
-    @property const(nframes_t) offset() const { return _offset; }
+    @property nframes_t sampleRate() const { return _sampleRate; }
+    @property channels_t nChannels() const { return _nChannels; }
+    @property nframes_t nframes() const { return _nframes; }
+    @property nframes_t offset() const { return _offset; }
 
 private:
     static void _minMax(out sample_t minSample, out sample_t maxSample, const(sample_t[]) sourceData) {
@@ -264,7 +266,7 @@ private:
             }
         }
 
-        @property const(nframes_t) sampleSize() const { return _sampleSize; }
+        @property nframes_t sampleSize() const { return _sampleSize; }
         @property size_t length() const { return _length; }
         @property const(sample_t[]) minValues() const { return _minValues; }
         @property const(sample_t[]) maxValues() const { return _maxValues; }
@@ -292,6 +294,8 @@ public:
         _regions ~= region;
         _resizeIfNecessary(region.offset + region.nframes);
     }
+
+    const(Region[]) regions() const { return _regions; }
 
 package:
     this(bool delegate(nframes_t) resizeIfNecessary) {
@@ -342,10 +346,10 @@ public:
 
     @property nframes_t sampleRate() { return _client.get_sample_rate(); }
 
-    @property const(nframes_t) nframes() const { return _nframes; }
+    @property nframes_t nframes() const { return _nframes; }
     @property nframes_t nframes(nframes_t newNFrames) { return (_nframes = newNFrames); }
 
-    @property const(nframes_t) offset() const { return _offset; }
+    @property nframes_t offset() const { return _offset; }
     @property nframes_t offset(nframes_t newOffset) { return (_offset = newOffset); }
 
     @property bool playing() const { return _playing; }
@@ -412,8 +416,13 @@ private:
 
 class ArrangeView : VBox {
 public:
-    this(Mixer mixer) {
-        _mixer = mixer;
+    enum defaultSamplesPerPixel = 500;
+    enum defaultTrackHeightPixels = 200;
+    enum zoomStep = 100;
+
+    this(string appName) {
+        _mixer = new Mixer(appName);
+        _samplesPerPixel = defaultSamplesPerPixel;
 
         super(false, 0);
         _canvas = new Canvas();
@@ -424,19 +433,157 @@ public:
         packEnd(_hScroll, false, false, 0);
     }
 
+    class TrackView {
+    public:
+        void addRegion(Region region, nframes_t sampleRate) {
+            _track.addRegion(region);
+        }
+        void addRegion(Region region) {
+            addRegion(region, _mixer.sampleRate);
+        }
+
+        void draw(ref Scoped!Context cr, pixels_t yOffset) {
+            foreach(r; _track.regions) {
+                if((r.offset >= viewOffset && r.offset < viewOffset + viewWidthSamples) ||
+                   (r.offset < viewOffset &&
+                    (r.offset + r.nframes >= viewOffset || r.offset + r.nframes <= viewOffset + viewWidthSamples))) {
+                    _drawRegionBorder(cr, r, yOffset);
+                }
+            }
+        }
+
+        @property pixels_t heightPixels() const { return _heightPixels; }
+
+    private:
+        this(Track track, pixels_t heightPixels) {
+            _track = track;
+            _heightPixels = heightPixels;
+        }
+
+        // this function assumes that the region is within the visible area of the arrange view
+        void _drawRegionBorder(ref Scoped!Context cr, const(Region) region, pixels_t yOffset) {
+            nframes_t samplesOffset = region.offset < viewOffset ? region.offset - viewOffset : 0;
+            pixels_t xOffset = (viewOffset - region.offset) * samplesPerPixel;
+
+            double width;
+            if(region.offset >= viewOffset) {
+                // the region begins after the view offset, and ends within the view
+                if(region.offset + region.nframes <= viewOffset + viewWidthSamples) {
+                    width = region.nframes / samplesPerPixel;
+                }
+                // the region begins after the view offset, and ends past the end of the view
+                else {
+                    width = (viewWidthSamples - (region.offset - viewOffset)) * samplesPerPixel;
+                }
+            }
+            else {
+                // the region begins before the view offset, and ends within the view
+                if(region.offset + region.nframes <= viewOffset + viewWidthSamples) {
+                    width = (viewOffset + viewWidthSamples - region.offset + region.nframes) / samplesPerPixel;
+                }
+                // the region begins before the view offset, and ends past the end of the view
+                else {
+                    width = viewWidthSamples * samplesPerPixel;
+                }
+            }
+
+            double height = _heightPixels;
+            pixels_t radius = 4;
+
+            enum degrees = PI / 180.0;
+
+            bool lCorners = samplesOffset + (radius * samplesPerPixel) <= viewOffset;
+            bool rCorners =
+                (region.offset + region.nframes) > viewOffset + viewWidthSamples + (radius * samplesPerPixel);
+
+            cr.newSubPath();
+
+            // top left corner
+            cr.moveTo(xOffset, yOffset);
+            if(lCorners) {
+                cr.lineTo(xOffset + width - (rCorners ? radius : 0), yOffset);
+            }
+            else {
+                cr.arc(xOffset + radius, yOffset + radius, radius, 180 * degrees, 270 * degrees);
+            }
+
+            // right corners
+            if(rCorners) {
+                cr.arc(xOffset + width - radius, yOffset + radius, radius, -90 * degrees, 0 * degrees);
+                cr.arc(xOffset + width - radius, yOffset + height - radius, radius, 0 * degrees, 90 * degrees);
+            }
+            else {
+                cr.lineTo(xOffset + width, yOffset + height);
+            }
+
+            // bottom left corner
+            if(lCorners) {
+                cr.arc(xOffset + radius, yOffset + height - radius, radius, 90 * degrees, 180 * degrees);
+            }
+            else {
+                cr.lineTo(xOffset, yOffset + height);
+            }
+
+            cr.closePath();
+
+            cr.setSourceRgb(0.5, 0.5, 1);
+            cr.fillPreserve();
+            cr.setSourceRgb(0.5, 0, 0);
+            cr.setLineWidth(1.0);
+            cr.stroke();
+        }
+
+        Track _track;
+        pixels_t _heightPixels;
+    }
+
+    TrackView createTrackView() {
+        TrackView trackView = new TrackView(_mixer.createTrack(), defaultTrackHeightPixels);
+        _trackViews ~= trackView;
+        return trackView;
+    }
+
+    @property nframes_t samplesPerPixel() const { return _samplesPerPixel; }
+    @property nframes_t viewOffset() const {
+        return _viewOffset;
+    }
+    @property nframes_t viewWidthSamples() {
+        return _canvas.widthPixels() * _samplesPerPixel;
+    }
+
 private:
     class Canvas : DrawingArea {
         this() {
             addOnDraw(&drawCallback);
         }
 
+        @property pixels_t widthPixels() {
+            GtkAllocation size;
+            getAllocation(size);
+            return cast(pixels_t)(size.width);
+        }
+        @property pixels_t heightPixels() {
+            GtkAllocation size;
+            getAllocation(size);
+            return cast(pixels_t)(size.height);
+        }
+
         bool drawCallback(Scoped!Context cr, Widget widget) {
             cr.setSourceRgb(0, 0, 0);
             cr.paint();
 
+            drawTracks(cr);
             drawTransport(cr);
 
             return true;
+        }
+
+        void drawTracks(ref Scoped!Context cr) {
+            pixels_t yOffset = 0;
+            foreach(t; _trackViews) {
+                t.draw(cr, yOffset);
+                yOffset += t.heightPixels;
+            }
         }
 
         void drawTransport(ref Scoped!Context cr) {
@@ -467,6 +614,10 @@ private:
     }
 
     Mixer _mixer;
+    TrackView[] _trackViews;
+
+    nframes_t _samplesPerPixel;
+    nframes_t _viewOffset;
 
     Canvas _canvas;
     Adjustment _hAdjust;
@@ -481,35 +632,31 @@ void main(string[] args) {
         return;
     }
 
-    Mixer mixer;
     try {
-        mixer = new Mixer(appName);
+        Main.init(args);
+        MainWindow win = new MainWindow(appName);
+        win.setDefaultSize(960, 600);
+
+        ArrangeView arrangeView = new ArrangeView(appName);
+        win.add(arrangeView);
 
         Region testRegion;
         try {
-            testRegion = Region.fromFile(args[1], mixer.sampleRate);
+            testRegion = Region.fromFile(args[1]);
+            ArrangeView.TrackView trackView = arrangeView.createTrackView();
+            trackView.addRegion(testRegion);
+            arrangeView._mixer.play();
         }
         catch(FileError e) {
             writeln("Fatal file error: ", e.msg);
             return;
         }
 
-        Track track = mixer.createTrack();
-        track.addRegion(testRegion);
-        mixer.play();
+        win.showAll();
+        Main.run();
     }
     catch(AudioError e) {
         writeln("Fatal audio error: ", e.msg);
         return;
     }
-
-    Main.init(args);
-    MainWindow win = new MainWindow(appName);
-    win.setDefaultSize(960, 600);
-
-    ArrangeView arrangeView = new ArrangeView(mixer);
-    win.add(arrangeView);
-
-    win.showAll();
-    Main.run();
 }
