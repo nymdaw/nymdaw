@@ -17,8 +17,11 @@ import gtk.Adjustment;
 import gtk.Scrollbar;
 import gtkc.gtktypes;
 
-import cairo.Surface;
+import glib.Timeout;
+
 import cairo.Context;
+import cairo.Pattern;
+import cairo.Surface;
 
 class AudioError: Exception {
     this(string msg) {
@@ -163,6 +166,89 @@ public:
         }
     }
 
+    class WaveformCache {
+    public:
+        @property nframes_t sampleSize() const { return _sampleSize; }
+        @property size_t length() const { return _length; }
+        @property const(sample_t[]) minValues() const { return _minValues; }
+        @property const(sample_t[]) maxValues() const { return _maxValues; }
+
+    private:
+        // comptue this cache via raw audio data
+        this(nframes_t sampleSize, channels_t channelIndex) {
+            assert(sampleSize > 0);
+
+            _sampleSize = sampleSize;
+            _length = (_audioBuffer.length / _nChannels) / sampleSize;
+            _minValues = new sample_t[](_length);
+            _maxValues = new sample_t[](_length);
+
+            for(auto i = 0, j = 0; i < _audioBuffer.length && j < _length; i += sampleSize * _nChannels, ++j) {
+                _minMaxChannel(channelIndex,
+                               _nChannels,
+                               _minValues[j],
+                               _maxValues[j],
+                               _audioBuffer[i .. i + sampleSize * _nChannels]);
+            }
+        }
+
+        // compute this cache via another cache
+        this(nframes_t sampleSize, const(sample_t[]) srcMinValues, const(sample_t[]) srcMaxValues) {
+            assert(sampleSize > 0);
+            assert(srcMinValues.length == srcMaxValues.length);
+
+            _sampleSize = sampleSize;
+            _minValues = new sample_t[](srcMinValues.length / sampleSize);
+            _maxValues = new sample_t[](srcMaxValues.length / sampleSize);
+
+            immutable(size_t) srcCount = min(srcMinValues.length, srcMaxValues.length);
+            immutable(size_t) destCount = srcCount / sampleSize;
+            for(auto i = 0, j = 0; i < srcCount && j < destCount; i += sampleSize, ++j) {
+                immutable(size_t) sampleCount = i + sampleSize < srcCount ? sampleSize : srcCount - i;
+                for(auto k = 0; k < sampleCount; ++k) {
+                    _minValues[j] = 1;
+                    _maxValues[j] = -1;
+                    if(srcMinValues[i + k] < _minValues[j]) {
+                        _minValues[j] = srcMinValues[i + k];
+                    }
+                    if(srcMaxValues[i + k] > _maxValues[j]) {
+                        _maxValues[j] = srcMaxValues[i + k];
+                    }
+                }
+            }
+        }
+
+        nframes_t _sampleSize;
+        size_t _length;
+        sample_t[] _minValues;
+        sample_t[] _maxValues;
+    }
+
+    size_t getCacheIndex(nframes_t binSize) const {
+        nframes_t binSizeMatch;
+        size_t cacheIndex;
+        bool foundIndex;
+        foreach(i, s; _cacheBinSizes) {
+            if(s < binSize && binSize % s == 0) {
+                foundIndex = true;
+                cacheIndex = i;
+                binSizeMatch = s;
+            }
+            else {
+                break;
+            }
+        }
+        assert(foundIndex); // TODO, fix this when implementing extremely fine zoom levels
+        return cacheIndex;
+    }
+
+    sample_t getMin(channels_t channelIndex, size_t cacheIndex, nframes_t cacheSampleOffset) const {
+        return _waveformCacheList[channelIndex][cacheIndex].minValues[cacheSampleOffset];
+    }
+    sample_t getMax(channels_t channelIndex, size_t cacheIndex, nframes_t cacheSampleOffset) const {
+        return _waveformCacheList[channelIndex][cacheIndex].maxValues[cacheSampleOffset];
+    }
+
     sample_t opIndex(nframes_t frame, channels_t channelIndex) const {
         return frame >= offset ?
             (frame < _offset + _nframes ? _audioBuffer[(frame - _offset) * _nChannels + channelIndex] : 0 ) : 0;
@@ -194,7 +280,7 @@ private:
                                const(sample_t[]) sourceData) {
         minSample = 1;
         maxSample = -1;
-        for(size_t i = channelIndex; i < sourceData.length; i += nChannels) {
+        for(auto i = channelIndex; i < sourceData.length; i += nChannels) {
             if(sourceData[i] > maxSample) maxSample = sourceData[i];
             if(sourceData[i] < minSample) minSample = sourceData[i];
         }
@@ -206,14 +292,12 @@ private:
     }
 
     void _initCache() {
-        immutable(nframes_t[]) cacheSampleSizes = [ 10, 100, 1000, 10000 ];
-        static assert(cacheSampleSizes.length > 0);
         _waveformCacheList = null;
 
-        for(channels_t c = 0; c < _nChannels; ++c) {
+        for(auto c = 0; c < _nChannels; ++c) {
             WaveformCache[] channelCache;
-            channelCache ~= new WaveformCache(cacheSampleSizes[0], c, _nChannels, _audioBuffer);
-            foreach(sampleSize; cacheSampleSizes[1 .. $]) {
+            channelCache ~= new WaveformCache(_cacheBinSizes[0], c);
+            foreach(sampleSize; _cacheBinSizes[1 .. $]) {
                 channelCache ~= new WaveformCache(sampleSize,
                                                   channelCache[$ - 1].minValues,
                                                   channelCache[$ - 1].maxValues);
@@ -222,63 +306,10 @@ private:
         }
     }
 
-    static class WaveformCache {
-    public:
-        this(nframes_t sampleSize, channels_t channelIndex, channels_t nChannels, const(sample_t[]) audioData) {
-            assert(sampleSize > 0);
+    static immutable(nframes_t[]) _cacheBinSizes = [ 10, 100, 1000, 10000 ];
+    static assert(_cacheBinSizes.length > 0);
 
-            _sampleSize = sampleSize;
-            _length = (audioData.length / nChannels) / sampleSize;
-            _minValues = new sample_t[](_length);
-            _maxValues = new sample_t[](_length);
-
-            for(size_t i = 0, j = 0; i < audioData.length && j < _length; i += sampleSize * nChannels, ++j) {
-                _minMaxChannel(channelIndex,
-                               nChannels,
-                               _minValues[j],
-                               _maxValues[j],
-                               audioData[i .. i + sampleSize * nChannels]);
-            }
-        }
-
-        this(nframes_t sampleSize, const(sample_t[]) srcMinValues, const(sample_t[]) srcMaxValues) {
-            assert(sampleSize > 0);
-            assert(srcMinValues.length == srcMaxValues.length);
-
-            _sampleSize = sampleSize;
-            _minValues = new sample_t[](srcMinValues.length / sampleSize);
-            _maxValues = new sample_t[](srcMaxValues.length / sampleSize);
-
-            immutable(size_t) srcCount = min(srcMinValues.length, srcMaxValues.length);
-            immutable(size_t) destCount = srcCount / sampleSize;
-            for(size_t i = 0, j = 0; i < srcCount && j < destCount; i += sampleSize, ++j) {
-                immutable(size_t) sampleCount = i + sampleSize < srcCount ? sampleSize : srcCount - i;
-                for(size_t k = 0; k < sampleCount; ++k) {
-                    _minValues[j] = 1;
-                    _maxValues[j] = -1;
-                    if(srcMinValues[i + k] < _minValues[j]) {
-                        _minValues[j] = srcMinValues[i + k];
-                    }
-                    if(srcMaxValues[i + k] > _maxValues[j]) {
-                        _maxValues[j] = srcMaxValues[i + k];
-                    }
-                }
-            }
-        }
-
-        @property nframes_t sampleSize() const { return _sampleSize; }
-        @property size_t length() const { return _length; }
-        @property const(sample_t[]) minValues() const { return _minValues; }
-        @property const(sample_t[]) maxValues() const { return _maxValues; }
-
-    private:
-        nframes_t _sampleSize;
-        size_t _length;
-        sample_t[] _minValues;
-        sample_t[] _maxValues;
-    }
-
-    WaveformCache[][] _waveformCacheList; // indexed as [channel, waveform]
+    WaveformCache[][] _waveformCacheList; // indexed as [channel][waveform]
 
     nframes_t _sampleRate; // sample rate of the audio data
     channels_t _nChannels; // number of channels in the audio data
@@ -303,7 +334,7 @@ package:
     }
     
     void mixStereo(nframes_t offset, nframes_t bufNFrames, sample_t* mixBuf1, sample_t* mixBuf2) const {
-        for(nframes_t i = 0; i < bufNFrames; ++i) {
+        for(auto i = 0; i < bufNFrames; ++i) {
             foreach(r; _regions) {
                 mixBuf1[i] += r[offset + i, 0];
                 mixBuf2[i] += r[offset + i, 1];
@@ -416,9 +447,10 @@ private:
 
 class ArrangeView : VBox {
 public:
-    enum defaultSamplesPerPixel = 500;
-    enum defaultTrackHeightPixels = 200;
-    enum zoomStep = 100;
+    enum defaultSamplesPerPixel = 500; // default zoom level, in samples per pixel
+    enum defaultTrackHeightPixels = 200; // default height in pixels of new tracks in the arrange view
+    enum zoomStep = 100; // unit for zoom increments in samples per pixel
+    enum refreshRate = 30; // rate in hertz at which to redraw the view when the transport is playing
 
     this(string appName) {
         _mixer = new Mixer(appName);
@@ -447,7 +479,7 @@ public:
                 if((r.offset >= viewOffset && r.offset < viewOffset + viewWidthSamples) ||
                    (r.offset < viewOffset &&
                     (r.offset + r.nframes >= viewOffset || r.offset + r.nframes <= viewOffset + viewWidthSamples))) {
-                    _drawRegionBorder(cr, r, yOffset);
+                    _drawRegion(cr, r, yOffset);
                 }
             }
         }
@@ -461,19 +493,24 @@ public:
         }
 
         // this function assumes that the region is within the visible area of the arrange view
-        void _drawRegionBorder(ref Scoped!Context cr, const(Region) region, pixels_t yOffset) {
-            nframes_t samplesOffset = region.offset < viewOffset ? region.offset - viewOffset : 0;
-            pixels_t xOffset = (viewOffset - region.offset) * samplesPerPixel;
+        void _drawRegion(ref Scoped!Context cr, const(Region) region, pixels_t yOffset) {
+            enum radius = 4; // radius of the rounded corners of the region, in pixels
+            enum borderWidth = 1; // width of the edges of the region, in pixels
+            enum degrees = PI / 180.0;
 
-            double width;
+            immutable(pixels_t) xOffset = (viewOffset - region.offset) / samplesPerPixel;
+            immutable(pixels_t) height = _heightPixels;
+
+            // calculate the width, in pixels, of the visible area of the given region
+            pixels_t width;
             if(region.offset >= viewOffset) {
                 // the region begins after the view offset, and ends within the view
                 if(region.offset + region.nframes <= viewOffset + viewWidthSamples) {
-                    width = region.nframes / samplesPerPixel;
+                    width = max(region.nframes / samplesPerPixel, 2 * radius);
                 }
                 // the region begins after the view offset, and ends past the end of the view
                 else {
-                    width = (viewWidthSamples - (region.offset - viewOffset)) * samplesPerPixel;
+                    width = (viewWidthSamples - (region.offset - viewOffset)) / samplesPerPixel;
                 }
             }
             else {
@@ -483,28 +520,23 @@ public:
                 }
                 // the region begins before the view offset, and ends past the end of the view
                 else {
-                    width = viewWidthSamples * samplesPerPixel;
+                    width = viewWidthSamples / samplesPerPixel;
                 }
             }
 
-            double height = _heightPixels;
-            pixels_t radius = 4;
-
-            enum degrees = PI / 180.0;
-
-            bool lCorners = samplesOffset + (radius * samplesPerPixel) <= viewOffset;
+            // these variables designate whether the left and right endpoints of the given region are visible
+            bool lCorners = region.offset + (radius * samplesPerPixel) >= viewOffset;
             bool rCorners =
-                (region.offset + region.nframes) > viewOffset + viewWidthSamples + (radius * samplesPerPixel);
+                (region.offset + region.nframes) - (radius * samplesPerPixel) <= viewOffset + viewWidthSamples;
 
             cr.newSubPath();
-
             // top left corner
-            cr.moveTo(xOffset, yOffset);
+            cr.moveTo(xOffset - (lCorners ? 0 : borderWidth), yOffset);
             if(lCorners) {
-                cr.lineTo(xOffset + width - (rCorners ? radius : 0), yOffset);
+                cr.arc(xOffset + radius, yOffset + radius, radius, 180 * degrees, 270 * degrees);
             }
             else {
-                cr.arc(xOffset + radius, yOffset + radius, radius, 180 * degrees, 270 * degrees);
+                cr.lineTo(xOffset + width + (rCorners ? -radius : 1), yOffset);
             }
 
             // right corners
@@ -513,7 +545,8 @@ public:
                 cr.arc(xOffset + width - radius, yOffset + height - radius, radius, 0 * degrees, 90 * degrees);
             }
             else {
-                cr.lineTo(xOffset + width, yOffset + height);
+                cr.lineTo(xOffset + width + borderWidth, yOffset);
+                cr.lineTo(xOffset + width + borderWidth, yOffset + height);
             }
 
             // bottom left corner
@@ -521,16 +554,41 @@ public:
                 cr.arc(xOffset + radius, yOffset + height - radius, radius, 90 * degrees, 180 * degrees);
             }
             else {
-                cr.lineTo(xOffset, yOffset + height);
+                cr.lineTo(xOffset - (lCorners ? borderWidth : 0), yOffset + height);
             }
-
             cr.closePath();
 
-            cr.setSourceRgb(0.5, 0.5, 1);
+            Pattern gradient = Pattern.createLinear(0, yOffset, 0, yOffset + height);
+            gradient.addColorStopRgb(0, 0, 0, 1);
+            gradient.addColorStopRgb(height, 1, 0, 0);
+
+            cr.setSource(gradient);
             cr.fillPreserve();
-            cr.setSourceRgb(0.5, 0, 0);
-            cr.setLineWidth(1.0);
+
+            cr.setSourceRgb(1.0, 1.0, 1.0);
+            cr.setLineWidth(borderWidth);
             cr.stroke();
+
+            // draw the region's waveform
+            auto cacheIndex = region.getCacheIndex(samplesPerPixel);
+            auto sampleOffset = (viewOffset > region.offset) ? viewOffset - region.offset : 0;
+            auto channelYOffset = yOffset + (height / 2);
+            channels_t channelIndex = 0; // TODO implement this
+
+            cr.newSubPath();
+            cr.moveTo(xOffset, channelYOffset + region.getMax(channelIndex, cacheIndex, 0) * (height / 2));
+            for(auto i = 1; i < width; ++i) {
+                cr.lineTo(xOffset + i, channelYOffset +
+                          region.getMax(channelIndex, cacheIndex, i + sampleOffset) * (height / 2));
+            }
+            for(auto i = 1; i <= width; ++i) {
+                cr.lineTo(xOffset + width - i, channelYOffset -
+                          region.getMin(channelIndex, cacheIndex, width - i + sampleOffset) * (height / 2));
+            }
+            cr.closePath();
+
+            cr.setSourceRgb(1, 1, 1);
+            cr.fill();
         }
 
         Track _track;
@@ -569,6 +627,10 @@ private:
         }
 
         bool drawCallback(Scoped!Context cr, Widget widget) {
+            if(_refreshTimeout is null) {
+                _refreshTimeout = new Timeout(cast(uint)(1.0 / refreshRate * 1000), &onRefresh, false);
+            }
+
             cr.setSourceRgb(0, 0, 0);
             cr.paint();
 
@@ -607,10 +669,19 @@ private:
             cr.closePath();
             cr.fill();
         }
-    }
 
-    void _resetHScroll() {
-        //_hAdjust.configure(_hAdjust.getValue()
+        void redraw() {
+            GtkAllocation area;
+            getAllocation(area);
+            queueDrawArea(area.x, area.y, area.width, area.height);
+        }
+
+        bool onRefresh() {
+            if(_mixer.playing) {
+                redraw();
+            }
+            return true;
+        }
     }
 
     Mixer _mixer;
@@ -622,6 +693,7 @@ private:
     Canvas _canvas;
     Adjustment _hAdjust;
     Scrollbar _hScroll;
+    Timeout _refreshTimeout;
 }
 
 void main(string[] args) {
