@@ -602,33 +602,35 @@ public:
             // draw the region's waveform
             auto cacheIndex = region.getCacheIndex(samplesPerPixel);
             auto sampleOffset = (viewOffset > region.offset) ? (viewOffset - region.offset) / samplesPerPixel : 0;
-            auto channelYOffset = yOffset + (height / 2);
-            channels_t channelIndex = 0; // TODO implement this
+            auto channelHeight = height / region.nChannels;
+            auto channelYOffset = yOffset + (channelHeight / 2);
 
-            cr.newSubPath();
-            cr.moveTo(xOffset, channelYOffset +
-                      region.getMax(channelIndex,
-                                    cacheIndex,
-                                    samplesPerPixel,
-                                    0) * (height / 2));
-            for(auto i = 1; i < width; ++i) {
-                cr.lineTo(xOffset + i, channelYOffset -
-                          clamp(region.getMax(channelIndex,
-                                              cacheIndex,
-                                              samplesPerPixel,
-                                              sampleOffset + i), 0, 1) * (height / 2));
+            for(channels_t channelIndex = 0; channelIndex < region.nChannels; ++channelIndex) {
+                cr.newSubPath();
+                cr.moveTo(xOffset, channelYOffset +
+                          region.getMax(channelIndex,
+                                        cacheIndex,
+                                        samplesPerPixel,
+                                        0) * (channelHeight / 2));
+                for(auto i = 1; i < width; ++i) {
+                    cr.lineTo(xOffset + i, channelYOffset -
+                              clamp(region.getMax(channelIndex,
+                                                  cacheIndex,
+                                                  samplesPerPixel,
+                                                  sampleOffset + i), 0, 1) * (channelHeight / 2));
+                }
+                for(auto i = 1; i <= width; ++i) {
+                    cr.lineTo(xOffset + width - i, channelYOffset -
+                              clamp(region.getMin(channelIndex,
+                                                  cacheIndex,
+                                                  samplesPerPixel,
+                                                  sampleOffset + width - i), -1, 0) * (channelHeight / 2));
+                }
+                cr.closePath();
+                cr.setSourceRgb(1, 1, 1);
+                cr.fill();
+                channelYOffset += channelHeight;
             }
-            for(auto i = 1; i <= width; ++i) {
-                cr.lineTo(xOffset + width - i, channelYOffset -
-                          clamp(region.getMin(channelIndex,
-                                              cacheIndex,
-                                              samplesPerPixel,
-                                              sampleOffset + width - i), -1, 0) * (height / 2));
-            }
-            cr.closePath();
-
-            cr.setSourceRgb(1, 1, 1);
-            cr.fill();
         }
 
         Track _track;
@@ -638,6 +640,7 @@ public:
     TrackView createTrackView() {
         TrackView trackView = new TrackView(_mixer.createTrack(), defaultTrackHeightPixels);
         _trackViews ~= trackView;
+        _canvas.redraw();
         return trackView;
     }
 
@@ -650,7 +653,7 @@ private:
         _hAdjust.configure(0,
                            0,
                            _mixer.nframes + viewWidthSamples,
-                           _samplesPerPixel * 10,
+                           _samplesPerPixel * 50,
                            _samplesPerPixel * 100,
                            viewWidthSamples);
     }
