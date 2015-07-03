@@ -15,6 +15,8 @@ import gtk.VBox;
 import gtk.DrawingArea;
 import gtk.Adjustment;
 import gtk.Scrollbar;
+import gdk.Event;
+import gdk.Keysyms;
 import gtkc.gtktypes;
 
 import glib.Timeout;
@@ -47,7 +49,7 @@ public:
         _sampleRate = sampleRate;
         _nChannels = nChannels;
         _audioBuffer = audioBuffer;
-        _nframes = cast(nframes_t)(audioBuffer.length / nChannels);
+        _nframes = cast(typeof(_nframes))(audioBuffer.length / nChannels);
 
         _initCache();
     }
@@ -140,8 +142,8 @@ public:
             SRC_DATA srcData;
             srcData.data_in = dataIn.ptr;
             srcData.data_out = dataOut.ptr;
-            srcData.input_frames = cast(long)(_nframes);
-            srcData.output_frames = cast(long)(ceil(nframes * srcRatio));
+            srcData.input_frames = cast(typeof(srcData.input_frames))(_nframes);
+            srcData.output_frames = cast(typeof(srcData.output_frames))(ceil(nframes * srcRatio));
             srcData.src_ratio = srcRatio;
 
             // compute the sample rate conversion
@@ -168,57 +170,56 @@ public:
 
     class WaveformCache {
     public:
-        @property nframes_t sampleSize() const { return _sampleSize; }
+        @property nframes_t binSize() const { return _binSize; }
         @property size_t length() const { return _length; }
         @property const(sample_t[]) minValues() const { return _minValues; }
         @property const(sample_t[]) maxValues() const { return _maxValues; }
 
     private:
-        // comptue this cache via raw audio data
-        this(nframes_t sampleSize, channels_t channelIndex) {
-            assert(sampleSize > 0);
+        // compute this cache via raw audio data
+        this(nframes_t binSize, channels_t channelIndex) {
+            assert(binSize > 0);
 
-            _sampleSize = sampleSize;
-            _length = (_audioBuffer.length / _nChannels) / sampleSize;
+            _binSize = binSize;
+            _length = (_audioBuffer.length / _nChannels) / binSize;
             _minValues = new sample_t[](_length);
             _maxValues = new sample_t[](_length);
 
-            for(auto i = 0, j = 0; i < _audioBuffer.length && j < _length; i += sampleSize * _nChannels, ++j) {
+            for(auto i = 0, j = 0; i < _audioBuffer.length && j < _length; i += binSize * _nChannels, ++j) {
                 _minMaxChannel(channelIndex,
                                _nChannels,
                                _minValues[j],
                                _maxValues[j],
-                               _audioBuffer[i .. i + sampleSize * _nChannels]);
+                               _audioBuffer[i .. i + binSize * _nChannels]);
             }
         }
 
         // compute this cache via another cache
-        this(nframes_t sampleSize, const(sample_t[]) srcMinValues, const(sample_t[]) srcMaxValues) {
-            assert(sampleSize > 0);
-            assert(srcMinValues.length == srcMaxValues.length);
+        this(nframes_t binSize, const(WaveformCache) cache) {
+            assert(binSize > 0);
 
-            _sampleSize = sampleSize;
-            _minValues = new sample_t[](srcMinValues.length / sampleSize);
-            _maxValues = new sample_t[](srcMaxValues.length / sampleSize);
+            auto binScale = binSize / cache.binSize;
+            _binSize = binSize;
+            _minValues = new sample_t[](cache.minValues.length / binScale);
+            _maxValues = new sample_t[](cache.maxValues.length / binScale);
 
-            immutable(size_t) srcCount = min(srcMinValues.length, srcMaxValues.length);
-            immutable(size_t) destCount = srcCount / sampleSize;
-            for(auto i = 0, j = 0; i < srcCount && j < destCount; i += sampleSize, ++j) {
-                immutable(size_t) sampleCount = i + sampleSize < srcCount ? sampleSize : srcCount - i;
-                for(auto k = 0; k < sampleCount; ++k) {
+            immutable(size_t) srcCount = min(cache.minValues.length, cache.maxValues.length);
+            immutable(size_t) destCount = srcCount / binScale;
+            for(auto i = 0, j = 0; i < srcCount && j < destCount; i += binScale, ++j) {
+                for(auto k = 0; k < binScale; ++k) {
                     _minValues[j] = 1;
                     _maxValues[j] = -1;
-                    if(srcMinValues[i + k] < _minValues[j]) {
-                        _minValues[j] = srcMinValues[i + k];
+                    if(cache.minValues[i + k] < _minValues[j]) {
+                        _minValues[j] = cache.minValues[i + k];
                     }
-                    if(srcMaxValues[i + k] > _maxValues[j]) {
-                        _maxValues[j] = srcMaxValues[i + k];
+                    if(cache.maxValues[i + k] > _maxValues[j]) {
+                        _maxValues[j] = cache.maxValues[i + k];
                     }
                 }
             }
         }
 
-        nframes_t _sampleSize;
+        nframes_t _binSize;
         size_t _length;
         sample_t[] _minValues;
         sample_t[] _maxValues;
@@ -242,16 +243,28 @@ public:
         return cacheIndex;
     }
 
-    sample_t getMin(channels_t channelIndex, size_t cacheIndex, nframes_t cacheSampleOffset) const {
-        return _waveformCacheList[channelIndex][cacheIndex].minValues[cacheSampleOffset];
+    sample_t getMin(channels_t channelIndex,
+                    size_t cacheIndex,
+                    nframes_t binSize,
+                    nframes_t sampleOffset) const {
+        auto cacheSize = _cacheBinSizes[cacheIndex];
+        return _min(_waveformCacheList[channelIndex][cacheIndex].minValues
+                    [sampleOffset * (binSize / cacheSize) .. (sampleOffset + 1) * (binSize / cacheSize)]);
     }
-    sample_t getMax(channels_t channelIndex, size_t cacheIndex, nframes_t cacheSampleOffset) const {
-        return _waveformCacheList[channelIndex][cacheIndex].maxValues[cacheSampleOffset];
+    sample_t getMax(channels_t channelIndex,
+                    size_t cacheIndex,
+                    nframes_t binSize,
+                    nframes_t sampleOffset) const {
+        auto cacheSize = _cacheBinSizes[cacheIndex];
+//        writeln("length: ", _waveformCacheList[channelIndex][cacheIndex].maxValues.length);
+//        writeln(sampleOffset, " ", sampleOffset * (binSize / cacheSize) , " .. ", (sampleOffset + 1) * (binSize / cacheSize));
+        return _max(_waveformCacheList[channelIndex][cacheIndex].maxValues
+                    [sampleOffset * (binSize / cacheSize) .. (sampleOffset + 1) * (binSize / cacheSize)]);
     }
 
     sample_t opIndex(nframes_t frame, channels_t channelIndex) const {
         return frame >= offset ?
-            (frame < _offset + _nframes ? _audioBuffer[(frame - _offset) * _nChannels + channelIndex] : 0 ) : 0;
+            (frame < _offset + _nframes ? _audioBuffer[(frame - _offset) * _nChannels + channelIndex] : 0) : 0;
     }
 
     @property const(sample_t[]) audioBuffer() const { return _audioBuffer; }
@@ -261,6 +274,21 @@ public:
     @property nframes_t offset() const { return _offset; }
 
 private:
+    static sample_t _min(const(sample_t[]) sourceData) {
+        sample_t minSample = 1;
+        foreach(s; sourceData) {
+            if(s < minSample) minSample = s;
+        }
+        return minSample;
+    }
+    static sample_t _max(const(sample_t[]) sourceData) {
+        sample_t maxSample = -1;
+        foreach(s; sourceData) {
+            if(s > maxSample) maxSample = s;
+        }
+        return maxSample;
+    }
+
     static void _minMax(out sample_t minSample, out sample_t maxSample, const(sample_t[]) sourceData) {
         minSample = 1;
         maxSample = -1;
@@ -297,10 +325,8 @@ private:
         for(auto c = 0; c < _nChannels; ++c) {
             WaveformCache[] channelCache;
             channelCache ~= new WaveformCache(_cacheBinSizes[0], c);
-            foreach(sampleSize; _cacheBinSizes[1 .. $]) {
-                channelCache ~= new WaveformCache(sampleSize,
-                                                  channelCache[$ - 1].minValues,
-                                                  channelCache[$ - 1].maxValues);
+            foreach(binSize; _cacheBinSizes[1 .. $]) {
+                channelCache ~= new WaveformCache(binSize, channelCache[$ - 1]);
             }
             _waveformCacheList ~= channelCache;
         }
@@ -380,8 +406,8 @@ public:
     @property nframes_t nframes() const { return _nframes; }
     @property nframes_t nframes(nframes_t newNFrames) { return (_nframes = newNFrames); }
 
-    @property nframes_t offset() const { return _offset; }
-    @property nframes_t offset(nframes_t newOffset) { return (_offset = newOffset); }
+    @property nframes_t transportOffset() const { return _transportOffset; }
+    @property nframes_t transportOffset(nframes_t newOffset) { return (_transportOffset = min(newOffset, nframes)); }
 
     @property bool playing() const { return _playing; }
     void play() { _playing = true; }
@@ -405,16 +431,16 @@ private:
             memset(mixBuf1, 0, jack_nframes_t.sizeof * bufNFrames);
             memset(mixBuf2, 0, jack_nframes_t.sizeof * bufNFrames);
 
-            if(_playing && _offset >= _nframes) {
+            if(_playing && _transportOffset >= _nframes) {
                 _playing = false;
-                _offset = _nframes;
+                _transportOffset = _nframes;
             }
             else if(_playing) {
                 foreach(t; _tracks) {
-                    t.mixStereo(_offset, bufNFrames, mixBuf1, mixBuf2);
+                    t.mixStereo(_transportOffset, bufNFrames, mixBuf1, mixBuf2);
                 }
 
-                _offset += bufNFrames;
+                _transportOffset += bufNFrames;
             }
 
             return 0;
@@ -441,7 +467,7 @@ private:
     Track[] _tracks;
 
     nframes_t _nframes;
-    nframes_t _offset;
+    nframes_t _transportOffset;
     bool _playing;
 }
 
@@ -450,7 +476,7 @@ public:
     enum defaultSamplesPerPixel = 500; // default zoom level, in samples per pixel
     enum defaultTrackHeightPixels = 200; // default height in pixels of new tracks in the arrange view
     enum zoomStep = 100; // unit for zoom increments in samples per pixel
-    enum refreshRate = 30; // rate in hertz at which to redraw the view when the transport is playing
+    enum refreshRate = 50; // rate in hertz at which to redraw the view when the transport is playing
 
     this(string appName) {
         _mixer = new Mixer(appName);
@@ -458,7 +484,9 @@ public:
 
         super(false, 0);
         _canvas = new Canvas();
-        _hAdjust = new Adjustment(0, 0, 100, 1, 1, 10);
+        _hAdjust = new Adjustment(0, 0, 0, 0, 0, 0);
+        _configureHScroll();
+        _hAdjust.addOnValueChanged(&_onHScrollChanged);
         _hScroll = new Scrollbar(Orientation.HORIZONTAL, _hAdjust);
 
         packStart(_canvas, true, true, 0);
@@ -469,6 +497,7 @@ public:
     public:
         void addRegion(Region region, nframes_t sampleRate) {
             _track.addRegion(region);
+            _configureHScroll();
         }
         void addRegion(Region region) {
             addRegion(region, _mixer.sampleRate);
@@ -498,7 +527,8 @@ public:
             enum borderWidth = 1; // width of the edges of the region, in pixels
             enum degrees = PI / 180.0;
 
-            immutable(pixels_t) xOffset = (viewOffset - region.offset) / samplesPerPixel;
+            immutable(pixels_t) xOffset =
+                (viewOffset < region.offset) ? (region.offset - viewOffset) / samplesPerPixel : 0;
             immutable(pixels_t) height = _heightPixels;
 
             // calculate the width, in pixels, of the visible area of the given region
@@ -515,8 +545,8 @@ public:
             }
             else {
                 // the region begins before the view offset, and ends within the view
-                if(region.offset + region.nframes <= viewOffset + viewWidthSamples) {
-                    width = (viewOffset + viewWidthSamples - region.offset + region.nframes) / samplesPerPixel;
+                if(region.offset + region.nframes < viewOffset + viewWidthSamples) {
+                    width = (region.offset + region.nframes - viewOffset) / samplesPerPixel;
                 }
                 // the region begins before the view offset, and ends past the end of the view
                 else {
@@ -531,12 +561,12 @@ public:
 
             cr.newSubPath();
             // top left corner
-            cr.moveTo(xOffset - (lCorners ? 0 : borderWidth), yOffset);
             if(lCorners) {
                 cr.arc(xOffset + radius, yOffset + radius, radius, 180 * degrees, 270 * degrees);
             }
             else {
-                cr.lineTo(xOffset + width + (rCorners ? -radius : 1), yOffset);
+                cr.moveTo(xOffset - borderWidth, yOffset);
+                cr.lineTo(xOffset + width + (rCorners ? -radius : borderWidth), yOffset);
             }
 
             // right corners
@@ -554,7 +584,7 @@ public:
                 cr.arc(xOffset + radius, yOffset + height - radius, radius, 90 * degrees, 180 * degrees);
             }
             else {
-                cr.lineTo(xOffset - (lCorners ? borderWidth : 0), yOffset + height);
+                cr.lineTo(xOffset - (lCorners ? 0 : borderWidth), yOffset + height);
             }
             cr.closePath();
 
@@ -571,19 +601,29 @@ public:
 
             // draw the region's waveform
             auto cacheIndex = region.getCacheIndex(samplesPerPixel);
-            auto sampleOffset = (viewOffset > region.offset) ? viewOffset - region.offset : 0;
+            auto sampleOffset = (viewOffset > region.offset) ? (viewOffset - region.offset) / samplesPerPixel : 0;
             auto channelYOffset = yOffset + (height / 2);
             channels_t channelIndex = 0; // TODO implement this
 
             cr.newSubPath();
-            cr.moveTo(xOffset, channelYOffset + region.getMax(channelIndex, cacheIndex, 0) * (height / 2));
+            cr.moveTo(xOffset, channelYOffset +
+                      region.getMax(channelIndex,
+                                    cacheIndex,
+                                    samplesPerPixel,
+                                    0) * (height / 2));
             for(auto i = 1; i < width; ++i) {
-                cr.lineTo(xOffset + i, channelYOffset +
-                          region.getMax(channelIndex, cacheIndex, i + sampleOffset) * (height / 2));
+                cr.lineTo(xOffset + i, channelYOffset -
+                          clamp(region.getMax(channelIndex,
+                                              cacheIndex,
+                                              samplesPerPixel,
+                                              sampleOffset + i), 0, 1) * (height / 2));
             }
             for(auto i = 1; i <= width; ++i) {
                 cr.lineTo(xOffset + width - i, channelYOffset -
-                          region.getMin(channelIndex, cacheIndex, width - i + sampleOffset) * (height / 2));
+                          clamp(region.getMin(channelIndex,
+                                              cacheIndex,
+                                              samplesPerPixel,
+                                              sampleOffset + width - i), -1, 0) * (height / 2));
             }
             cr.closePath();
 
@@ -602,25 +642,43 @@ public:
     }
 
     @property nframes_t samplesPerPixel() const { return _samplesPerPixel; }
-    @property nframes_t viewOffset() const {
-        return _viewOffset;
-    }
-    @property nframes_t viewWidthSamples() {
-        return _canvas.widthPixels() * _samplesPerPixel;
-    }
+    @property nframes_t viewOffset() const { return _viewOffset; }
+    @property nframes_t viewWidthSamples() { return _canvas.viewWidthPixels * _samplesPerPixel; }
 
 private:
+    void _configureHScroll() {
+        _hAdjust.configure(0,
+                           0,
+                           _mixer.nframes + viewWidthSamples,
+                           _samplesPerPixel * 10,
+                           _samplesPerPixel * 100,
+                           viewWidthSamples);
+    }
+
+    void _onHScrollChanged(Adjustment adjustment) {
+        _viewOffset = cast(typeof(_viewOffset))(adjustment.getValue());
+        _canvas.redraw();
+    }
+
     class Canvas : DrawingArea {
         this() {
+            setCanFocus(true);
+
             addOnDraw(&drawCallback);
+            addOnSizeAllocate(&onSizeAllocate);
+            addOnMotionNotify(&onMotionNotify);
+            addOnButtonPress(&onButtonPress);
+            addOnButtonRelease(&onButtonRelease);
+            addOnScroll(&onScroll);
+            addOnKeyPress(&onKeyPress);
         }
 
-        @property pixels_t widthPixels() {
+        @property pixels_t viewWidthPixels() {
             GtkAllocation size;
             getAllocation(size);
             return cast(pixels_t)(size.width);
         }
-        @property pixels_t heightPixels() {
+        @property pixels_t viewHeightPixels() {
             GtkAllocation size;
             getAllocation(size);
             return cast(pixels_t)(size.height);
@@ -652,20 +710,30 @@ private:
             enum transportHeadWidth = 16;
             enum transportHeadHeight = 10;
 
+            if(_buttonIsDown) {
+                _transportPixelsOffset = clamp(_mouseX, 0, (viewOffset + viewWidthSamples > _mixer.nframes) ?
+                                               ((_mixer.nframes - viewOffset) / samplesPerPixel) : viewWidthPixels);
+            }
+            else if(viewOffset <= _mixer.transportOffset + (transportHeadWidth / 2) &&
+                    _mixer.transportOffset <= viewOffset + viewWidthSamples + (transportHeadWidth / 2)) {
+                _transportPixelsOffset = (_mixer.transportOffset - viewOffset) / samplesPerPixel;
+            }
+            else {
+                return;
+            }
+
             GtkAllocation size;
             getAllocation(size);
 
-            double xOffset = 10; // TODO implement
-
             cr.setSourceRgb(1.0, 0.0, 0.0);
             cr.setLineWidth(1.0);
-            cr.moveTo(xOffset, 0);
-            cr.lineTo(xOffset, size.height);
+            cr.moveTo(_transportPixelsOffset, 0);
+            cr.lineTo(_transportPixelsOffset, size.height);
             cr.stroke();
 
-            cr.moveTo(xOffset - transportHeadWidth / 2, 0);
-            cr.lineTo(xOffset + transportHeadWidth / 2, 0);
-            cr.lineTo(xOffset, transportHeadHeight);
+            cr.moveTo(_transportPixelsOffset - transportHeadWidth / 2, 0);
+            cr.lineTo(_transportPixelsOffset + transportHeadWidth / 2, 0);
+            cr.lineTo(_transportPixelsOffset, transportHeadHeight);
             cr.closePath();
             cr.fill();
         }
@@ -676,11 +744,81 @@ private:
             queueDrawArea(area.x, area.y, area.width, area.height);
         }
 
+        void onSizeAllocate(GtkAllocation* allocation, Widget widget) {
+            _configureHScroll();
+        }
+
         bool onRefresh() {
             if(_mixer.playing) {
                 redraw();
             }
             return true;
+        }
+
+        bool onMotionNotify(Event event, Widget widget) {
+            if(event.type == EventType.MOTION_NOTIFY) {
+                _mouseX = cast(typeof(_mouseX))(event.motion.x);
+                if(_buttonIsDown) {
+                    redraw();
+                }
+            }
+            return true;
+        }
+
+        bool onButtonPress(Event event, Widget widget) {
+            if(event.type == EventType.BUTTON_PRESS && event.button.button == 1) {
+                _buttonIsDown = true;
+                redraw();
+            }
+            return false;
+        }
+
+        bool onButtonRelease(Event event, Widget widget) {
+            if(event.type == EventType.BUTTON_RELEASE && event.button.button == 1) {
+                _buttonIsDown = false;
+                _mixer.transportOffset = viewOffset + (clamp(_mouseX, 0, viewWidthPixels) * samplesPerPixel);
+            }
+            return false;
+        }
+
+        bool onScroll(Event event, Widget widget) {
+            if(event.type == EventType.SCROLL) {
+                ScrollDirection direction;
+                event.getScrollDirection(direction);
+                switch(direction) {
+                    case ScrollDirection.LEFT:
+                        if(_hAdjust.getStepIncrement() <= viewOffset) {
+                            _viewOffset -= _hAdjust.getStepIncrement();
+                            _hAdjust.setValue(viewOffset);
+                            redraw();
+                        }
+                        break;
+                    case ScrollDirection.RIGHT:
+                        if(_hAdjust.getStepIncrement() + viewOffset <= _mixer.nframes) {
+                            _viewOffset += _hAdjust.getStepIncrement();
+                            _hAdjust.setValue(viewOffset);
+                            redraw();
+                        }
+                        break;
+                    default:
+                        break;
+                }
+            }
+            return false;
+        }
+
+        bool onKeyPress(Event event, Widget widget) {
+            if(event.type == EventType.KEY_PRESS) {
+                if(event.key.keyval == GdkKeysyms.GDK_space) {
+                    if(_mixer.playing) {
+                        _mixer.pause();
+                    }
+                    else {
+                        _mixer.play();
+                    }
+                }
+            }
+            return false;
         }
     }
 
@@ -694,6 +832,10 @@ private:
     Adjustment _hAdjust;
     Scrollbar _hScroll;
     Timeout _refreshTimeout;
+
+    pixels_t _transportPixelsOffset;
+    bool _buttonIsDown;
+    pixels_t _mouseX;
 }
 
 void main(string[] args) {
@@ -717,7 +859,6 @@ void main(string[] args) {
             testRegion = Region.fromFile(args[1]);
             ArrangeView.TrackView trackView = arrangeView.createTrackView();
             trackView.addRegion(testRegion);
-            arrangeView._mixer.play();
         }
         catch(FileError e) {
             writeln("Fatal file error: ", e.msg);
