@@ -663,6 +663,15 @@ private:
         _canvas.redraw();
     }
 
+    void _zoomIn() {
+        _samplesPerPixel = max(_samplesPerPixel - zoomStep, 1);
+        _canvas.redraw();
+    }
+    void _zoomOut() {
+        _samplesPerPixel += zoomStep;
+        _canvas.redraw();
+    }
+
     class Canvas : DrawingArea {
         this() {
             setCanFocus(true);
@@ -796,6 +805,7 @@ private:
                             redraw();
                         }
                         break;
+
                     case ScrollDirection.RIGHT:
                         if(_hAdjust.getStepIncrement() + viewOffset <= _mixer.nframes) {
                             _viewOffset += _hAdjust.getStepIncrement();
@@ -803,6 +813,7 @@ private:
                             redraw();
                         }
                         break;
+
                     default:
                         break;
                 }
@@ -812,13 +823,26 @@ private:
 
         bool onKeyPress(Event event, Widget widget) {
             if(event.type == EventType.KEY_PRESS) {
-                if(event.key.keyval == GdkKeysyms.GDK_space) {
-                    if(_mixer.playing) {
-                        _mixer.pause();
-                    }
-                    else {
-                        _mixer.play();
-                    }
+                switch(event.key.keyval) {
+                    case GdkKeysyms.GDK_space:
+                        if(_mixer.playing) {
+                            _mixer.pause();
+                        }
+                        else {
+                            _mixer.play();
+                        }
+                        break;
+
+                    case GdkKeysyms.GDK_equal:
+                        _zoomIn();
+                        break;
+
+                    case GdkKeysyms.GDK_minus:
+                        _zoomOut();
+                        break;
+
+                    default:
+                        break;
                 }
             }
             return false;
