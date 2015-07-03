@@ -230,7 +230,7 @@ public:
         size_t cacheIndex;
         bool foundIndex;
         foreach(i, s; _cacheBinSizes) {
-            if(s < binSize && binSize % s == 0) {
+            if(s <= binSize && binSize % s == 0) {
                 foundIndex = true;
                 cacheIndex = i;
                 binSizeMatch = s;
@@ -256,8 +256,6 @@ public:
                     nframes_t binSize,
                     nframes_t sampleOffset) const {
         auto cacheSize = _cacheBinSizes[cacheIndex];
-//        writeln("length: ", _waveformCacheList[channelIndex][cacheIndex].maxValues.length);
-//        writeln(sampleOffset, " ", sampleOffset * (binSize / cacheSize) , " .. ", (sampleOffset + 1) * (binSize / cacheSize));
         return _max(_waveformCacheList[channelIndex][cacheIndex].maxValues
                     [sampleOffset * (binSize / cacheSize) .. (sampleOffset + 1) * (binSize / cacheSize)]);
     }
@@ -332,7 +330,7 @@ private:
         }
     }
 
-    static immutable(nframes_t[]) _cacheBinSizes = [ 10, 100, 1000, 10000 ];
+    static immutable(nframes_t[]) _cacheBinSizes = [ 10, 100 ];
     static assert(_cacheBinSizes.length > 0);
 
     WaveformCache[][] _waveformCacheList; // indexed as [channel][waveform]
@@ -475,7 +473,6 @@ class ArrangeView : VBox {
 public:
     enum defaultSamplesPerPixel = 500; // default zoom level, in samples per pixel
     enum defaultTrackHeightPixels = 200; // default height in pixels of new tracks in the arrange view
-    enum zoomStep = 100; // unit for zoom increments in samples per pixel
     enum refreshRate = 50; // rate in hertz at which to redraw the view when the transport is playing
 
     this(string appName) {
@@ -600,7 +597,7 @@ public:
             cr.stroke();
 
             // draw the region's waveform
-            auto cacheIndex = region.getCacheIndex(samplesPerPixel);
+            auto cacheIndex = region.getCacheIndex(_zoomStep);
             auto sampleOffset = (viewOffset > region.offset) ? (viewOffset - region.offset) / samplesPerPixel : 0;
             auto channelHeight = height / region.nChannels;
             auto channelYOffset = yOffset + (channelHeight / 2);
@@ -649,6 +646,15 @@ public:
     @property nframes_t viewWidthSamples() { return _canvas.viewWidthPixels * _samplesPerPixel; }
 
 private:
+    @property nframes_t _zoomStep() const {
+        if(samplesPerPixel <= 100) {
+            return 10;
+        }
+        else {
+            return 100;
+        }
+    }
+
     void _configureHScroll() {
         _hAdjust.configure(0,
                            0,
@@ -664,11 +670,11 @@ private:
     }
 
     void _zoomIn() {
-        _samplesPerPixel = max(_samplesPerPixel - zoomStep, 1);
+        _samplesPerPixel = max(_samplesPerPixel - _zoomStep, 10);
         _canvas.redraw();
     }
     void _zoomOut() {
-        _samplesPerPixel += zoomStep;
+        _samplesPerPixel += _zoomStep;
         _canvas.redraw();
     }
 
