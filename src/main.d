@@ -879,7 +879,16 @@ private:
                     case Action.moveRegion:
                         foreach(regionView; _regionViews) {
                             if(regionView.selected) {
-                                regionView.selectedOffset += (_mouseX - prevMouseX) * samplesPerPixel;
+                                nframes_t deltaXSamples = abs(_mouseX - prevMouseX) * samplesPerPixel;
+                                if(_mouseX > prevMouseX) {
+                                    regionView.selectedOffset += deltaXSamples;
+                                }
+                                else if(regionView.selectedOffset > abs(deltaXSamples)) {
+                                    regionView.selectedOffset -= deltaXSamples;
+                                }
+                                else {
+                                    regionView.selectedOffset = 0;
+                                }
                             }
                         }
                         redraw();
