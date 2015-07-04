@@ -273,6 +273,7 @@ public:
     @property channels_t nChannels() const { return _nChannels; }
     @property nframes_t nframes() const { return _nframes; }
     @property nframes_t offset() const { return _offset; }
+    @property nframes_t offset(nframes_t newOffset) { return (_offset = newOffset); }
 
 private:
     static sample_t _min(const(sample_t[]) sourceData) {
@@ -484,8 +485,9 @@ public:
 
     enum Action {
         none,
-        movingRegion,
-        movingTransport
+        selectRegion,
+        moveRegion,
+        moveTransport
     }
 
     this(string appName) {
@@ -505,124 +507,20 @@ public:
 
     class RegionView {
     public:
-        // this function assumes that the region is within the visible area of the arrange view
-        void drawRegion(ref Scoped!Context cr, pixels_t yOffset, pixels_t heightPixels) {
-            enum radius = 4; // radius of the rounded corners of the region, in pixels
-            enum borderWidth = 1; // width of the edges of the region, in pixels
-            enum degrees = PI / 180.0;
-
-            immutable(pixels_t) xOffset =
-                (viewOffset < region.offset) ? (region.offset - viewOffset) / samplesPerPixel : 0;
-            immutable(pixels_t) height = heightPixels;
-
-            // calculate the width, in pixels, of the visible area of the given region
-            pixels_t width;
-            if(region.offset >= viewOffset) {
-                // the region begins after the view offset, and ends within the view
-                if(region.offset + region.nframes <= viewOffset + viewWidthSamples) {
-                    width = max(region.nframes / samplesPerPixel, 2 * radius);
-                }
-                // the region begins after the view offset, and ends past the end of the view
-                else {
-                    width = (viewWidthSamples - (region.offset - viewOffset)) / samplesPerPixel;
-                }
-            }
-            else {
-                // the region begins before the view offset, and ends within the view
-                if(region.offset + region.nframes < viewOffset + viewWidthSamples) {
-                    width = (region.offset + region.nframes - viewOffset) / samplesPerPixel;
-                }
-                // the region begins before the view offset, and ends past the end of the view
-                else {
-                    width = viewWidthSamples / samplesPerPixel;
-                }
-            }
-
-            // get the bounding box for this region
-            boundingBox.x0 = xOffset;
-            boundingBox.y0 = yOffset;
-            boundingBox.x1 = xOffset + width;
-            boundingBox.y1 = yOffset + height;
-
-            // these variables designate whether the left and right endpoints of the given region are visible
-            bool lCorners = region.offset + (radius * samplesPerPixel) >= viewOffset;
-            bool rCorners =
-                (region.offset + region.nframes) - (radius * samplesPerPixel) <= viewOffset + viewWidthSamples;
-
-            cr.newSubPath();
-            // top left corner
-            if(lCorners) {
-                cr.arc(xOffset + radius, yOffset + radius, radius, 180 * degrees, 270 * degrees);
-            }
-            else {
-                cr.moveTo(xOffset - borderWidth, yOffset);
-                cr.lineTo(xOffset + width + (rCorners ? -radius : borderWidth), yOffset);
-            }
-
-            // right corners
-            if(rCorners) {
-                cr.arc(xOffset + width - radius, yOffset + radius, radius, -90 * degrees, 0 * degrees);
-                cr.arc(xOffset + width - radius, yOffset + height - radius, radius, 0 * degrees, 90 * degrees);
-            }
-            else {
-                cr.lineTo(xOffset + width + borderWidth, yOffset);
-                cr.lineTo(xOffset + width + borderWidth, yOffset + height);
-            }
-
-            // bottom left corner
-            if(lCorners) {
-                cr.arc(xOffset + radius, yOffset + height - radius, radius, 90 * degrees, 180 * degrees);
-            }
-            else {
-                cr.lineTo(xOffset - (lCorners ? 0 : borderWidth), yOffset + height);
-            }
-            cr.closePath();
-
-            Pattern gradient = Pattern.createLinear(0, yOffset, 0, yOffset + height);
-            gradient.addColorStopRgb(0, 0, 0, 1);
-            gradient.addColorStopRgb(height, 1, 0, 0);
-
-            cr.setSource(gradient);
-            cr.fillPreserve();
-
-            cr.setSourceRgb(1.0, 1.0, 1.0);
-            cr.setLineWidth(borderWidth);
-            cr.stroke();
-
-            // draw the region's waveform
-            auto cacheIndex = region.getCacheIndex(_zoomStep);
-            auto sampleOffset = (viewOffset > region.offset) ? (viewOffset - region.offset) / samplesPerPixel : 0;
-            auto channelHeight = height / region.nChannels;
-            auto channelYOffset = yOffset + (channelHeight / 2);
-
-            for(channels_t channelIndex = 0; channelIndex < region.nChannels; ++channelIndex) {
-                cr.newSubPath();
-                cr.moveTo(xOffset, channelYOffset +
-                          region.getMax(channelIndex,
-                                        cacheIndex,
-                                        samplesPerPixel,
-                                        0) * (channelHeight / 2));
-                for(auto i = 1; i < width; ++i) {
-                    cr.lineTo(xOffset + i, channelYOffset -
-                              clamp(region.getMax(channelIndex,
-                                                  cacheIndex,
-                                                  samplesPerPixel,
-                                                  sampleOffset + i), 0, 1) * (channelHeight / 2));
-                }
-                for(auto i = 1; i <= width; ++i) {
-                    cr.lineTo(xOffset + width - i, channelYOffset -
-                              clamp(region.getMin(channelIndex,
-                                                  cacheIndex,
-                                                  samplesPerPixel,
-                                                  sampleOffset + width - i), -1, 0) * (channelHeight / 2));
-                }
-                cr.closePath();
-                cr.setSourceRgb(1, 1, 1);
-                cr.fill();
-                channelYOffset += channelHeight;
-            }
+        void drawRegion(ref Scoped!Context cr,
+                        pixels_t yOffset,
+                        pixels_t heightPixels) {
+            _drawRegion(cr, yOffset, heightPixels, region.offset, 1.0);
         }
 
+        void drawRegionMoving(ref Scoped!Context cr,
+                              pixels_t yOffset,
+                              pixels_t heightPixels) {
+            _drawRegion(cr, yOffset, heightPixels, selectedOffset, 0.5);
+        }
+
+        bool selected;
+        nframes_t selectedOffset;
         BoundingBox boundingBox;
         Region region;
 
@@ -630,13 +528,144 @@ public:
         this(Region region) {
             this.region = region;
         }
+
+        void _drawRegion(ref Scoped!Context cr,
+                         pixels_t yOffset,
+                         pixels_t heightPixels,
+                         nframes_t regionOffset,
+                         double alpha) {
+            enum radius = 4; // radius of the rounded corners of the region, in pixels
+            enum borderWidth = 1; // width of the edges of the region, in pixels
+            enum degrees = PI / 180.0;
+
+            // check that this region is in the visible area of the arrange view
+            if((regionOffset >= viewOffset && regionOffset < viewOffset + viewWidthSamples) ||
+               (regionOffset < viewOffset &&
+                (regionOffset + region.nframes >= viewOffset ||
+                 regionOffset + region.nframes <= viewOffset + viewWidthSamples))) {
+                immutable(pixels_t) xOffset =
+                    (viewOffset < regionOffset) ? (regionOffset - viewOffset) / samplesPerPixel : 0;
+                immutable(pixels_t) height = heightPixels;
+
+                // calculate the width, in pixels, of the visible area of the given region
+                pixels_t width;
+                if(regionOffset >= viewOffset) {
+                    // the region begins after the view offset, and ends within the view
+                    if(regionOffset + region.nframes <= viewOffset + viewWidthSamples) {
+                        width = max(region.nframes / samplesPerPixel, 2 * radius);
+                    }
+                    // the region begins after the view offset, and ends past the end of the view
+                    else {
+                        width = (viewWidthSamples - (regionOffset - viewOffset)) / samplesPerPixel;
+                    }
+                }
+                else {
+                    // the region begins before the view offset, and ends within the view
+                    if(regionOffset + region.nframes < viewOffset + viewWidthSamples) {
+                        width = (regionOffset + region.nframes - viewOffset) / samplesPerPixel;
+                    }
+                    // the region begins before the view offset, and ends past the end of the view
+                    else {
+                        width = viewWidthSamples / samplesPerPixel;
+                    }
+                }
+
+                // get the bounding box for this region
+                boundingBox.x0 = xOffset;
+                boundingBox.y0 = yOffset;
+                boundingBox.x1 = xOffset + width;
+                boundingBox.y1 = yOffset + height;
+
+                // these variables designate whether the left and right endpoints of the given region are visible
+                bool lCorners = regionOffset + (radius * samplesPerPixel) >= viewOffset;
+                bool rCorners =
+                    (regionOffset + region.nframes) - (radius * samplesPerPixel) <= viewOffset + viewWidthSamples;
+
+                cr.newSubPath();
+                // top left corner
+                if(lCorners) {
+                    cr.arc(xOffset + radius, yOffset + radius, radius, 180 * degrees, 270 * degrees);
+                }
+                else {
+                    cr.moveTo(xOffset - borderWidth, yOffset);
+                    cr.lineTo(xOffset + width + (rCorners ? -radius : borderWidth), yOffset);
+                }
+
+                // right corners
+                if(rCorners) {
+                    cr.arc(xOffset + width - radius, yOffset + radius, radius, -90 * degrees, 0 * degrees);
+                    cr.arc(xOffset + width - radius, yOffset + height - radius, radius, 0 * degrees, 90 * degrees);
+                }
+                else {
+                    cr.lineTo(xOffset + width + borderWidth, yOffset);
+                    cr.lineTo(xOffset + width + borderWidth, yOffset + height);
+                }
+
+                // bottom left corner
+                if(lCorners) {
+                    cr.arc(xOffset + radius, yOffset + height - radius, radius, 90 * degrees, 180 * degrees);
+                }
+                else {
+                    cr.lineTo(xOffset - (lCorners ? 0 : borderWidth), yOffset + height);
+                }
+                cr.closePath();
+
+                Pattern gradient = Pattern.createLinear(0, yOffset, 0, yOffset + height);
+                gradient.addColorStopRgba(0, 0, 0, 1, alpha);
+                gradient.addColorStopRgba(height, 1, 0, 0, alpha);
+
+                cr.setSource(gradient);
+                cr.fillPreserve();
+
+                cr.setSourceRgba(1.0, 1.0, 1.0, alpha);
+                cr.setLineWidth(borderWidth);
+                cr.stroke();
+
+                // draw the region's waveform
+                auto cacheIndex = region.getCacheIndex(_zoomStep);
+                auto sampleOffset = (viewOffset > regionOffset) ? (viewOffset - regionOffset) / samplesPerPixel : 0;
+                auto channelHeight = height / region.nChannels;
+                auto channelYOffset = yOffset + (channelHeight / 2);
+
+                for(channels_t channelIndex = 0; channelIndex < region.nChannels; ++channelIndex) {
+                    cr.newSubPath();
+                    cr.moveTo(xOffset, channelYOffset +
+                              region.getMax(channelIndex,
+                                            cacheIndex,
+                                            samplesPerPixel,
+                                            0) * (channelHeight / 2));
+                    for(auto i = 1; i < width; ++i) {
+                        cr.lineTo(xOffset + i, channelYOffset -
+                                  clamp(region.getMax(channelIndex,
+                                                      cacheIndex,
+                                                      samplesPerPixel,
+                                                      sampleOffset + i), 0, 1) * (channelHeight / 2));
+                    }
+                    for(auto i = 1; i <= width; ++i) {
+                        cr.lineTo(xOffset + width - i, channelYOffset -
+                                  clamp(region.getMin(channelIndex,
+                                                      cacheIndex,
+                                                      samplesPerPixel,
+                                                      sampleOffset + width - i), -1, 0) * (channelHeight / 2));
+                    }
+                    cr.closePath();
+                    cr.setSourceRgba(1, 1, 1, alpha);
+                    cr.fill();
+                    channelYOffset += channelHeight;
+                }
+            }
+        }
     }
 
     class TrackView {
     public:
         void addRegion(Region region, nframes_t sampleRate) {
             _track.addRegion(region);
-            _regionViews ~= new RegionView(region);
+
+            RegionView regionView = new RegionView(region);
+            _regionViews ~= regionView;
+            this.outer._regionViews ~= regionView;
+
             _configureHScroll();
         }
         void addRegion(Region region) {
@@ -646,16 +675,16 @@ public:
         void draw(ref Scoped!Context cr, pixels_t yOffset) {
             foreach(regionView; _regionViews) {
                 Region r = regionView.region;
-                if((r.offset >= viewOffset && r.offset < viewOffset + viewWidthSamples) ||
-                   (r.offset < viewOffset &&
-                    (r.offset + r.nframes >= viewOffset || r.offset + r.nframes <= viewOffset + viewWidthSamples))) {
+                if(_action == Action.moveRegion && regionView.selected) {
+                    regionView.drawRegionMoving(cr, yOffset, _heightPixels);
+                }
+                else {
                     regionView.drawRegion(cr, yOffset, _heightPixels);
                 }
             }
         }
 
         @property pixels_t heightPixels() const { return _heightPixels; }
-        const(RegionView[]) regionViews() const { return _regionViews; }
 
     private:
         this(Track track, pixels_t heightPixels) {
@@ -716,7 +745,7 @@ private:
         static Cursor cursorMoving;
 
         switch(_action) {
-            case Action.movingRegion:
+            case Action.moveRegion:
                 if(cursorMoving is null) {
                     cursorMoving = new Cursor(Display.getDefault(), GdkCursorType.FLEUR);
                 }
@@ -784,7 +813,7 @@ private:
             enum transportHeadWidth = 16;
             enum transportHeadHeight = 10;
 
-            if(_action == Action.movingTransport) {
+            if(_action == Action.moveTransport) {
                 _transportPixelsOffset = clamp(_mouseX, 0, (viewOffset + viewWidthSamples > _mixer.nframes) ?
                                                ((_mixer.nframes - viewOffset) / samplesPerPixel) : viewWidthPixels);
             }
@@ -837,11 +866,31 @@ private:
                 _mouseY = cast(typeof(_mouseX))(event.motion.y);
 
                 switch(_action) {
-                    case Action.none:
+                    case Action.selectRegion:
+                        _setAction(Action.moveRegion);
+                        foreach(regionView; _regionViews) {
+                            if(regionView.selected) {
+                                regionView.selectedOffset = regionView.region.offset;
+                            }
+                        }
+                        redraw();
                         break;
 
-                    default:
+                    case Action.moveRegion:
+                        foreach(regionView; _regionViews) {
+                            if(regionView.selected) {
+                                regionView.selectedOffset += (_mouseX - prevMouseX) * samplesPerPixel;
+                            }
+                        }
                         redraw();
+                        break;
+
+                    case Action.moveTransport:
+                        redraw();
+                        break;
+
+                    case Action.none:
+                    default:
                         break;
                 }
             }
@@ -850,21 +899,21 @@ private:
 
         bool onButtonPress(Event event, Widget widget) {
             if(event.type == EventType.BUTTON_PRESS && event.button.button == 1) {
-                // detect if we're now moving an audio region
-                bool movingRegion;
-                foreach(trackView; _trackViews) {
-                    foreach(regionView; trackView.regionViews) {
-                        if(_mouseX >= regionView.boundingBox.x0 && _mouseX < regionView.boundingBox.x1 &&
-                           _mouseY >= regionView.boundingBox.y0 && _mouseY < regionView.boundingBox.y1) {
-                            _setAction(Action.movingRegion);
-                            movingRegion = true;
-                        }
+                bool mouseEventCaught;
+                // detect if the mouse is over an audio region; if so, select that region
+                foreach(regionView; _regionViews) {
+                    if(_mouseX >= regionView.boundingBox.x0 && _mouseX < regionView.boundingBox.x1 &&
+                       _mouseY >= regionView.boundingBox.y0 && _mouseY < regionView.boundingBox.y1) {
+                        regionView.selected = true;
+                        _setAction(Action.selectRegion);
+                        mouseEventCaught = true;
                     }
                 }
 
                 // otherwise, move the transport
-                if(!movingRegion) {
-                    _setAction(Action.movingTransport);
+                if(!mouseEventCaught) {
+                    _setAction(Action.moveTransport);
+                    mouseEventCaught = true;
                 }
 
                 redraw();
@@ -876,11 +925,23 @@ private:
             if(event.type == EventType.BUTTON_RELEASE && event.button.button == 1) {
                 // reset the cursor if necessary
                 switch(_action) {
-                    case Action.movingRegion:
+                    case Action.selectRegion:
                         _setAction(Action.none);
+                        redraw();
                         break;
 
-                    case Action.movingTransport:
+                    case Action.moveRegion:
+                        _setAction(Action.none);
+                        foreach(regionView; _regionViews) {
+                            if(regionView.selected) {
+                                regionView.region.offset = regionView.selectedOffset;
+                                _mixer.resizeIfNecessary(regionView.region.offset + regionView.region.nframes);
+                            }
+                        }
+                        redraw();
+                        break;
+
+                    case Action.moveTransport:
                         _setAction(Action.none);
                         _mixer.transportOffset = viewOffset + (clamp(_mouseX, 0, viewWidthPixels) * samplesPerPixel);
                         break;
@@ -950,6 +1011,7 @@ private:
 
     Mixer _mixer;
     TrackView[] _trackViews;
+    RegionView[] _regionViews;
 
     nframes_t _samplesPerPixel;
     nframes_t _viewOffset;
