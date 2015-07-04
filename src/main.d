@@ -15,8 +15,11 @@ import gtk.VBox;
 import gtk.DrawingArea;
 import gtk.Adjustment;
 import gtk.Scrollbar;
+import gdk.Cursor;
+import gdk.Display;
 import gdk.Event;
 import gdk.Keysyms;
+import gdk.Window;
 import gtkc.gtktypes;
 
 import glib.Timeout;
@@ -469,11 +472,21 @@ private:
     bool _playing;
 }
 
+struct BoundingBox {
+    pixels_t x0, y0, x1, y1;
+}
+
 class ArrangeView : VBox {
 public:
     enum defaultSamplesPerPixel = 500; // default zoom level, in samples per pixel
     enum defaultTrackHeightPixels = 200; // default height in pixels of new tracks in the arrange view
     enum refreshRate = 50; // rate in hertz at which to redraw the view when the transport is playing
+
+    enum Action {
+        none,
+        movingRegion,
+        movingTransport
+    }
 
     this(string appName) {
         _mixer = new Mixer(appName);
@@ -490,43 +503,17 @@ public:
         packEnd(_hScroll, false, false, 0);
     }
 
-    class TrackView {
+    class RegionView {
     public:
-        void addRegion(Region region, nframes_t sampleRate) {
-            _track.addRegion(region);
-            _configureHScroll();
-        }
-        void addRegion(Region region) {
-            addRegion(region, _mixer.sampleRate);
-        }
-
-        void draw(ref Scoped!Context cr, pixels_t yOffset) {
-            foreach(r; _track.regions) {
-                if((r.offset >= viewOffset && r.offset < viewOffset + viewWidthSamples) ||
-                   (r.offset < viewOffset &&
-                    (r.offset + r.nframes >= viewOffset || r.offset + r.nframes <= viewOffset + viewWidthSamples))) {
-                    _drawRegion(cr, r, yOffset);
-                }
-            }
-        }
-
-        @property pixels_t heightPixels() const { return _heightPixels; }
-
-    private:
-        this(Track track, pixels_t heightPixels) {
-            _track = track;
-            _heightPixels = heightPixels;
-        }
-
         // this function assumes that the region is within the visible area of the arrange view
-        void _drawRegion(ref Scoped!Context cr, const(Region) region, pixels_t yOffset) {
+        void drawRegion(ref Scoped!Context cr, pixels_t yOffset, pixels_t heightPixels) {
             enum radius = 4; // radius of the rounded corners of the region, in pixels
             enum borderWidth = 1; // width of the edges of the region, in pixels
             enum degrees = PI / 180.0;
 
             immutable(pixels_t) xOffset =
                 (viewOffset < region.offset) ? (region.offset - viewOffset) / samplesPerPixel : 0;
-            immutable(pixels_t) height = _heightPixels;
+            immutable(pixels_t) height = heightPixels;
 
             // calculate the width, in pixels, of the visible area of the given region
             pixels_t width;
@@ -550,6 +537,12 @@ public:
                     width = viewWidthSamples / samplesPerPixel;
                 }
             }
+
+            // get the bounding box for this region
+            boundingBox.x0 = xOffset;
+            boundingBox.y0 = yOffset;
+            boundingBox.x1 = xOffset + width;
+            boundingBox.y1 = yOffset + height;
 
             // these variables designate whether the left and right endpoints of the given region are visible
             bool lCorners = region.offset + (radius * samplesPerPixel) >= viewOffset;
@@ -630,8 +623,49 @@ public:
             }
         }
 
+        BoundingBox boundingBox;
+        Region region;
+
+    private:
+        this(Region region) {
+            this.region = region;
+        }
+    }
+
+    class TrackView {
+    public:
+        void addRegion(Region region, nframes_t sampleRate) {
+            _track.addRegion(region);
+            _regionViews ~= new RegionView(region);
+            _configureHScroll();
+        }
+        void addRegion(Region region) {
+            addRegion(region, _mixer.sampleRate);
+        }
+
+        void draw(ref Scoped!Context cr, pixels_t yOffset) {
+            foreach(regionView; _regionViews) {
+                Region r = regionView.region;
+                if((r.offset >= viewOffset && r.offset < viewOffset + viewWidthSamples) ||
+                   (r.offset < viewOffset &&
+                    (r.offset + r.nframes >= viewOffset || r.offset + r.nframes <= viewOffset + viewWidthSamples))) {
+                    regionView.drawRegion(cr, yOffset, _heightPixels);
+                }
+            }
+        }
+
+        @property pixels_t heightPixels() const { return _heightPixels; }
+        const(RegionView[]) regionViews() const { return _regionViews; }
+
+    private:
+        this(Track track, pixels_t heightPixels) {
+            _track = track;
+            _heightPixels = heightPixels;
+        }
+
         Track _track;
         pixels_t _heightPixels;
+        RegionView[] _regionViews;
     }
 
     TrackView createTrackView() {
@@ -676,6 +710,28 @@ private:
     void _zoomOut() {
         _samplesPerPixel += _zoomStep;
         _canvas.redraw();
+    }
+
+    void _setCursor() {
+        static Cursor cursorMoving;
+
+        switch(_action) {
+            case Action.movingRegion:
+                if(cursorMoving is null) {
+                    cursorMoving = new Cursor(Display.getDefault(), GdkCursorType.FLEUR);
+                }
+                getWindow().setCursor(cursorMoving);
+                break;
+
+            default:
+                getWindow().setCursor(null);
+                break;
+        }
+    }
+
+    void _setAction(Action action) {
+        _action = action;
+        _setCursor();
     }
 
     class Canvas : DrawingArea {
@@ -728,7 +784,7 @@ private:
             enum transportHeadWidth = 16;
             enum transportHeadHeight = 10;
 
-            if(_buttonIsDown) {
+            if(_action == Action.movingTransport) {
                 _transportPixelsOffset = clamp(_mouseX, 0, (viewOffset + viewWidthSamples > _mixer.nframes) ?
                                                ((_mixer.nframes - viewOffset) / samplesPerPixel) : viewWidthPixels);
             }
@@ -762,10 +818,6 @@ private:
             queueDrawArea(area.x, area.y, area.width, area.height);
         }
 
-        void onSizeAllocate(GtkAllocation* allocation, Widget widget) {
-            _configureHScroll();
-        }
-
         bool onRefresh() {
             if(_mixer.playing) {
                 redraw();
@@ -773,11 +825,24 @@ private:
             return true;
         }
 
+        void onSizeAllocate(GtkAllocation* allocation, Widget widget) {
+            _configureHScroll();
+        }
+
         bool onMotionNotify(Event event, Widget widget) {
             if(event.type == EventType.MOTION_NOTIFY) {
+                pixels_t prevMouseX = _mouseX;
+                pixels_t prevMouseY = _mouseY;
                 _mouseX = cast(typeof(_mouseX))(event.motion.x);
-                if(_buttonIsDown) {
-                    redraw();
+                _mouseY = cast(typeof(_mouseX))(event.motion.y);
+
+                switch(_action) {
+                    case Action.none:
+                        break;
+
+                    default:
+                        redraw();
+                        break;
                 }
             }
             return true;
@@ -785,7 +850,23 @@ private:
 
         bool onButtonPress(Event event, Widget widget) {
             if(event.type == EventType.BUTTON_PRESS && event.button.button == 1) {
-                _buttonIsDown = true;
+                // detect if we're now moving an audio region
+                bool movingRegion;
+                foreach(trackView; _trackViews) {
+                    foreach(regionView; trackView.regionViews) {
+                        if(_mouseX >= regionView.boundingBox.x0 && _mouseX < regionView.boundingBox.x1 &&
+                           _mouseY >= regionView.boundingBox.y0 && _mouseY < regionView.boundingBox.y1) {
+                            _setAction(Action.movingRegion);
+                            movingRegion = true;
+                        }
+                    }
+                }
+
+                // otherwise, move the transport
+                if(!movingRegion) {
+                    _setAction(Action.movingTransport);
+                }
+
                 redraw();
             }
             return false;
@@ -793,8 +874,20 @@ private:
 
         bool onButtonRelease(Event event, Widget widget) {
             if(event.type == EventType.BUTTON_RELEASE && event.button.button == 1) {
-                _buttonIsDown = false;
-                _mixer.transportOffset = viewOffset + (clamp(_mouseX, 0, viewWidthPixels) * samplesPerPixel);
+                // reset the cursor if necessary
+                switch(_action) {
+                    case Action.movingRegion:
+                        _setAction(Action.none);
+                        break;
+
+                    case Action.movingTransport:
+                        _setAction(Action.none);
+                        _mixer.transportOffset = viewOffset + (clamp(_mouseX, 0, viewWidthPixels) * samplesPerPixel);
+                        break;
+
+                    default:
+                        break;
+                }
             }
             return false;
         }
@@ -867,8 +960,10 @@ private:
     Timeout _refreshTimeout;
 
     pixels_t _transportPixelsOffset;
-    bool _buttonIsDown;
+
+    Action _action;
     pixels_t _mouseX;
+    pixels_t _mouseY;
 }
 
 void main(string[] args) {
