@@ -27,6 +27,7 @@ import glib.Timeout;
 import cairo.Context;
 import cairo.Pattern;
 import cairo.Surface;
+import Pango.PgCairo;
 
 class AudioError: Exception {
     this(string msg) {
@@ -537,6 +538,7 @@ public:
             enum radius = 4; // radius of the rounded corners of the region, in pixels
             enum borderWidth = 1; // width of the edges of the region, in pixels
             enum degrees = PI / 180.0;
+            enum headerHeight = 15; // height of the region's label, in pixels
 
             // check that this region is in the visible area of the arrange view
             if((regionOffset >= viewOffset && regionOffset < viewOffset + viewWidthSamples) ||
@@ -545,7 +547,7 @@ public:
                  regionOffset + region.nframes <= viewOffset + viewWidthSamples))) {
                 immutable(pixels_t) xOffset =
                     (viewOffset < regionOffset) ? (regionOffset - viewOffset) / samplesPerPixel : 0;
-                immutable(pixels_t) height = heightPixels;
+                pixels_t height = heightPixels;
 
                 // calculate the width, in pixels, of the visible area of the given region
                 pixels_t width;
@@ -611,17 +613,50 @@ public:
                 cr.closePath();
 
                 Pattern gradient = Pattern.createLinear(0, yOffset, 0, yOffset + height);
-                gradient.addColorStopRgba(0, 0, 0, 1, alpha);
-                gradient.addColorStopRgba(height, 1, 0, 0, alpha);
+                gradient.addColorStopRgba(0.0, 0.0, 0.0, 1.0, alpha);
+                gradient.addColorStopRgba(height, 1.0, 0.0, 0.0, alpha);
 
                 cr.setSource(gradient);
                 cr.fillPreserve();
 
-                cr.setSourceRgba(1.0, 1.0, 1.0, alpha);
+                // if this region is selected, highlight the borders and region header
                 cr.setLineWidth(borderWidth);
+                if(selected) {
+                    cr.setSourceRgba(1.0, 1.0, 1.0, alpha);
+                }
+                else {
+                    cr.setSourceRgba(0.5, 0.5, 0.5, alpha);
+                }
                 cr.stroke();
+                if(selected) {
+                    cr.newSubPath();
+                    // left corner
+                    if(lCorners) {
+                        cr.arc(xOffset + radius, yOffset + radius, radius, 180 * degrees, 270 * degrees);
+                    }
+                    else {
+                        cr.moveTo(xOffset - borderWidth, yOffset);
+                        cr.lineTo(xOffset + width + (rCorners ? -radius : borderWidth), yOffset);
+                    }
+
+                    // right corner
+                    if(rCorners) {
+                        cr.arc(xOffset + width - radius, yOffset + radius, radius, -90 * degrees, 0 * degrees);
+                    }
+                    else {
+                        cr.lineTo(xOffset + width + borderWidth, yOffset);
+                    }
+
+                    // bottom
+                    cr.lineTo(xOffset + width + (rCorners ? 0 : borderWidth), yOffset + headerHeight);
+                    cr.lineTo(xOffset - (lCorners ? 0 : borderWidth), yOffset + headerHeight);
+                    cr.closePath();
+                    cr.fill();
+                }
 
                 // draw the region's waveform
+                height = heightPixels - headerHeight;
+                yOffset += headerHeight;
                 auto cacheIndex = region.getCacheIndex(_zoomStep);
                 auto sampleOffset = (viewOffset > regionOffset) ? (viewOffset - regionOffset) / samplesPerPixel : 0;
                 auto channelHeight = height / region.nChannels;
@@ -649,7 +684,7 @@ public:
                                                       sampleOffset + width - i), -1, 0) * (channelHeight / 2));
                     }
                     cr.closePath();
-                    cr.setSourceRgba(1, 1, 1, alpha);
+                    cr.setSourceRgba(1.0, 1.0, 1.0, alpha);
                     cr.fill();
                     channelYOffset += channelHeight;
                 }
@@ -787,22 +822,45 @@ private:
             return cast(pixels_t)(size.height);
         }
 
+        @property pixels_t timestripHeightPixels() {
+            enum timeStripHeight = 40;
+            return timeStripHeight;
+        }
+
         bool drawCallback(Scoped!Context cr, Widget widget) {
             if(_refreshTimeout is null) {
                 _refreshTimeout = new Timeout(cast(uint)(1.0 / refreshRate * 1000), &onRefresh, false);
             }
 
-            cr.setSourceRgb(0, 0, 0);
+            cr.setSourceRgb(0.0, 0.0, 0.0);
             cr.paint();
 
+            drawTimestrip(cr);
             drawTracks(cr);
             drawTransport(cr);
 
             return true;
         }
 
+        void drawTimestrip(ref Scoped!Context cr) {
+            // draw the timestrip background
+            cr.rectangle(0, 0, viewWidthPixels, timestripHeightPixels);
+            cr.setSourceRgb(0.1, 0.1, 0.1);
+            cr.fill();
+
+            // draw the time ticks (for seconds)
+            cr.setSourceRgb(1.0, 1.0, 1.0);
+            cr.setLineWidth(1.0);
+            for(auto i = viewOffset + ((viewOffset + _mixer.sampleRate) % _mixer.sampleRate);
+                i < viewOffset + viewWidthSamples; i += _mixer.sampleRate) {
+                cr.moveTo((i - viewOffset) / samplesPerPixel, 0);
+                cr.lineTo((i - viewOffset) / samplesPerPixel, timestripHeightPixels * 0.5);
+            }
+            cr.stroke();
+        }
+
         void drawTracks(ref Scoped!Context cr) {
-            pixels_t yOffset = 0;
+            pixels_t yOffset = timestripHeightPixels;
             foreach(t; _trackViews) {
                 t.draw(cr, yOffset);
                 yOffset += t.heightPixels;
@@ -908,21 +966,28 @@ private:
 
         bool onButtonPress(Event event, Widget widget) {
             if(event.type == EventType.BUTTON_PRESS && event.button.button == 1) {
-                bool mouseEventCaught;
-                // detect if the mouse is over an audio region; if so, select that region
-                foreach(regionView; _regionViews) {
-                    if(_mouseX >= regionView.boundingBox.x0 && _mouseX < regionView.boundingBox.x1 &&
-                       _mouseY >= regionView.boundingBox.y0 && _mouseY < regionView.boundingBox.y1) {
-                        regionView.selected = true;
-                        _setAction(Action.selectRegion);
-                        mouseEventCaught = true;
-                    }
-                }
-
-                // otherwise, move the transport
-                if(!mouseEventCaught) {
+                // if the mouse is over the timestrip, move the transport
+                if(_mouseY >= 0 && _mouseY < timestripHeightPixels) {
                     _setAction(Action.moveTransport);
-                    mouseEventCaught = true;
+                }
+                else {
+                    // detect if the mouse is over an audio region; if so, select that region
+                    bool selectedRegion;
+                    foreach(regionView; _regionViews) {
+                        if(_mouseX >= regionView.boundingBox.x0 && _mouseX < regionView.boundingBox.x1 &&
+                           _mouseY >= regionView.boundingBox.y0 && _mouseY < regionView.boundingBox.y1) {
+                            regionView.selected = true;
+                            selectedRegion = true;
+                            _setAction(Action.selectRegion);
+                        }
+                    }
+
+                    // otherwise, deselect all audio regions
+                    if(!selectedRegion) {
+                        foreach(regionView; _regionViews) {
+                            regionView.selected = false;
+                        }
+                    }
                 }
 
                 redraw();
