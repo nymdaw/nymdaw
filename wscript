@@ -11,6 +11,7 @@ out = "build"
 
 def options( ctx ):
     ctx.load( "compiler_d" )
+    ctx.load( "compiler_c" )
 
     ctx.add_option( "--debug",
                     action = "store_true",
@@ -27,11 +28,12 @@ def options( ctx ):
 def configure( ctx ):
     opts = Options.options
 
-    ctx.load( "compiler_d" )    
+    ctx.load( "compiler_d" )
+    ctx.load( "compiler_c" )
     if opts.debug :
         ctx.env.append_value( "DFLAGS", [ "-gc", "-debug" ] )
     else:
-        ctx.env.append_value( "DFLAGS", "-O2" )
+        ctx.env.append_value( "DFLAGS", [ "-O", "-release", "-inline", "-boundscheck=off" ] )
 
     # Check for jack
     ctx.check_cfg( package = "jack",
@@ -50,6 +52,9 @@ def configure( ctx ):
                    args = [ "samplerate >= 0.1.0", "--cflags", "--libs" ],
                    uselib_store = "samplerate",
                    mandatory = True )
+
+    # Check for rubberband
+    ctx.check_cc( lib = "rubberband", use = "rubberband" )
 
     # Check for GtkD
     ctx.check_cfg( package = "gtkd-3",
@@ -90,6 +95,12 @@ def build( ctx ):
     ctx.stlib( source = ctx.path.ant_glob( os.path.join( dlang_samplerate_dir, "**", "*.d" ) ),
                includes = deps_dir,
                target = "dlang_samplerate" )
+
+    # Build rubberband wrapper
+    dlang_rubberband_dir = os.path.join( deps_dir, "rubberband" )
+    ctx.stlib( source = ctx.path.ant_glob( os.path.join( dlang_rubberband_dir, "**", "*.d" ) ),
+               includes = deps_dir,
+               target = "dlang_rubberband" )
 
     # Build the executable
     ctx.program( name = APPNAME,
