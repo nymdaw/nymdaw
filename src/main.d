@@ -484,6 +484,11 @@ public:
     enum defaultTrackHeightPixels = 200; // default height in pixels of new tracks in the arrange view
     enum refreshRate = 50; // rate in hertz at which to redraw the view when the transport is playing
 
+    enum Mode {
+        arrange,
+        editRegion
+    }
+
     enum Action {
         none,
         selectRegion,
@@ -621,7 +626,10 @@ public:
 
                 // if this region is selected, highlight the borders and region header
                 cr.setLineWidth(borderWidth);
-                if(selected) {
+                if(selected && _mode == Mode.editRegion) {
+                    cr.setSourceRgba(1.0, 1.0, 0.0, alpha);
+                }
+                else if(selected) {
                     cr.setSourceRgba(1.0, 1.0, 1.0, alpha);
                 }
                 else {
@@ -798,6 +806,11 @@ private:
         _setCursor();
     }
 
+    void _setMode(Mode mode) {
+        _mode = mode;
+        _canvas.redraw();
+    }
+
     class Canvas : DrawingArea {
         this() {
             setCanFocus(true);
@@ -971,26 +984,37 @@ private:
                     _setAction(Action.moveTransport);
                 }
                 else {
-                    // detect if the mouse is over an audio region; if so, select that region
-                    bool selectedRegion;
-                    foreach(regionView; _regionViews) {
-                        if(_mouseX >= regionView.boundingBox.x0 && _mouseX < regionView.boundingBox.x1 &&
-                           _mouseY >= regionView.boundingBox.y0 && _mouseY < regionView.boundingBox.y1) {
-                            regionView.selected = true;
-                            selectedRegion = true;
-                            _setAction(Action.selectRegion);
-                        }
-                    }
+                    //
+                    switch(_mode) {
+                        // implement different behaviors for button presses depending on the current mode
+                        case Mode.arrange:
+                            // detect if the mouse is over an audio region; if so, select that region
+                            bool selectedRegion;
+                            foreach(regionView; _regionViews) {
+                                if(_mouseX >= regionView.boundingBox.x0 && _mouseX < regionView.boundingBox.x1 &&
+                                   _mouseY >= regionView.boundingBox.y0 && _mouseY < regionView.boundingBox.y1) {
+                                    regionView.selected = true;
+                                    selectedRegion = true;
+                                    _setAction(Action.selectRegion);
+                                }
+                            }
 
-                    // otherwise, deselect all audio regions
-                    if(!selectedRegion) {
-                        foreach(regionView; _regionViews) {
-                            regionView.selected = false;
-                        }
+                            // otherwise, deselect all audio regions
+                            if(!selectedRegion) {
+                                foreach(regionView; _regionViews) {
+                                    regionView.selected = false;
+                                }
+                            }
+                            break;
+
+                        case Mode.editRegion:
+                            break;
+
+                        default:
+                            break;
                     }
+                    redraw();
                 }
-
-                redraw();
             }
             return false;
         }
@@ -1075,6 +1099,10 @@ private:
                         _zoomOut();
                         break;
 
+                    case GdkKeysyms.GDK_e:
+                        _setMode(_mode == Mode.editRegion ? Mode.arrange : Mode.editRegion);
+                        break;
+
                     default:
                         break;
                 }
@@ -1097,6 +1125,7 @@ private:
 
     pixels_t _transportPixelsOffset;
 
+    Mode _mode;
     Action _action;
     pixels_t _mouseX;
     pixels_t _mouseY;
