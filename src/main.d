@@ -984,7 +984,6 @@ private:
                     _setAction(Action.moveTransport);
                 }
                 else {
-                    //
                     switch(_mode) {
                         // implement different behaviors for button presses depending on the current mode
                         case Mode.arrange:
@@ -1013,8 +1012,8 @@ private:
                         default:
                             break;
                     }
-                    redraw();
                 }
+                redraw();
             }
             return false;
         }

@@ -56,6 +56,12 @@ def configure( ctx ):
     # Check for rubberband
     ctx.check_cc( lib = "rubberband", use = "rubberband" )
 
+    # Check for aubio
+    ctx.check_cfg( package = "aubio",
+                   args = [ "aubio >= 0.4.1", "--cflags", "--libs" ],
+                   uselib_store = "aubio",
+                   mandatory = True )
+
     # Check for GtkD
     ctx.check_cfg( package = "gtkd-3",
                    args = [ "gtkd-3 >= 3.1.3", "--cflags", "--libs" ],
