@@ -108,6 +108,12 @@ def build( ctx ):
                includes = deps_dir,
                target = "dlang_rubberband" )
 
+    # Build aubio wrapper
+    dlang_aubio_dir = os.path.join( deps_dir, "aubio" )
+    ctx.stlib( source = ctx.path.ant_glob( os.path.join( dlang_aubio_dir, "**", "*.d" ) ),
+               includes = [ deps_dir, dlang_aubio_dir ],
+               target = "dlang_aubio" )
+
     # Build the executable
     ctx.program( name = APPNAME,
                  target = APPNAME.lower(),
@@ -116,4 +122,6 @@ def build( ctx ):
                  use = [ "jack", "dlang_jack",
                          "sndfile", "dlang_sndfile",
                          "samplerate", "dlang_samplerate",
+                         "rubberband", "dlang_rubberband",
+                         "aubio", "dlang_aubio",
                          "gtkd" ] )
