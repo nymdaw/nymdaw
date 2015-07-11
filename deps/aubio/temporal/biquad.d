@@ -36,8 +36,8 @@
 
 */
 
-import types;
-import temporal.filter;
+import aubio.types;
+import aubio.temporal.filter;
 
 extern(C) @nogc nothrow
 {

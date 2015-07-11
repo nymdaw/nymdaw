@@ -2,11 +2,14 @@ module dseq;
 
 import std.stdio;
 import std.algorithm;
+import std.array;
 import std.math;
 
 import jack.client;
 import sndfile.sndfile;
 import samplerate.samplerate;
+
+import aubio;
 
 import gtk.MainWindow;
 import gtk.Main;
@@ -27,7 +30,7 @@ import glib.Timeout;
 import cairo.Context;
 import cairo.Pattern;
 import cairo.Surface;
-import Pango.PgCairo;
+import Pango.PgCairo; // TODO pango stuff
 
 class AudioError: Exception {
     this(string msg) {
@@ -172,6 +175,40 @@ public:
         }
     }
 
+    // returns an array of frames at which an onset occurs, locally indexed for this region
+    nframes_t[] getOnsets(channels_t channelIndex) const {
+        immutable(uint) windowSize = 512;
+        immutable(uint) hopSize = 256;
+        string onsetMethod = "default";
+        immutable(smpl_t) onsetThreshold = 0.1;
+        immutable(smpl_t) silenceThreshold = -90.0;
+
+        fvec_t* onsetBuffer = new_fvec(1);
+        fvec_t* hopBuffer = new_fvec(hopSize);
+
+        nframes_t[] onsets;
+        auto app = appender(onsets);
+        aubio_onset_t* o = new_aubio_onset(cast(char*)(onsetMethod.toStringz()), windowSize, hopSize, sampleRate);
+        aubio_onset_set_threshold(o, onsetThreshold);
+        aubio_onset_set_silence(o, silenceThreshold);
+        for(nframes_t samplesRead = 0; samplesRead < nframes; samplesRead += hopSize) {
+            for(auto sample = 0; sample < hopSize; ++sample) {
+                hopBuffer.data[sample] = _audioBuffer[(sample + samplesRead) * nChannels + channelIndex];
+            }
+            aubio_onset_do(o, hopBuffer, onsetBuffer);
+            if(onsetBuffer.data[0] != 0) {
+                app.put(aubio_onset_get_last(o));
+            }
+        }
+        del_aubio_onset(o);
+
+        del_fvec(onsetBuffer);
+        del_fvec(hopBuffer);
+        aubio_cleanup();
+
+        return app.data;
+    }
+
     class WaveformCache {
     public:
         @property nframes_t binSize() const { return _binSize; }
@@ -264,7 +301,8 @@ public:
                     [sampleOffset * (binSize / cacheSize) .. (sampleOffset + 1) * (binSize / cacheSize)]);
     }
 
-    sample_t opIndex(nframes_t frame, channels_t channelIndex) const {
+    // overload indexing to return the sample value at a given channel and frame, globally indexed
+    sample_t opIndex(channels_t channelIndex, nframes_t frame) const {
         return frame >= offset ?
             (frame < _offset + _nframes ? _audioBuffer[(frame - _offset) * _nChannels + channelIndex] : 0) : 0;
     }
@@ -365,8 +403,8 @@ package:
     void mixStereo(nframes_t offset, nframes_t bufNFrames, sample_t* mixBuf1, sample_t* mixBuf2) const {
         for(auto i = 0; i < bufNFrames; ++i) {
             foreach(r; _regions) {
-                mixBuf1[i] += r[offset + i, 0];
-                mixBuf2[i] += r[offset + i, 1];
+                mixBuf1[i] += r[0, offset + i];
+                mixBuf2[i] += r[1, offset + i];
             }
         }
     }
@@ -525,8 +563,16 @@ public:
             _drawRegion(cr, yOffset, heightPixels, selectedOffset, 0.5);
         }
 
+        void computeOnsets() {
+            _onsets = new nframes_t[][](region.nChannels);
+            for(channels_t c = 0; c < region.nChannels; ++c) {
+                _onsets[c] = region.getOnsets(c);
+            }
+        }
+
         bool selected;
         nframes_t selectedOffset;
+        bool editMode;
         BoundingBox boundingBox;
         Region region;
 
@@ -662,14 +708,33 @@ public:
                     cr.fill();
                 }
 
-                // draw the region's waveform
+                // compute audio rendering parameters
                 height = heightPixels - headerHeight;
                 yOffset += headerHeight;
-                auto cacheIndex = region.getCacheIndex(_zoomStep);
                 auto sampleOffset = (viewOffset > regionOffset) ? (viewOffset - regionOffset) / samplesPerPixel : 0;
                 auto channelHeight = height / region.nChannels;
-                auto channelYOffset = yOffset + (channelHeight / 2);
 
+                // if the edit mode flag is set, draw the onsets
+                if(editMode) {
+                    foreach(channelIndex, channel; _onsets) {
+                        foreach(onset; channel) {
+                            if(onset + regionOffset >= viewOffset &&
+                                onset + regionOffset < viewOffset + viewWidthSamples) {
+                                cr.moveTo(xOffset + onset / samplesPerPixel - sampleOffset,
+                                          yOffset + (channelIndex * channelHeight));
+                                cr.lineTo(xOffset + onset / samplesPerPixel - sampleOffset,
+                                          yOffset + ((channelIndex + 1) * channelHeight));
+                            }
+                        }
+                    }
+                    cr.setSourceRgba(1.0, 1.0, 1.0, alpha);
+                    cr.setLineWidth(1.0);
+                    cr.stroke();
+                }
+
+                // draw the region's waveform
+                auto cacheIndex = region.getCacheIndex(_zoomStep);
+                auto channelYOffset = yOffset + (channelHeight / 2);
                 for(channels_t channelIndex = 0; channelIndex < region.nChannels; ++channelIndex) {
                     cr.newSubPath();
                     cr.moveTo(xOffset, channelYOffset +
@@ -698,6 +763,8 @@ public:
                 }
             }
         }
+
+        nframes_t[][] _onsets; // indexed as [channel][onset]
     }
 
     class TrackView {
@@ -807,6 +874,29 @@ private:
     }
 
     void _setMode(Mode mode) {
+        switch(mode) {
+            case Mode.editRegion:
+                // enable edit mode for selected regions
+                foreach(regionView; _regionViews) {
+                    if(regionView.selected) {
+                        regionView.computeOnsets();
+                        regionView.editMode = true;
+                    }
+                }
+                break;
+
+            default:
+                // if the last mode was editRegion, unset the edit mode flag for selected regions
+                if(_mode == Mode.editRegion) {
+                    foreach(regionView; _regionViews) {
+                        if(regionView.selected) {
+                            regionView.editMode = false;
+                        }
+                    }
+                }
+                break;
+        }
+
         _mode = mode;
         _canvas.redraw();
     }

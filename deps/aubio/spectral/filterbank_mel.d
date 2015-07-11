@@ -31,9 +31,9 @@
 
 */
 
-import types;
-import fvec;
-import spectral.filterbank;
+import aubio.types;
+import aubio.fvec;
+import aubio.spectral.filterbank;
 
 extern(C) @nogc nothrow
 {

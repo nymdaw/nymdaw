@@ -36,8 +36,8 @@
 
 */
 
-import types;
-import cvec;
+import aubio.types;
+import aubio.cvec;
 
 extern(C) @nogc nothrow
 {

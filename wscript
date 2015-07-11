@@ -111,7 +111,7 @@ def build( ctx ):
     # Build aubio wrapper
     dlang_aubio_dir = os.path.join( deps_dir, "aubio" )
     ctx.stlib( source = ctx.path.ant_glob( os.path.join( dlang_aubio_dir, "**", "*.d" ) ),
-               includes = [ deps_dir, dlang_aubio_dir ],
+               includes = deps_dir,
                target = "dlang_aubio" )
 
     # Build the executable

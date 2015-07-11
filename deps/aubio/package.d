@@ -151,36 +151,38 @@
 
  */
 
+module aubio;
+
 extern(C) @nogc nothrow
 {
 
 /* in this order */
-import types;
-import fvec;
-import cvec;
-import lvec;
-import fmat;
-import musicutils;
-import vecutils;
-import temporal.resampler;
-import temporal.filter;
-import temporal.biquad;
-import temporal.a_weighting;
-import temporal.c_weighting;
-import spectral.fft;
-import spectral.phasevoc;
-import spectral.filterbank;
-import spectral.filterbank_mel;
-import spectral.mfcc;
-import spectral.specdesc;
-import spectral.tss;
-import pitch;
-import onset;
-import tempo;
-import io.source;
-import io.sink;
-import synth.sampler;
-import synth.wavetable;
-import utils.parameter;
+public import aubio.types;
+public import aubio.fvec;
+public import aubio.cvec;
+public import aubio.lvec;
+public import aubio.fmat;
+public import aubio.musicutils;
+public import aubio.vecutils;
+public import aubio.temporal.resampler;
+public import aubio.temporal.filter;
+public import aubio.temporal.biquad;
+public import aubio.temporal.a_weighting;
+public import aubio.temporal.c_weighting;
+public import aubio.spectral.fft;
+public import aubio.spectral.phasevoc;
+public import aubio.spectral.filterbank;
+public import aubio.spectral.filterbank_mel;
+public import aubio.spectral.mfcc;
+public import aubio.spectral.specdesc;
+public import aubio.spectral.tss;
+public import aubio.pitch;
+public import aubio.onset;
+public import aubio.tempo;
+public import aubio.io.source;
+public import aubio.io.sink;
+public import aubio.synth.sampler;
+public import aubio.synth.wavetable;
+public import aubio.utils.parameter;
 
 }

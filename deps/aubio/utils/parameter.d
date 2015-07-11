@@ -29,7 +29,7 @@
 
 */
 
-import types;
+import aubio.types;
 
 extern(C) @nogc nothrow
 {

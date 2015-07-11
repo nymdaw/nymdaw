@@ -60,9 +60,9 @@
 
 */
 
-import types;
-import fvec;
-import fmat;
+import aubio.types;
+import aubio.fvec;
+import aubio.fmat;
 
 extern(C) @nogc nothrow
 {

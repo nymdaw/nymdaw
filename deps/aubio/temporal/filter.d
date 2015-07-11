@@ -59,9 +59,9 @@
  
 */
 
-import types;
-import fvec;
-import lvec;
+import aubio.types;
+import aubio.fvec;
+import aubio.lvec;
 
 extern(C) @nogc nothrow
 {
