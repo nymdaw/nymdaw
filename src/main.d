@@ -591,6 +591,11 @@ public:
             enum degrees = PI / 180.0;
             enum headerHeight = 15; // height of the region's label, in pixels
 
+            // save the existing cairo context state
+            cr.save();
+            cr.setOperator(cairo_operator_t.SOURCE);
+            cr.setAntialias(cairo_antialias_t.GOOD);
+
             // check that this region is in the visible area of the arrange view
             if((regionOffset >= viewOffset && regionOffset < viewOffset + viewWidthSamples) ||
                (regionOffset < viewOffset &&
@@ -714,24 +719,6 @@ public:
                 auto sampleOffset = (viewOffset > regionOffset) ? (viewOffset - regionOffset) / samplesPerPixel : 0;
                 auto channelHeight = height / region.nChannels;
 
-                // if the edit mode flag is set, draw the onsets
-                if(editMode) {
-                    foreach(channelIndex, channel; _onsets) {
-                        foreach(onset; channel) {
-                            if(onset + regionOffset >= viewOffset &&
-                                onset + regionOffset < viewOffset + viewWidthSamples) {
-                                cr.moveTo(xOffset + onset / samplesPerPixel - sampleOffset,
-                                          yOffset + (channelIndex * channelHeight));
-                                cr.lineTo(xOffset + onset / samplesPerPixel - sampleOffset,
-                                          yOffset + ((channelIndex + 1) * channelHeight));
-                            }
-                        }
-                    }
-                    cr.setSourceRgba(1.0, 1.0, 1.0, alpha);
-                    cr.setLineWidth(1.0);
-                    cr.stroke();
-                }
-
                 // draw the region's waveform
                 auto cacheIndex = region.getCacheIndex(_zoomStep);
                 auto channelYOffset = yOffset + (channelHeight / 2);
@@ -761,7 +748,29 @@ public:
                     cr.fill();
                     channelYOffset += channelHeight;
                 }
+
+                // if the edit mode flag is set, draw the onsets
+                if(editMode) {
+                    foreach(channelIndex, channel; _onsets) {
+                        foreach(onset; channel) {
+                            if(onset + regionOffset >= viewOffset &&
+                               onset + regionOffset < viewOffset + viewWidthSamples) {
+                                cr.moveTo(xOffset + onset / samplesPerPixel - sampleOffset,
+                                          yOffset + (channelIndex * channelHeight));
+                                cr.lineTo(xOffset + onset / samplesPerPixel - sampleOffset,
+                                          yOffset + ((channelIndex + 1) * channelHeight));
+                            }
+                        }
+                    }
+                    cr.setSourceRgba(1.0, 1.0, 1.0, alpha);
+                    cr.setAntialias(cairo_antialias_t.NONE);
+                    cr.setLineWidth(1.0);
+                    cr.stroke();
+                }
             }
+
+            // restore the cairo context state
+            cr.restore();
         }
 
         nframes_t[][] _onsets; // indexed as [channel][onset]
@@ -946,13 +955,17 @@ private:
         }
 
         void drawTimestrip(ref Scoped!Context cr) {
+            // save the existing cairo context state
+            cr.save();
+
             // draw the timestrip background
             cr.rectangle(0, 0, viewWidthPixels, timestripHeightPixels);
             cr.setSourceRgb(0.1, 0.1, 0.1);
             cr.fill();
 
-            // draw the time ticks (for seconds)
+            // draw the time ticks (for seconds)            
             cr.setSourceRgb(1.0, 1.0, 1.0);
+            cr.setAntialias(cairo_antialias_t.NONE);
             cr.setLineWidth(1.0);
             for(auto i = viewOffset + ((viewOffset + _mixer.sampleRate) % _mixer.sampleRate);
                 i < viewOffset + viewWidthSamples; i += _mixer.sampleRate) {
@@ -960,6 +973,9 @@ private:
                 cr.lineTo((i - viewOffset) / samplesPerPixel, timestripHeightPixels * 0.5);
             }
             cr.stroke();
+
+            // restore the cairo context state
+            cr.restore();
         }
 
         void drawTracks(ref Scoped!Context cr) {
