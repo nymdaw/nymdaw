@@ -30,7 +30,7 @@
  * http://www.mega-nerd.com/libsndfile/
  */
 
-module sndfile.sndfile;
+module sndfile;
 
 extern(C) @nogc nothrow
 {

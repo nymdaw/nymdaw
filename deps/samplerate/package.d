@@ -28,7 +28,7 @@
 **     http://www.mega-nerd.com/SRC/api.html
 */
 
-module samplerate.samplerate;
+module samplerate;
 
 extern(C) @nogc nothrow
 {

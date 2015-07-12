@@ -3,12 +3,12 @@ module dseq;
 import std.stdio;
 import std.algorithm;
 import std.array;
+import std.path;
 import std.math;
 
 import jack.client;
-import sndfile.sndfile;
-import samplerate.samplerate;
-
+import sndfile;
+import samplerate;
 import aubio;
 
 import gtk.MainWindow;
@@ -30,7 +30,10 @@ import glib.Timeout;
 import cairo.Context;
 import cairo.Pattern;
 import cairo.Surface;
-import Pango.PgCairo; // TODO pango stuff
+
+import pango.PgCairo;
+import pango.PgLayout;
+import pango.PgFontDescription;
 
 class AudioError: Exception {
     this(string msg) {
@@ -52,11 +55,12 @@ alias pixels_t = int;
 
 class Region {
 public:
-    this(nframes_t sampleRate, channels_t nChannels, sample_t[] audioBuffer) {
+    this(nframes_t sampleRate, channels_t nChannels, sample_t[] audioBuffer, string name = "") {
         _sampleRate = sampleRate;
         _nChannels = nChannels;
         _audioBuffer = audioBuffer;
         _nframes = cast(typeof(_nframes))(audioBuffer.length / nChannels);
+        _name = name;
 
         _initCache();
     }
@@ -95,7 +99,10 @@ public:
             throw new FileError("Could not read file: " ~ fileName);
         }
 
-        return new Region(cast(nframes_t)(sfinfo.samplerate), cast(channels_t)(sfinfo.channels), audioBuffer);
+        return new Region(cast(nframes_t)(sfinfo.samplerate),
+                          cast(channels_t)(sfinfo.channels),
+                          audioBuffer,
+                          baseName(stripExtension(fileName)));
     }
 
     // create a region from a file, converting to the given sample rate if necessary
@@ -313,6 +320,8 @@ public:
     @property nframes_t nframes() const { return _nframes; }
     @property nframes_t offset() const { return _offset; }
     @property nframes_t offset(nframes_t newOffset) { return (_offset = newOffset); }
+    @property string name() const { return _name; }
+    @property string name(string newName) { return (_name = newName); }
 
 private:
     static sample_t _min(const(sample_t[]) sourceData) {
@@ -384,6 +393,7 @@ private:
     nframes_t _nframes; // number of frames in the audio data, where 1 frame contains 1 sample for each channel
 
     nframes_t _offset; // the offset, in frames, for the start of this region
+    string _name; // name for this region
 }
 
 class Track {
@@ -590,6 +600,7 @@ public:
             enum borderWidth = 1; // width of the edges of the region, in pixels
             enum degrees = PI / 180.0;
             enum headerHeight = 15; // height of the region's label, in pixels
+            enum headerFont = "Arial 10"; // font family and size to use for the region's label
 
             // save the existing cairo context state
             cr.save();
@@ -617,7 +628,7 @@ public:
                         width = (viewWidthSamples - (regionOffset - viewOffset)) / samplesPerPixel;
                     }
                 }
-                else {
+                else if(regionOffset + region.nframes >= viewOffset) {
                     // the region begins before the view offset, and ends within the view
                     if(regionOffset + region.nframes < viewOffset + viewWidthSamples) {
                         width = (regionOffset + region.nframes - viewOffset) / samplesPerPixel;
@@ -626,6 +637,10 @@ public:
                     else {
                         width = viewWidthSamples / samplesPerPixel;
                     }
+                }
+                else {
+                    // the region is not visible
+                    return;
                 }
 
                 // get the bounding box for this region
@@ -713,6 +728,23 @@ public:
                     cr.fill();
                 }
 
+                // draw the region's label
+                if(!_headerLabelLayout) {
+                    PgFontDescription desc;
+                    _headerLabelLayout = PgCairo.createLayout(cr);
+                    _headerLabelLayout.setText(region.name);
+                    desc = PgFontDescription.fromString(headerFont);
+                    _headerLabelLayout.setFontDescription(desc);
+                    desc.free();
+                }
+
+                cr.save();
+                cr.translate(xOffset + borderWidth, yOffset);
+                cr.setSourceRgba(0.5, 0.5, 1.0, alpha);
+                PgCairo.updateLayout(cr, _headerLabelLayout);
+                PgCairo.showLayout(cr, _headerLabelLayout);
+                cr.restore();
+
                 // compute audio rendering parameters
                 height = heightPixels - headerHeight;
                 yOffset += headerHeight;
@@ -773,6 +805,7 @@ public:
             cr.restore();
         }
 
+        PgLayout _headerLabelLayout;
         nframes_t[][] _onsets; // indexed as [channel][onset]
     }
 
