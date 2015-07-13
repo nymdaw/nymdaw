@@ -531,6 +531,7 @@ public:
     enum defaultSamplesPerPixel = 500; // default zoom level, in samples per pixel
     enum defaultTrackHeightPixels = 200; // default height in pixels of new tracks in the arrange view
     enum refreshRate = 50; // rate in hertz at which to redraw the view when the transport is playing
+    enum mouseOverThreshold = 2; // threshold number of pixels in one direction for mouse over events
 
     enum Mode {
         arrange,
@@ -540,6 +541,7 @@ public:
     enum Action {
         none,
         selectRegion,
+        moveOnset,
         moveRegion,
         moveTransport
     }
@@ -580,11 +582,65 @@ public:
             }
         }
 
+        // finds the index of any onset between (searchFrame - searchRadius) and (searchFrame + searchRadius)
+        // if successful, returns true and stores the index in the searchIndex output argument
+        bool getOnset(channels_t channelIndex,
+                      nframes_t searchFrame,
+                      nframes_t searchRadius,
+                      out size_t searchIndex) {
+            // recursive binary search helper function
+            bool getOnsetRec(channels_t channelIndex,
+                             nframes_t searchFrame,
+                             nframes_t searchRadius,
+                             out size_t searchIndex,
+                             size_t leftIndex,
+                             size_t rightIndex) {
+                searchIndex = (leftIndex + rightIndex) / 2;
+                nframes_t foundFrame = _onsets[channelIndex][searchIndex];
+                if(foundFrame >= searchFrame - searchRadius && foundFrame <= searchFrame + searchRadius) {
+                    return true;
+                }
+                else if(leftIndex >= rightIndex) {
+                    return false;
+                }
+
+                if(foundFrame < searchFrame) {
+                    return getOnsetRec(channelIndex,
+                                       searchFrame,
+                                       searchRadius,
+                                       searchIndex,
+                                       searchIndex + 1,
+                                       rightIndex);
+                }
+                else {
+                    return getOnsetRec(channelIndex,
+                                       searchFrame,
+                                       searchRadius,
+                                       searchIndex,
+                                       leftIndex,
+                                       searchIndex - 1);
+                }
+            }
+            return getOnsetRec(channelIndex,
+                               searchFrame,
+                               searchRadius,
+                               searchIndex,
+                               0,
+                               _onsets[channelIndex].length - 1);
+        }
+
         bool selected;
         nframes_t selectedOffset;
-        bool editMode;
         BoundingBox boundingBox;
         Region region;
+
+        @property bool editMode(bool enabled) {
+            if(enabled && _onsets is null) {
+                computeOnsets();
+            }
+            return (_editMode = enabled);
+        }
+        @property bool editMode() const { return _editMode; }
 
     private:
         this(Region region) {
@@ -805,8 +861,10 @@ public:
             cr.restore();
         }
 
-        PgLayout _headerLabelLayout;
+        bool _editMode;
         nframes_t[][] _onsets; // indexed as [channel][onset]
+
+        PgLayout _headerLabelLayout;
     }
 
     class TrackView {
@@ -895,17 +953,29 @@ private:
 
     void _setCursor() {
         static Cursor cursorMoving;
+        static Cursor cursorMovingOnset;
+
+        void setCursorByType(Cursor cursor, CursorType cursorType) {
+            if(cursor is null) {
+                cursor = new Cursor(Display.getDefault(), cursorType);
+            }
+            getWindow().setCursor(cursor);
+        }
+        void setCursorDefault() {
+            getWindow().setCursor(null);
+        }
 
         switch(_action) {
             case Action.moveRegion:
-                if(cursorMoving is null) {
-                    cursorMoving = new Cursor(Display.getDefault(), GdkCursorType.FLEUR);
-                }
-                getWindow().setCursor(cursorMoving);
+                setCursorByType(cursorMoving, CursorType.FLEUR);
+                break;
+
+            case Action.moveOnset:
+                setCursorByType(cursorMovingOnset, CursorType.SB_H_DOUBLE_ARROW);
                 break;
 
             default:
-                getWindow().setCursor(null);
+                setCursorDefault();
                 break;
         }
     }
@@ -921,7 +991,6 @@ private:
                 // enable edit mode for selected regions
                 foreach(regionView; _regionViews) {
                     if(regionView.selected) {
-                        regionView.computeOnsets();
                         regionView.editMode = true;
                     }
                 }
@@ -1146,6 +1215,18 @@ private:
                             break;
 
                         case Mode.editRegion:
+                            // detect if the mouse is over an onset
+                            foreach(regionView; _regionViews) {
+                                if(regionView.selected) {
+                                    if(regionView.getOnset(0,
+                                                           viewOffset + _mouseX * samplesPerPixel -
+                                                           regionView.region.offset,
+                                                           mouseOverThreshold * samplesPerPixel,
+                                                           _moveOnsetIndex)) {
+                                        _setAction(Action.moveOnset);
+                                    }
+                                }
+                            }
                             break;
 
                         default:
@@ -1175,6 +1256,11 @@ private:
                             }
                         }
                         redraw();
+                        break;
+
+                    case Action.moveOnset:
+                        _setAction(Action.none);
+                        // TODO implement
                         break;
 
                     case Action.moveTransport:
@@ -1267,6 +1353,8 @@ private:
     Action _action;
     pixels_t _mouseX;
     pixels_t _mouseY;
+
+    size_t _moveOnsetIndex;
 }
 
 void main(string[] args) {
