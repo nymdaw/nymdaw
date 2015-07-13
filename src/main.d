@@ -522,6 +522,11 @@ private:
     bool _playing;
 }
 
+enum Direction {
+    left,
+    right
+}
+
 struct BoundingBox {
     pixels_t x0, y0, x1, y1;
 }
@@ -627,6 +632,35 @@ public:
                                searchIndex,
                                0,
                                _onsets[channelIndex].length - 1);
+        }
+
+        void moveOnset(channels_t channelIndex, size_t onsetIndex, nframes_t relativeSamples, Direction direction) {
+            switch(direction) {
+                case Direction.left:
+                    nframes_t leftBound = (onsetIndex > 0) ? _onsets[channelIndex][onsetIndex - 1] : 0;
+                    if(_onsets[channelIndex][onsetIndex] > relativeSamples &&
+                        _onsets[channelIndex][onsetIndex] - relativeSamples > leftBound) {
+                        _onsets[channelIndex][onsetIndex] -= relativeSamples;
+                    }
+                    else {
+                        _onsets[channelIndex][onsetIndex] = leftBound;
+                    }
+                    break;
+
+                case Direction.right:
+                    nframes_t rightBound = (onsetIndex < _onsets[channelIndex].length - 1) ?
+                        _onsets[channelIndex][onsetIndex + 1] : region.nframes - 1;
+                    if(_onsets[channelIndex][onsetIndex] + relativeSamples < rightBound) {
+                        _onsets[channelIndex][onsetIndex] += relativeSamples;
+                    }
+                    else {
+                        _onsets[channelIndex][onsetIndex] = rightBound;
+                    }
+                    break;
+
+                default:
+                    break;
+            }
         }
 
         bool selected;
@@ -1173,6 +1207,18 @@ private:
                         redraw();
                         break;
 
+                    case Action.moveOnset:
+                        foreach(regionView; _regionViews) {
+                            if(regionView.selected) {
+                                // TODO implement channels
+                                nframes_t deltaXSamples = abs(_mouseX - prevMouseX) * samplesPerPixel;
+                                Direction direction = (_mouseX > prevMouseX) ? Direction.right : Direction.left;
+                                regionView.moveOnset(0, _moveOnsetIndex, deltaXSamples, direction);
+                            }
+                        }
+                        redraw();
+                        break;
+
                     case Action.moveTransport:
                         redraw();
                         break;
@@ -1218,7 +1264,7 @@ private:
                             // detect if the mouse is over an onset
                             foreach(regionView; _regionViews) {
                                 if(regionView.selected) {
-                                    if(regionView.getOnset(0,
+                                    if(regionView.getOnset(0, // TODO implement channels
                                                            viewOffset + _mouseX * samplesPerPixel -
                                                            regionView.region.offset,
                                                            mouseOverThreshold * samplesPerPixel,
@@ -1259,8 +1305,8 @@ private:
                         break;
 
                     case Action.moveOnset:
+                        // TODO stretch audio here
                         _setAction(Action.none);
-                        // TODO implement
                         break;
 
                     case Action.moveTransport:
