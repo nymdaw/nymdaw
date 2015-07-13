@@ -1401,6 +1401,8 @@ private:
     pixels_t _mouseY;
 
     size_t _moveOnsetIndex;
+    channels_t _moveOnsetChannel;
+    bool _moveOnsetLinkChannels;
 }
 
 void main(string[] args) {
