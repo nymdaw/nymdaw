@@ -568,6 +568,11 @@ public:
 
     class RegionView {
     public:
+        enum cornerRadius = 4; // radius of the rounded corners of the region, in pixels
+        enum borderWidth = 1; // width of the edges of the region, in pixels
+        enum headerHeight = 15; // height of the region's label, in pixels
+        enum headerFont = "Arial 10"; // font family and size to use for the region's label
+
         void drawRegion(ref Scoped!Context cr,
                         pixels_t yOffset,
                         pixels_t heightPixels) {
@@ -663,6 +668,12 @@ public:
             }
         }
 
+        channels_t mouseOverChannel(pixels_t mouseY) const {
+            immutable(pixels_t) trackHeight = (boundingBox.y1 - boundingBox.y0) - headerHeight;
+            immutable(pixels_t) channelHeight = trackHeight / region.nChannels;
+            return clamp((mouseY - (boundingBox.y0 + headerHeight)) / channelHeight, 0, region.nChannels - 1);
+        }
+
         bool selected;
         nframes_t selectedOffset;
         BoundingBox boundingBox;
@@ -686,11 +697,7 @@ public:
                          pixels_t heightPixels,
                          nframes_t regionOffset,
                          double alpha) {
-            enum radius = 4; // radius of the rounded corners of the region, in pixels
-            enum borderWidth = 1; // width of the edges of the region, in pixels
             enum degrees = PI / 180.0;
-            enum headerHeight = 15; // height of the region's label, in pixels
-            enum headerFont = "Arial 10"; // font family and size to use for the region's label
 
             // save the existing cairo context state
             cr.save();
@@ -711,7 +718,7 @@ public:
                 if(regionOffset >= viewOffset) {
                     // the region begins after the view offset, and ends within the view
                     if(regionOffset + region.nframes <= viewOffset + viewWidthSamples) {
-                        width = max(region.nframes / samplesPerPixel, 2 * radius);
+                        width = max(region.nframes / samplesPerPixel, 2 * cornerRadius);
                     }
                     // the region begins after the view offset, and ends past the end of the view
                     else {
@@ -740,24 +747,27 @@ public:
                 boundingBox.y1 = yOffset + height;
 
                 // these variables designate whether the left and right endpoints of the given region are visible
-                bool lCorners = regionOffset + (radius * samplesPerPixel) >= viewOffset;
-                bool rCorners =
-                    (regionOffset + region.nframes) - (radius * samplesPerPixel) <= viewOffset + viewWidthSamples;
+                bool lCorners = regionOffset + (cornerRadius * samplesPerPixel) >= viewOffset;
+                bool rCorners = (regionOffset + region.nframes) - (cornerRadius * samplesPerPixel) <=
+                    viewOffset + viewWidthSamples;
 
                 cr.newSubPath();
                 // top left corner
                 if(lCorners) {
-                    cr.arc(xOffset + radius, yOffset + radius, radius, 180 * degrees, 270 * degrees);
+                    cr.arc(xOffset + cornerRadius, yOffset + cornerRadius,
+                           cornerRadius, 180 * degrees, 270 * degrees);
                 }
                 else {
                     cr.moveTo(xOffset - borderWidth, yOffset);
-                    cr.lineTo(xOffset + width + (rCorners ? -radius : borderWidth), yOffset);
+                    cr.lineTo(xOffset + width + (rCorners ? -cornerRadius : borderWidth), yOffset);
                 }
 
                 // right corners
                 if(rCorners) {
-                    cr.arc(xOffset + width - radius, yOffset + radius, radius, -90 * degrees, 0 * degrees);
-                    cr.arc(xOffset + width - radius, yOffset + height - radius, radius, 0 * degrees, 90 * degrees);
+                    cr.arc(xOffset + width - cornerRadius, yOffset + cornerRadius,
+                           cornerRadius, -90 * degrees, 0 * degrees);
+                    cr.arc(xOffset + width - cornerRadius, yOffset + height - cornerRadius, cornerRadius,
+                           0 * degrees, 90 * degrees);
                 }
                 else {
                     cr.lineTo(xOffset + width + borderWidth, yOffset);
@@ -766,7 +776,8 @@ public:
 
                 // bottom left corner
                 if(lCorners) {
-                    cr.arc(xOffset + radius, yOffset + height - radius, radius, 90 * degrees, 180 * degrees);
+                    cr.arc(xOffset + cornerRadius, yOffset + height - cornerRadius,
+                           cornerRadius, 90 * degrees, 180 * degrees);
                 }
                 else {
                     cr.lineTo(xOffset - (lCorners ? 0 : borderWidth), yOffset + height);
@@ -796,16 +807,18 @@ public:
                     cr.newSubPath();
                     // left corner
                     if(lCorners) {
-                        cr.arc(xOffset + radius, yOffset + radius, radius, 180 * degrees, 270 * degrees);
+                        cr.arc(xOffset + cornerRadius, yOffset + cornerRadius,
+                               cornerRadius, 180 * degrees, 270 * degrees);
                     }
                     else {
                         cr.moveTo(xOffset - borderWidth, yOffset);
-                        cr.lineTo(xOffset + width + (rCorners ? -radius : borderWidth), yOffset);
+                        cr.lineTo(xOffset + width + (rCorners ? -cornerRadius : borderWidth), yOffset);
                     }
 
                     // right corner
                     if(rCorners) {
-                        cr.arc(xOffset + width - radius, yOffset + radius, radius, -90 * degrees, 0 * degrees);
+                        cr.arc(xOffset + width - cornerRadius, yOffset + cornerRadius,
+                               cornerRadius, -90 * degrees, 0 * degrees);
                     }
                     else {
                         cr.lineTo(xOffset + width + borderWidth, yOffset);
@@ -1080,6 +1093,7 @@ private:
                 _refreshTimeout = new Timeout(cast(uint)(1.0 / refreshRate * 1000), &onRefresh, false);
             }
 
+            cr.setOperator(cairo_operator_t.SOURCE);
             cr.setSourceRgb(0.0, 0.0, 0.0);
             cr.paint();
 
@@ -1210,10 +1224,9 @@ private:
                     case Action.moveOnset:
                         foreach(regionView; _regionViews) {
                             if(regionView.selected) {
-                                // TODO implement channels
                                 nframes_t deltaXSamples = abs(_mouseX - prevMouseX) * samplesPerPixel;
                                 Direction direction = (_mouseX > prevMouseX) ? Direction.right : Direction.left;
-                                regionView.moveOnset(0, _moveOnsetIndex, deltaXSamples, direction);
+                                regionView.moveOnset(_moveOnsetChannel, _moveOnsetIndex, deltaXSamples, direction);
                             }
                         }
                         redraw();
@@ -1264,7 +1277,8 @@ private:
                             // detect if the mouse is over an onset
                             foreach(regionView; _regionViews) {
                                 if(regionView.selected) {
-                                    if(regionView.getOnset(0, // TODO implement channels
+                                    _moveOnsetChannel = regionView.mouseOverChannel(_mouseY);
+                                    if(regionView.getOnset(_moveOnsetChannel,
                                                            viewOffset + _mouseX * samplesPerPixel -
                                                            regionView.region.offset,
                                                            mouseOverThreshold * samplesPerPixel,
@@ -1402,7 +1416,7 @@ private:
 
     size_t _moveOnsetIndex;
     channels_t _moveOnsetChannel;
-    bool _moveOnsetLinkChannels;
+    bool _moveOnsetLinkChannels; // TODO implement
 }
 
 void main(string[] args) {
