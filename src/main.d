@@ -182,7 +182,7 @@ public:
         }
     }
 
-    // returns an array of frames at which an onset occurs, locally indexed for this region
+    // returns an array of frames at which an onset occurs, with frames given locally for this region
     nframes_t[] getOnsets(channels_t channelIndex) const {
         immutable(uint) windowSize = 512;
         immutable(uint) hopSize = 256;
@@ -382,7 +382,7 @@ private:
         }
     }
 
-    static immutable(nframes_t[]) _cacheBinSizes = [ 10, 100 ];
+    static immutable(nframes_t[]) _cacheBinSizes = [10, 100];
     static assert(_cacheBinSizes.length > 0);
 
     WaveformCache[][] _waveformCacheList; // indexed as [channel][waveform]
@@ -597,16 +597,18 @@ public:
         bool getOnset(channels_t channelIndex,
                       nframes_t searchFrame,
                       nframes_t searchRadius,
-                      out size_t searchIndex) {
+                      out nframes_t foundFrame,
+                      out size_t foundIndex) {
             // recursive binary search helper function
             bool getOnsetRec(channels_t channelIndex,
                              nframes_t searchFrame,
                              nframes_t searchRadius,
-                             out size_t searchIndex,
+                             out nframes_t foundFrame,
+                             out size_t foundIndex,
                              size_t leftIndex,
                              size_t rightIndex) {
-                searchIndex = (leftIndex + rightIndex) / 2;
-                nframes_t foundFrame = _onsets[channelIndex][searchIndex];
+                foundIndex = (leftIndex + rightIndex) / 2;
+                foundFrame = _onsets[channelIndex][foundIndex];
                 if(foundFrame >= searchFrame - searchRadius && foundFrame <= searchFrame + searchRadius) {
                     return true;
                 }
@@ -618,23 +620,26 @@ public:
                     return getOnsetRec(channelIndex,
                                        searchFrame,
                                        searchRadius,
-                                       searchIndex,
-                                       searchIndex + 1,
+                                       foundFrame,
+                                       foundIndex,
+                                       foundIndex + 1,
                                        rightIndex);
                 }
                 else {
                     return getOnsetRec(channelIndex,
                                        searchFrame,
                                        searchRadius,
-                                       searchIndex,
+                                       foundFrame,
+                                       foundIndex,
                                        leftIndex,
-                                       searchIndex - 1);
+                                       foundIndex - 1);
                 }
             }
             return getOnsetRec(channelIndex,
                                searchFrame,
                                searchRadius,
-                               searchIndex,
+                               foundFrame,
+                               foundIndex,
                                0,
                                _onsets[channelIndex].length - 1);
         }
@@ -1282,6 +1287,7 @@ private:
                                                            viewOffset + _mouseX * samplesPerPixel -
                                                            regionView.region.offset,
                                                            mouseOverThreshold * samplesPerPixel,
+                                                           _moveOnsetFrame,
                                                            _moveOnsetIndex)) {
                                         _setAction(Action.moveOnset);
                                     }
@@ -1414,9 +1420,10 @@ private:
     pixels_t _mouseX;
     pixels_t _mouseY;
 
+    bool _moveOnsetLinkChannels; // TODO implement
     size_t _moveOnsetIndex;
     channels_t _moveOnsetChannel;
-    bool _moveOnsetLinkChannels; // TODO implement
+    nframes_t _moveOnsetFrame;
 }
 
 void main(string[] args) {
