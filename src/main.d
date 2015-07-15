@@ -644,16 +644,20 @@ public:
                                _onsets[channelIndex].length - 1);
         }
 
-        void moveOnset(channels_t channelIndex, size_t onsetIndex, nframes_t relativeSamples, Direction direction) {
+        // move a specific onset given by onsetIndex, returns the new onset value
+        nframes_t moveOnset(channels_t channelIndex,
+                            size_t onsetIndex,
+                            nframes_t relativeSamples,
+                            Direction direction) {
             switch(direction) {
                 case Direction.left:
                     nframes_t leftBound = (onsetIndex > 0) ? _onsets[channelIndex][onsetIndex - 1] : 0;
                     if(_onsets[channelIndex][onsetIndex] > relativeSamples &&
                         _onsets[channelIndex][onsetIndex] - relativeSamples > leftBound) {
-                        _onsets[channelIndex][onsetIndex] -= relativeSamples;
+                        return (_onsets[channelIndex][onsetIndex] -= relativeSamples);
                     }
                     else {
-                        _onsets[channelIndex][onsetIndex] = leftBound;
+                        return (_onsets[channelIndex][onsetIndex] = leftBound);
                     }
                     break;
 
@@ -661,16 +665,25 @@ public:
                     nframes_t rightBound = (onsetIndex < _onsets[channelIndex].length - 1) ?
                         _onsets[channelIndex][onsetIndex + 1] : region.nframes - 1;
                     if(_onsets[channelIndex][onsetIndex] + relativeSamples < rightBound) {
-                        _onsets[channelIndex][onsetIndex] += relativeSamples;
+                        return (_onsets[channelIndex][onsetIndex] += relativeSamples);
                     }
                     else {
-                        _onsets[channelIndex][onsetIndex] = rightBound;
+                        return (_onsets[channelIndex][onsetIndex] = rightBound);
                     }
                     break;
 
                 default:
                     break;
             }
+            return 0;
+        }
+
+        nframes_t getPrevOnset(channels_t channelIndex, size_t onsetIndex) const {
+            return (onsetIndex > 0) ? _onsets[channelIndex][onsetIndex - 1] : 0;
+        }
+        nframes_t getNextOnset(channels_t channelIndex, size_t onsetIndex) const {
+            return (onsetIndex < _onsets[channelIndex].length - 1) ?
+                _onsets[channelIndex][onsetIndex + 1] : region.nframes - 1;
         }
 
         channels_t mouseOverChannel(pixels_t mouseY) const {
@@ -854,10 +867,37 @@ public:
                 cr.restore();
 
                 // compute audio rendering parameters
-                height = heightPixels - headerHeight;
-                yOffset += headerHeight;
+                height = heightPixels - headerHeight; // height of the area containing the waveform, in pixels
+                yOffset += headerHeight; // y-coordinate in pixels where the waveform rendering begins
+                // sampleOffset is the frame index at which to begin rendering the waveform
                 auto sampleOffset = (viewOffset > regionOffset) ? (viewOffset - regionOffset) / samplesPerPixel : 0;
-                auto channelHeight = height / region.nChannels;
+                auto channelHeight = height / region.nChannels; // height of each channel in pixels
+
+                bool moveOnset;
+                nframes_t moveOnsetFrameStart, moveOnsetFrameEnd;
+                pixels_t moveOnsetPixelsStart,
+                    moveOnsetPixelsCenterSrc,
+                    moveOnsetPixelsCenterDest,
+                    moveOnsetPixelsEnd;
+                double firstScaleFactor, secondScaleFactor;
+                if(_action == Action.moveOnset) {
+                    moveOnset = true;
+                    moveOnsetFrameStart = getPrevOnset(_moveOnsetChannel, _moveOnsetIndex);
+                    moveOnsetFrameEnd = getNextOnset(_moveOnsetChannel, _moveOnsetIndex);
+                    moveOnsetPixelsStart = (moveOnsetFrameStart - sampleOffset) / samplesPerPixel;
+                    moveOnsetPixelsCenterSrc = (_moveOnsetFrameSrc - sampleOffset) / samplesPerPixel;
+                    moveOnsetPixelsCenterDest = (_moveOnsetFrameDest - sampleOffset) / samplesPerPixel;
+                    moveOnsetPixelsEnd = (moveOnsetFrameEnd - sampleOffset) / samplesPerPixel;
+                    firstScaleFactor = (_moveOnsetFrameSrc > moveOnsetFrameStart) ?
+                        (cast(double)(_moveOnsetFrameDest - moveOnsetFrameStart) /
+                         cast(double)(_moveOnsetFrameSrc - moveOnsetFrameStart)) : 0;
+                    secondScaleFactor = (moveOnsetFrameEnd > _moveOnsetFrameSrc) ?
+                        (cast(double)(moveOnsetFrameEnd - _moveOnsetFrameDest) /
+                         cast(double)(moveOnsetFrameEnd - _moveOnsetFrameSrc)) : 0;
+                }
+
+                enum OnsetDrawState { init, firstHalf, secondHalf, complete };
+                OnsetDrawState onsetDrawState;
 
                 // draw the region's waveform
                 auto cacheIndex = region.getCacheIndex(_zoomStep);
@@ -870,14 +910,90 @@ public:
                                             samplesPerPixel,
                                             0) * (channelHeight / 2));
                     for(auto i = 1; i < width; ++i) {
-                        cr.lineTo(xOffset + i, channelYOffset -
+                        pixels_t scaledI = i;
+                        if(moveOnset && (channelIndex == _moveOnsetChannel || _moveOnsetLinkChannels)) {
+                            switch(onsetDrawState) {
+                                case OnsetDrawState.init:
+                                    if(i >= moveOnsetPixelsStart) {
+                                        onsetDrawState = OnsetDrawState.firstHalf;
+                                    }
+                                    else {
+                                        break;
+                                    }
+
+                                case OnsetDrawState.firstHalf:
+                                    if(i >= moveOnsetPixelsCenterSrc) {
+                                        onsetDrawState = OnsetDrawState.secondHalf;
+                                    }
+                                    else {
+                                        scaledI = cast(pixels_t)(moveOnsetPixelsStart +
+                                                                 (i - moveOnsetPixelsStart) * firstScaleFactor);
+                                        break;
+                                    }
+
+                                case OnsetDrawState.secondHalf:
+                                    if(i >= moveOnsetPixelsEnd) {
+                                        onsetDrawState = OnsetDrawState.complete;
+                                    }
+                                    else {
+                                        scaledI = cast(pixels_t)(moveOnsetPixelsCenterDest +
+                                                                 (i - moveOnsetPixelsCenterSrc) * secondScaleFactor);
+
+                                    }
+                                    break;
+
+                                default:
+                                    break;
+                            }
+                        }
+                        cr.lineTo(xOffset + scaledI, channelYOffset -
                                   clamp(region.getMax(channelIndex,
                                                       cacheIndex,
                                                       samplesPerPixel,
                                                       sampleOffset + i), 0, 1) * (channelHeight / 2));
                     }
+                    if(moveOnset) {
+                        onsetDrawState = OnsetDrawState.init;
+                    }
                     for(auto i = 1; i <= width; ++i) {
-                        cr.lineTo(xOffset + width - i, channelYOffset -
+                        pixels_t scaledI = width - i;
+                        if(moveOnset && (channelIndex == _moveOnsetChannel || _moveOnsetLinkChannels)) {
+                            switch(onsetDrawState) {
+                                case OnsetDrawState.init:
+                                    if(width - i <= moveOnsetPixelsEnd) {
+                                        onsetDrawState = OnsetDrawState.secondHalf;
+                                    }
+                                    else {
+                                        break;
+                                    }
+
+                                case OnsetDrawState.secondHalf:
+                                    if(width - i <= moveOnsetPixelsCenterSrc) {
+                                        onsetDrawState = OnsetDrawState.firstHalf;
+                                    }
+                                    else {
+                                        scaledI = cast(pixels_t)
+                                            (moveOnsetPixelsCenterDest +
+                                             ((width - i) - moveOnsetPixelsCenterSrc) * secondScaleFactor);
+                                        break;
+                                    }
+
+                                case OnsetDrawState.firstHalf:
+                                    if(width - i <= moveOnsetPixelsStart) {
+                                        onsetDrawState = OnsetDrawState.complete;
+                                    }
+                                    else {
+                                        scaledI = cast(pixels_t)
+                                            (moveOnsetPixelsStart +
+                                             ((width - i) - moveOnsetPixelsStart) * firstScaleFactor);
+                                    }
+                                    break;
+
+                                default:
+                                    break;
+                            }
+                        }
+                        cr.lineTo(xOffset + scaledI, channelYOffset -
                                   clamp(region.getMin(channelIndex,
                                                       cacheIndex,
                                                       samplesPerPixel,
@@ -1231,7 +1347,10 @@ private:
                             if(regionView.selected) {
                                 nframes_t deltaXSamples = abs(_mouseX - prevMouseX) * samplesPerPixel;
                                 Direction direction = (_mouseX > prevMouseX) ? Direction.right : Direction.left;
-                                regionView.moveOnset(_moveOnsetChannel, _moveOnsetIndex, deltaXSamples, direction);
+                                _moveOnsetFrameDest = regionView.moveOnset(_moveOnsetChannel,
+                                                                           _moveOnsetIndex,
+                                                                           deltaXSamples,
+                                                                           direction);
                             }
                         }
                         redraw();
@@ -1287,8 +1406,9 @@ private:
                                                            viewOffset + _mouseX * samplesPerPixel -
                                                            regionView.region.offset,
                                                            mouseOverThreshold * samplesPerPixel,
-                                                           _moveOnsetFrame,
+                                                           _moveOnsetFrameSrc,
                                                            _moveOnsetIndex)) {
+                                        _moveOnsetFrameDest = _moveOnsetFrameSrc;
                                         _setAction(Action.moveOnset);
                                     }
                                 }
@@ -1423,7 +1543,8 @@ private:
     bool _moveOnsetLinkChannels; // TODO implement
     size_t _moveOnsetIndex;
     channels_t _moveOnsetChannel;
-    nframes_t _moveOnsetFrame;
+    nframes_t _moveOnsetFrameSrc;
+    nframes_t _moveOnsetFrameDest;
 }
 
 void main(string[] args) {
