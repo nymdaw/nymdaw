@@ -182,8 +182,13 @@ public:
         }
     }
 
+    struct Onset {
+        immutable(nframes_t) src; // the original frame at which an onset occurred in the region
+        nframes_t dest; // the new frame to which an onset has been moved
+    }
+
     // returns an array of frames at which an onset occurs, with frames given locally for this region
-    nframes_t[] getOnsets(channels_t channelIndex) const {
+    Onset[] getOnsets(channels_t channelIndex) const {
         immutable(uint) windowSize = 512;
         immutable(uint) hopSize = 256;
         string onsetMethod = "default";
@@ -193,7 +198,7 @@ public:
         fvec_t* onsetBuffer = new_fvec(1);
         fvec_t* hopBuffer = new_fvec(hopSize);
 
-        nframes_t[] onsets;
+        Onset[] onsets;
         auto app = appender(onsets);
         aubio_onset_t* o = new_aubio_onset(cast(char*)(onsetMethod.toStringz()), windowSize, hopSize, sampleRate);
         aubio_onset_set_threshold(o, onsetThreshold);
@@ -204,7 +209,8 @@ public:
             }
             aubio_onset_do(o, hopBuffer, onsetBuffer);
             if(onsetBuffer.data[0] != 0) {
-                app.put(aubio_onset_get_last(o));
+                auto lastOnset = aubio_onset_get_last(o);
+                app.put(Onset(lastOnset, lastOnset));
             }
         }
         del_aubio_onset(o);
@@ -586,7 +592,7 @@ public:
         }
 
         void computeOnsets() {
-            _onsets = new nframes_t[][](region.nChannels);
+            _onsets = new Region.Onset[][](region.nChannels);
             for(channels_t c = 0; c < region.nChannels; ++c) {
                 _onsets[c] = region.getOnsets(c);
             }
@@ -608,7 +614,7 @@ public:
                              size_t leftIndex,
                              size_t rightIndex) {
                 foundIndex = (leftIndex + rightIndex) / 2;
-                foundFrame = _onsets[channelIndex][foundIndex];
+                foundFrame = _onsets[channelIndex][foundIndex].dest;
                 if(foundFrame >= searchFrame - searchRadius && foundFrame <= searchFrame + searchRadius) {
                     return true;
                 }
@@ -651,24 +657,24 @@ public:
                             Direction direction) {
             switch(direction) {
                 case Direction.left:
-                    nframes_t leftBound = (onsetIndex > 0) ? _onsets[channelIndex][onsetIndex - 1] : 0;
-                    if(_onsets[channelIndex][onsetIndex] > relativeSamples &&
-                        _onsets[channelIndex][onsetIndex] - relativeSamples > leftBound) {
-                        return (_onsets[channelIndex][onsetIndex] -= relativeSamples);
+                    nframes_t leftBound = (onsetIndex > 0) ? _onsets[channelIndex][onsetIndex - 1].dest : 0;
+                    if(_onsets[channelIndex][onsetIndex].dest > relativeSamples &&
+                       _onsets[channelIndex][onsetIndex].dest - relativeSamples > leftBound) {
+                        return (_onsets[channelIndex][onsetIndex].dest -= relativeSamples);
                     }
                     else {
-                        return (_onsets[channelIndex][onsetIndex] = leftBound);
+                        return (_onsets[channelIndex][onsetIndex].dest = leftBound);
                     }
                     break;
 
                 case Direction.right:
                     nframes_t rightBound = (onsetIndex < _onsets[channelIndex].length - 1) ?
-                        _onsets[channelIndex][onsetIndex + 1] : region.nframes - 1;
-                    if(_onsets[channelIndex][onsetIndex] + relativeSamples < rightBound) {
-                        return (_onsets[channelIndex][onsetIndex] += relativeSamples);
+                        _onsets[channelIndex][onsetIndex + 1].dest : region.nframes - 1;
+                    if(_onsets[channelIndex][onsetIndex].dest + relativeSamples < rightBound) {
+                        return (_onsets[channelIndex][onsetIndex].dest += relativeSamples);
                     }
                     else {
-                        return (_onsets[channelIndex][onsetIndex] = rightBound);
+                        return (_onsets[channelIndex][onsetIndex].dest = rightBound);
                     }
                     break;
 
@@ -679,11 +685,11 @@ public:
         }
 
         nframes_t getPrevOnset(channels_t channelIndex, size_t onsetIndex) const {
-            return (onsetIndex > 0) ? _onsets[channelIndex][onsetIndex - 1] : 0;
+            return (onsetIndex > 0) ? _onsets[channelIndex][onsetIndex - 1].dest : 0;
         }
         nframes_t getNextOnset(channels_t channelIndex, size_t onsetIndex) const {
             return (onsetIndex < _onsets[channelIndex].length - 1) ?
-                _onsets[channelIndex][onsetIndex + 1] : region.nframes - 1;
+                _onsets[channelIndex][onsetIndex + 1].dest : region.nframes - 1;
         }
 
         channels_t mouseOverChannel(pixels_t mouseY) const {
@@ -869,14 +875,13 @@ public:
                 // compute audio rendering parameters
                 height = heightPixels - headerHeight; // height of the area containing the waveform, in pixels
                 yOffset += headerHeight; // y-coordinate in pixels where the waveform rendering begins
-                // sampleOffset is the frame index at which to begin rendering the waveform
-                nframes_t sampleOffset = (viewOffset > regionOffset) ? (viewOffset - regionOffset) : 0;
                 // pixelsOffset is the screen-space x-coordinate at which to begin rendering the waveform
-                pixels_t pixelsOffset = sampleOffset / samplesPerPixel;
+                pixels_t pixelsOffset =
+                    (viewOffset > regionOffset) ? (viewOffset - regionOffset) / samplesPerPixel : 0;
                 pixels_t channelHeight = height / region.nChannels; // height of each channel in pixels
 
                 bool moveOnset;
-                nframes_t moveOnsetFrameStart, moveOnsetFrameEnd;
+                long moveOnsetFrameStart, moveOnsetFrameEnd;
                 pixels_t moveOnsetPixelsStart,
                     moveOnsetPixelsCenterSrc,
                     moveOnsetPixelsCenterDest,
@@ -884,12 +889,18 @@ public:
                 double firstScaleFactor, secondScaleFactor;
                 if(_action == Action.moveOnset) {
                     moveOnset = true;
+                    long sampleOffset = cast(long)(viewOffset) - cast(long)(regionOffset);
+
                     moveOnsetFrameStart = region.offset + getPrevOnset(_moveOnsetChannel, _moveOnsetIndex);
                     moveOnsetFrameEnd = region.offset + getNextOnset(_moveOnsetChannel, _moveOnsetIndex);
-                    moveOnsetPixelsStart = (moveOnsetFrameStart - sampleOffset) / samplesPerPixel;
-                    moveOnsetPixelsCenterSrc = (_moveOnsetFrameSrc - sampleOffset) / samplesPerPixel;
-                    moveOnsetPixelsCenterDest = (_moveOnsetFrameDest - sampleOffset) / samplesPerPixel;
-                    moveOnsetPixelsEnd = (moveOnsetFrameEnd - sampleOffset) / samplesPerPixel;
+                    moveOnsetPixelsStart =
+                        cast(pixels_t)((moveOnsetFrameStart - sampleOffset) / samplesPerPixel);
+                    moveOnsetPixelsCenterSrc =
+                        cast(pixels_t)((_moveOnsetFrameSrc - sampleOffset) / samplesPerPixel);
+                    moveOnsetPixelsCenterDest =
+                        cast(pixels_t)((_moveOnsetFrameDest - sampleOffset) / samplesPerPixel);
+                    moveOnsetPixelsEnd =
+                        cast(pixels_t)((moveOnsetFrameEnd - sampleOffset) / samplesPerPixel);
                     firstScaleFactor = (_moveOnsetFrameSrc > moveOnsetFrameStart) ?
                         (cast(double)(_moveOnsetFrameDest - moveOnsetFrameStart) /
                          cast(double)(_moveOnsetFrameSrc - moveOnsetFrameStart)) : 0;
@@ -905,13 +916,19 @@ public:
                 auto cacheIndex = region.getCacheIndex(_zoomStep);
                 auto channelYOffset = yOffset + (channelHeight / 2);
                 for(channels_t channelIndex = 0; channelIndex < region.nChannels; ++channelIndex) {
+                    pixels_t startPixel = (moveOnset && moveOnsetPixelsStart < 0 && firstScaleFactor != 0) ?
+                        max(cast(pixels_t)(moveOnsetPixelsStart / firstScaleFactor), moveOnsetPixelsStart) : 0;
+                    pixels_t endPixel = (moveOnset && moveOnsetPixelsEnd > width && secondScaleFactor != 0) ?
+                        min(cast(pixels_t)((moveOnsetPixelsEnd - width) / secondScaleFactor),
+                            moveOnsetPixelsEnd - width) : 0;
+
                     cr.newSubPath();
                     cr.moveTo(xOffset, channelYOffset +
                               region.getMax(channelIndex,
                                             cacheIndex,
                                             samplesPerPixel,
-                                            0) * (channelHeight / 2));
-                    for(auto i = 1; i < width; ++i) {
+                                            pixelsOffset + startPixel) * (channelHeight / 2));
+                    for(auto i = 1 + startPixel; i < width + endPixel; ++i) {
                         pixels_t scaledI = i;
                         if(moveOnset && (channelIndex == _moveOnsetChannel || _moveOnsetLinkChannels)) {
                             switch(onsetDrawState) {
@@ -957,7 +974,7 @@ public:
                     if(moveOnset) {
                         onsetDrawState = OnsetDrawState.init;
                     }
-                    for(auto i = 1; i <= width; ++i) {
+                    for(auto i = 1 - endPixel; i <= width - startPixel; ++i) {
                         pixels_t scaledI = width - i;
                         if(moveOnset && (channelIndex == _moveOnsetChannel || _moveOnsetLinkChannels)) {
                             switch(onsetDrawState) {
@@ -1011,11 +1028,11 @@ public:
                 if(editMode) {
                     foreach(channelIndex, channel; _onsets) {
                         foreach(onset; channel) {
-                            if(onset + regionOffset >= viewOffset &&
-                               onset + regionOffset < viewOffset + viewWidthSamples) {
-                                cr.moveTo(xOffset + onset / samplesPerPixel - pixelsOffset,
+                            if(onset.dest + regionOffset >= viewOffset &&
+                               onset.dest + regionOffset < viewOffset + viewWidthSamples) {
+                                cr.moveTo(xOffset + onset.dest / samplesPerPixel - pixelsOffset,
                                           yOffset + (channelIndex * channelHeight));
-                                cr.lineTo(xOffset + onset / samplesPerPixel - pixelsOffset,
+                                cr.lineTo(xOffset + onset.dest / samplesPerPixel - pixelsOffset,
                                           yOffset + ((channelIndex + 1) * channelHeight));
                             }
                         }
@@ -1032,7 +1049,7 @@ public:
         }
 
         bool _editMode;
-        nframes_t[][] _onsets; // indexed as [channel][onset]
+        Region.Onset[][] _onsets; // indexed as [channel][onset]
 
         PgLayout _headerLabelLayout;
     }
