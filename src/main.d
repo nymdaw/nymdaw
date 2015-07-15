@@ -870,8 +870,10 @@ public:
                 height = heightPixels - headerHeight; // height of the area containing the waveform, in pixels
                 yOffset += headerHeight; // y-coordinate in pixels where the waveform rendering begins
                 // sampleOffset is the frame index at which to begin rendering the waveform
-                auto sampleOffset = (viewOffset > regionOffset) ? (viewOffset - regionOffset) / samplesPerPixel : 0;
-                auto channelHeight = height / region.nChannels; // height of each channel in pixels
+                nframes_t sampleOffset = (viewOffset > regionOffset) ? (viewOffset - regionOffset) : 0;
+                // pixelsOffset is the screen-space x-coordinate at which to begin rendering the waveform
+                pixels_t pixelsOffset = sampleOffset / samplesPerPixel;
+                pixels_t channelHeight = height / region.nChannels; // height of each channel in pixels
 
                 bool moveOnset;
                 nframes_t moveOnsetFrameStart, moveOnsetFrameEnd;
@@ -882,8 +884,8 @@ public:
                 double firstScaleFactor, secondScaleFactor;
                 if(_action == Action.moveOnset) {
                     moveOnset = true;
-                    moveOnsetFrameStart = getPrevOnset(_moveOnsetChannel, _moveOnsetIndex);
-                    moveOnsetFrameEnd = getNextOnset(_moveOnsetChannel, _moveOnsetIndex);
+                    moveOnsetFrameStart = region.offset + getPrevOnset(_moveOnsetChannel, _moveOnsetIndex);
+                    moveOnsetFrameEnd = region.offset + getNextOnset(_moveOnsetChannel, _moveOnsetIndex);
                     moveOnsetPixelsStart = (moveOnsetFrameStart - sampleOffset) / samplesPerPixel;
                     moveOnsetPixelsCenterSrc = (_moveOnsetFrameSrc - sampleOffset) / samplesPerPixel;
                     moveOnsetPixelsCenterDest = (_moveOnsetFrameDest - sampleOffset) / samplesPerPixel;
@@ -950,7 +952,7 @@ public:
                                   clamp(region.getMax(channelIndex,
                                                       cacheIndex,
                                                       samplesPerPixel,
-                                                      sampleOffset + i), 0, 1) * (channelHeight / 2));
+                                                      pixelsOffset + i), 0, 1) * (channelHeight / 2));
                     }
                     if(moveOnset) {
                         onsetDrawState = OnsetDrawState.init;
@@ -997,7 +999,7 @@ public:
                                   clamp(region.getMin(channelIndex,
                                                       cacheIndex,
                                                       samplesPerPixel,
-                                                      sampleOffset + width - i), -1, 0) * (channelHeight / 2));
+                                                      pixelsOffset + width - i), -1, 0) * (channelHeight / 2));
                     }
                     cr.closePath();
                     cr.setSourceRgba(1.0, 1.0, 1.0, alpha);
@@ -1011,9 +1013,9 @@ public:
                         foreach(onset; channel) {
                             if(onset + regionOffset >= viewOffset &&
                                onset + regionOffset < viewOffset + viewWidthSamples) {
-                                cr.moveTo(xOffset + onset / samplesPerPixel - sampleOffset,
+                                cr.moveTo(xOffset + onset / samplesPerPixel - pixelsOffset,
                                           yOffset + (channelIndex * channelHeight));
-                                cr.lineTo(xOffset + onset / samplesPerPixel - sampleOffset,
+                                cr.lineTo(xOffset + onset / samplesPerPixel - pixelsOffset,
                                           yOffset + ((channelIndex + 1) * channelHeight));
                             }
                         }
