@@ -888,7 +888,6 @@ public:
                     onsetPixelsEnd;
                 double firstScaleFactor, secondScaleFactor;
                 if(_action == Action.moveOnset) {
-                    writeln(_moveOnsetFrameSrc, " ", _moveOnsetFrameDest);
                     moveOnset = true;
                     long sampleOffset = cast(long)(viewOffset) - cast(long)(regionOffset);
 
