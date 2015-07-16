@@ -881,32 +881,33 @@ public:
                 pixels_t channelHeight = height / region.nChannels; // height of each channel in pixels
 
                 bool moveOnset;
-                long moveOnsetFrameStart, moveOnsetFrameEnd;
-                pixels_t moveOnsetPixelsStart,
-                    moveOnsetPixelsCenterSrc,
-                    moveOnsetPixelsCenterDest,
-                    moveOnsetPixelsEnd;
+                long onsetFrameStart, onsetFrameEnd;
+                pixels_t onsetPixelsStart,
+                    onsetPixelsCenterSrc,
+                    onsetPixelsCenterDest,
+                    onsetPixelsEnd;
                 double firstScaleFactor, secondScaleFactor;
                 if(_action == Action.moveOnset) {
+                    writeln(_moveOnsetFrameSrc, " ", _moveOnsetFrameDest);
                     moveOnset = true;
                     long sampleOffset = cast(long)(viewOffset) - cast(long)(regionOffset);
 
-                    moveOnsetFrameStart = region.offset + getPrevOnset(_moveOnsetChannel, _moveOnsetIndex);
-                    moveOnsetFrameEnd = region.offset + getNextOnset(_moveOnsetChannel, _moveOnsetIndex);
-                    moveOnsetPixelsStart =
-                        cast(pixels_t)((moveOnsetFrameStart - sampleOffset) / samplesPerPixel);
-                    moveOnsetPixelsCenterSrc =
+                    onsetFrameStart = region.offset + getPrevOnset(_moveOnsetChannel, _moveOnsetIndex);
+                    onsetFrameEnd = region.offset + getNextOnset(_moveOnsetChannel, _moveOnsetIndex);
+                    onsetPixelsStart =
+                        cast(pixels_t)((onsetFrameStart - sampleOffset) / samplesPerPixel);
+                    onsetPixelsCenterSrc =
                         cast(pixels_t)((_moveOnsetFrameSrc - sampleOffset) / samplesPerPixel);
-                    moveOnsetPixelsCenterDest =
+                    onsetPixelsCenterDest =
                         cast(pixels_t)((_moveOnsetFrameDest - sampleOffset) / samplesPerPixel);
-                    moveOnsetPixelsEnd =
-                        cast(pixels_t)((moveOnsetFrameEnd - sampleOffset) / samplesPerPixel);
-                    firstScaleFactor = (_moveOnsetFrameSrc > moveOnsetFrameStart) ?
-                        (cast(double)(_moveOnsetFrameDest - moveOnsetFrameStart) /
-                         cast(double)(_moveOnsetFrameSrc - moveOnsetFrameStart)) : 0;
-                    secondScaleFactor = (moveOnsetFrameEnd > _moveOnsetFrameSrc) ?
-                        (cast(double)(moveOnsetFrameEnd - _moveOnsetFrameDest) /
-                         cast(double)(moveOnsetFrameEnd - _moveOnsetFrameSrc)) : 0;
+                    onsetPixelsEnd =
+                        cast(pixels_t)((onsetFrameEnd - sampleOffset) / samplesPerPixel);
+                    firstScaleFactor = (_moveOnsetFrameSrc > onsetFrameStart) ?
+                        (cast(double)(_moveOnsetFrameDest - onsetFrameStart) /
+                         cast(double)(_moveOnsetFrameSrc - onsetFrameStart)) : 0;
+                    secondScaleFactor = (onsetFrameEnd > _moveOnsetFrameSrc) ?
+                        (cast(double)(onsetFrameEnd - _moveOnsetFrameDest) /
+                         cast(double)(onsetFrameEnd - _moveOnsetFrameSrc)) : 0;
                 }
 
                 enum OnsetDrawState { init, firstHalf, secondHalf, complete };
@@ -916,11 +917,11 @@ public:
                 auto cacheIndex = region.getCacheIndex(_zoomStep);
                 auto channelYOffset = yOffset + (channelHeight / 2);
                 for(channels_t channelIndex = 0; channelIndex < region.nChannels; ++channelIndex) {
-                    pixels_t startPixel = (moveOnset && moveOnsetPixelsStart < 0 && firstScaleFactor != 0) ?
-                        max(cast(pixels_t)(moveOnsetPixelsStart / firstScaleFactor), moveOnsetPixelsStart) : 0;
-                    pixels_t endPixel = (moveOnset && moveOnsetPixelsEnd > width && secondScaleFactor != 0) ?
-                        min(cast(pixels_t)((moveOnsetPixelsEnd - width) / secondScaleFactor),
-                            moveOnsetPixelsEnd - width) : 0;
+                    pixels_t startPixel = (moveOnset && onsetPixelsStart < 0 && firstScaleFactor != 0) ?
+                        max(cast(pixels_t)(onsetPixelsStart / firstScaleFactor), onsetPixelsStart) : 0;
+                    pixels_t endPixel = (moveOnset && onsetPixelsEnd > width && secondScaleFactor != 0) ?
+                        min(cast(pixels_t)((onsetPixelsEnd - width) / secondScaleFactor),
+                            onsetPixelsEnd - width) : 0;
 
                     cr.newSubPath();
                     cr.moveTo(xOffset, channelYOffset +
@@ -933,7 +934,7 @@ public:
                         if(moveOnset && (channelIndex == _moveOnsetChannel || _moveOnsetLinkChannels)) {
                             switch(onsetDrawState) {
                                 case OnsetDrawState.init:
-                                    if(i >= moveOnsetPixelsStart) {
+                                    if(i >= onsetPixelsStart) {
                                         onsetDrawState = OnsetDrawState.firstHalf;
                                     }
                                     else {
@@ -941,22 +942,22 @@ public:
                                     }
 
                                 case OnsetDrawState.firstHalf:
-                                    if(i >= moveOnsetPixelsCenterSrc) {
+                                    if(i >= onsetPixelsCenterSrc) {
                                         onsetDrawState = OnsetDrawState.secondHalf;
                                     }
                                     else {
-                                        scaledI = cast(pixels_t)(moveOnsetPixelsStart +
-                                                                 (i - moveOnsetPixelsStart) * firstScaleFactor);
+                                        scaledI = cast(pixels_t)(onsetPixelsStart +
+                                                                 (i - onsetPixelsStart) * firstScaleFactor);
                                         break;
                                     }
 
                                 case OnsetDrawState.secondHalf:
-                                    if(i >= moveOnsetPixelsEnd) {
+                                    if(i >= onsetPixelsEnd) {
                                         onsetDrawState = OnsetDrawState.complete;
                                     }
                                     else {
-                                        scaledI = cast(pixels_t)(moveOnsetPixelsCenterDest +
-                                                                 (i - moveOnsetPixelsCenterSrc) * secondScaleFactor);
+                                        scaledI = cast(pixels_t)(onsetPixelsCenterDest +
+                                                                 (i - onsetPixelsCenterSrc) * secondScaleFactor);
 
                                     }
                                     break;
@@ -979,7 +980,7 @@ public:
                         if(moveOnset && (channelIndex == _moveOnsetChannel || _moveOnsetLinkChannels)) {
                             switch(onsetDrawState) {
                                 case OnsetDrawState.init:
-                                    if(width - i <= moveOnsetPixelsEnd) {
+                                    if(width - i <= onsetPixelsEnd) {
                                         onsetDrawState = OnsetDrawState.secondHalf;
                                     }
                                     else {
@@ -987,24 +988,24 @@ public:
                                     }
 
                                 case OnsetDrawState.secondHalf:
-                                    if(width - i <= moveOnsetPixelsCenterSrc) {
+                                    if(width - i <= onsetPixelsCenterSrc) {
                                         onsetDrawState = OnsetDrawState.firstHalf;
                                     }
                                     else {
                                         scaledI = cast(pixels_t)
-                                            (moveOnsetPixelsCenterDest +
-                                             ((width - i) - moveOnsetPixelsCenterSrc) * secondScaleFactor);
+                                            (onsetPixelsCenterDest +
+                                             ((width - i) - onsetPixelsCenterSrc) * secondScaleFactor);
                                         break;
                                     }
 
                                 case OnsetDrawState.firstHalf:
-                                    if(width - i <= moveOnsetPixelsStart) {
+                                    if(width - i <= onsetPixelsStart) {
                                         onsetDrawState = OnsetDrawState.complete;
                                     }
                                     else {
                                         scaledI = cast(pixels_t)
-                                            (moveOnsetPixelsStart +
-                                             ((width - i) - moveOnsetPixelsStart) * firstScaleFactor);
+                                            (onsetPixelsStart +
+                                             ((width - i) - onsetPixelsStart) * firstScaleFactor);
                                     }
                                     break;
 
