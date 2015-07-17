@@ -612,6 +612,8 @@ public:
                              size_t leftIndex,
                              size_t rightIndex) {
                 foundIndex = (leftIndex + rightIndex) / 2;
+                if(foundIndex >= _onsets[channelIndex].length) return false;
+
                 foundFrame = _onsets[channelIndex][foundIndex];
                 if(foundFrame >= searchFrame - searchRadius && foundFrame <= searchFrame + searchRadius) {
                     return true;
@@ -648,7 +650,7 @@ public:
                                _onsets[channelIndex].length - 1);
         }
 
-        // move a specific onset given by onsetIndex, returns the new onset value
+        // move a specific onset given by onsetIndex, returns the new onset value (locally indexed for this region)
         nframes_t moveOnset(channels_t channelIndex,
                             size_t onsetIndex,
                             nframes_t relativeSamples,
@@ -682,6 +684,7 @@ public:
             return 0;
         }
 
+        // these functions return onset frames, locally indexed for this region
         nframes_t getPrevOnset(channels_t channelIndex, size_t onsetIndex) const {
             return (onsetIndex > 0) ? _onsets[channelIndex][onsetIndex - 1] : 0;
         }
@@ -878,8 +881,7 @@ public:
                     (viewOffset > regionOffset) ? (viewOffset - regionOffset) / samplesPerPixel : 0;
                 pixels_t channelHeight = height / region.nChannels; // height of each channel in pixels
 
-                bool moveOnset;
-                long onsetFrameStart, onsetFrameEnd;
+                bool moveOnset;                
                 pixels_t onsetPixelsStart,
                     onsetPixelsCenterSrc,
                     onsetPixelsCenterDest,
@@ -887,24 +889,28 @@ public:
                 double firstScaleFactor, secondScaleFactor;
                 if(_action == Action.moveOnset) {
                     moveOnset = true;
-                    long sampleOffset = cast(long)(viewOffset) - cast(long)(regionOffset);
+                    long onsetViewOffset = (viewOffset > regionOffset) ? cast(long)(viewOffset) : 0;
+                    long onsetRegionOffset = (viewOffset > regionOffset) ? cast(long)(regionOffset) : 0;
+                    long onsetFrameStart, onsetFrameEnd, onsetFrameSrc, onsetFrameDest;
 
-                    onsetFrameStart = region.offset + getPrevOnset(_moveOnsetChannel, _moveOnsetIndex);
-                    onsetFrameEnd = region.offset + getNextOnset(_moveOnsetChannel, _moveOnsetIndex);
+                    onsetFrameStart = onsetRegionOffset + getPrevOnset(_moveOnsetChannel, _moveOnsetIndex);
+                    onsetFrameEnd = onsetRegionOffset + getNextOnset(_moveOnsetChannel, _moveOnsetIndex);
+                    onsetFrameSrc = onsetRegionOffset + _moveOnsetFrameSrc;
+                    onsetFrameDest = onsetRegionOffset + _moveOnsetFrameDest;
                     onsetPixelsStart =
-                        cast(pixels_t)((onsetFrameStart - sampleOffset) / samplesPerPixel);
+                        cast(pixels_t)((onsetFrameStart - onsetViewOffset) / samplesPerPixel);
                     onsetPixelsCenterSrc =
-                        cast(pixels_t)((_moveOnsetFrameSrc - sampleOffset) / samplesPerPixel);
+                        cast(pixels_t)((onsetFrameSrc - onsetViewOffset) / samplesPerPixel);
                     onsetPixelsCenterDest =
-                        cast(pixels_t)((_moveOnsetFrameDest - sampleOffset) / samplesPerPixel);
+                        cast(pixels_t)((onsetFrameDest - onsetViewOffset) / samplesPerPixel);
                     onsetPixelsEnd =
-                        cast(pixels_t)((onsetFrameEnd - sampleOffset) / samplesPerPixel);
-                    firstScaleFactor = (_moveOnsetFrameSrc > onsetFrameStart) ?
-                        (cast(double)(_moveOnsetFrameDest - onsetFrameStart) /
-                         cast(double)(_moveOnsetFrameSrc - onsetFrameStart)) : 0;
-                    secondScaleFactor = (onsetFrameEnd > _moveOnsetFrameSrc) ?
-                        (cast(double)(onsetFrameEnd - _moveOnsetFrameDest) /
-                         cast(double)(onsetFrameEnd - _moveOnsetFrameSrc)) : 0;
+                        cast(pixels_t)((onsetFrameEnd - onsetViewOffset) / samplesPerPixel);
+                    firstScaleFactor = (onsetFrameSrc > onsetFrameStart) ?
+                        (cast(double)(onsetFrameDest - onsetFrameStart) /
+                         cast(double)(onsetFrameSrc - onsetFrameStart)) : 0;
+                    secondScaleFactor = (onsetFrameEnd > onsetFrameSrc) ?
+                        (cast(double)(onsetFrameEnd - onsetFrameDest) /
+                         cast(double)(onsetFrameEnd - onsetFrameSrc)) : 0;
                 }
 
                 enum OnsetDrawState { init, firstHalf, secondHalf, complete };
@@ -1173,22 +1179,21 @@ private:
     void _setMode(Mode mode) {
         switch(mode) {
             case Mode.editRegion:
-                // enable edit mode for selected regions
+                // enable edit mode for the first selected region
                 foreach(regionView; _regionViews) {
                     if(regionView.selected) {
                         regionView.editMode = true;
+                        _editRegion = regionView;
+                        break;
                     }
                 }
                 break;
 
             default:
-                // if the last mode was editRegion, unset the edit mode flag for selected regions
+                // if the last mode was editRegion, unset the edit mode flag for the edited region
                 if(_mode == Mode.editRegion) {
-                    foreach(regionView; _regionViews) {
-                        if(regionView.selected) {
-                            regionView.editMode = false;
-                        }
-                    }
+                    _editRegion.editMode = false;
+                    _editRegion = null;
                 }
                 break;
         }
@@ -1416,18 +1421,16 @@ private:
 
                         case Mode.editRegion:
                             // detect if the mouse is over an onset
-                            foreach(regionView; _regionViews) {
-                                if(regionView.selected) {
-                                    _moveOnsetChannel = regionView.mouseOverChannel(_mouseY);
-                                    if(regionView.getOnset(_moveOnsetChannel,
-                                                           viewOffset + _mouseX * samplesPerPixel -
-                                                           regionView.region.offset,
-                                                           mouseOverThreshold * samplesPerPixel,
-                                                           _moveOnsetFrameSrc,
-                                                           _moveOnsetIndex)) {
-                                        _moveOnsetFrameDest = _moveOnsetFrameSrc;
-                                        _setAction(Action.moveOnset);
-                                    }
+                            if(_editRegion) {
+                                _moveOnsetChannel = _editRegion.mouseOverChannel(_mouseY);
+                                if(_editRegion.getOnset(_moveOnsetChannel,
+                                                        viewOffset + _mouseX * samplesPerPixel -
+                                                        _editRegion.region.offset,
+                                                        mouseOverThreshold * samplesPerPixel,
+                                                        _moveOnsetFrameSrc,
+                                                        _moveOnsetIndex)) {
+                                    _moveOnsetFrameDest = _moveOnsetFrameSrc;
+                                    _setAction(Action.moveOnset);
                                 }
                             }
                             break;
@@ -1463,12 +1466,18 @@ private:
 
                     case Action.moveOnset:
                         // TODO stretch audio here
-                        RubberBandState r = rubberband_new(_mixer.sampleRate,
-                                                           2,
-                                                           RubberBandOption.RubberBandOptionProcessOffline,
-                                                           2.0,
-                                                           1.0);
-                        rubberband_delete(r);
+                        
+                        RubberBandState rState = rubberband_new(_mixer.sampleRate,
+                                                                2,
+                                                                RubberBandOption.RubberBandOptionProcessOffline,
+                                                                2.0,
+                                                                1.0);
+                        immutable(nframes_t) stretchStart =
+                            _editRegion.getPrevOnset(_moveOnsetChannel, _moveOnsetIndex);
+                        immutable(nframes_t) stretchEnd =
+                            _editRegion.getNextOnset(_moveOnsetChannel, _moveOnsetIndex);
+                        rubberband_delete(rState);
+
                         _setAction(Action.none);
                         break;
 
@@ -1547,6 +1556,7 @@ private:
     Mixer _mixer;
     TrackView[] _trackViews;
     RegionView[] _regionViews;
+    RegionView _editRegion;
 
     nframes_t _samplesPerPixel;
     nframes_t _viewOffset;
@@ -1566,8 +1576,8 @@ private:
     bool _moveOnsetLinkChannels; // TODO implement
     size_t _moveOnsetIndex;
     channels_t _moveOnsetChannel;
-    nframes_t _moveOnsetFrameSrc;
-    nframes_t _moveOnsetFrameDest;
+    nframes_t _moveOnsetFrameSrc; // locally indexed for region
+    nframes_t _moveOnsetFrameDest; // locally indexed for region
 }
 
 void main(string[] args) {
