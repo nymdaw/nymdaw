@@ -55,6 +55,11 @@ def configure( ctx ):
 
     # Check for rubberband
     ctx.check_cc( lib = "rubberband", use = "rubberband" )
+    ctx.env.append_value( "LIB_rubberband", "rubberband" )
+    ctx.check_cc( lib = "fftw3" )
+    ctx.check_cc( lib = "fftw3f" )
+    ctx.check_cc( lib = "stdc++" )
+    ctx.env.append_value( "LIB_rubberband", [ "fftw3", "fftw3f", "stdc++" ] )
 
     # Check for aubio
     ctx.check_cfg( package = "aubio",

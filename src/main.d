@@ -10,6 +10,7 @@ import jack.client;
 import sndfile;
 import samplerate;
 import aubio;
+import rubberband;
 
 import gtk.MainWindow;
 import gtk.Main;
@@ -182,13 +183,8 @@ public:
         }
     }
 
-    struct Onset {
-        immutable(nframes_t) src; // the original frame at which an onset occurred in the region
-        nframes_t dest; // the new frame to which an onset has been moved
-    }
-
     // returns an array of frames at which an onset occurs, with frames given locally for this region
-    Onset[] getOnsets(channels_t channelIndex) const {
+    nframes_t[] getOnsets(channels_t channelIndex) const {
         immutable(uint) windowSize = 512;
         immutable(uint) hopSize = 256;
         string onsetMethod = "default";
@@ -198,7 +194,7 @@ public:
         fvec_t* onsetBuffer = new_fvec(1);
         fvec_t* hopBuffer = new_fvec(hopSize);
 
-        Onset[] onsets;
+        nframes_t[] onsets;
         auto app = appender(onsets);
         aubio_onset_t* o = new_aubio_onset(cast(char*)(onsetMethod.toStringz()), windowSize, hopSize, sampleRate);
         aubio_onset_set_threshold(o, onsetThreshold);
@@ -210,7 +206,9 @@ public:
             aubio_onset_do(o, hopBuffer, onsetBuffer);
             if(onsetBuffer.data[0] != 0) {
                 auto lastOnset = aubio_onset_get_last(o);
-                app.put(Onset(lastOnset, lastOnset));
+                if(lastOnset != 0) {
+                    app.put(lastOnset);
+                }
             }
         }
         del_aubio_onset(o);
@@ -592,7 +590,7 @@ public:
         }
 
         void computeOnsets() {
-            _onsets = new Region.Onset[][](region.nChannels);
+            _onsets = new nframes_t[][](region.nChannels);
             for(channels_t c = 0; c < region.nChannels; ++c) {
                 _onsets[c] = region.getOnsets(c);
             }
@@ -614,7 +612,7 @@ public:
                              size_t leftIndex,
                              size_t rightIndex) {
                 foundIndex = (leftIndex + rightIndex) / 2;
-                foundFrame = _onsets[channelIndex][foundIndex].dest;
+                foundFrame = _onsets[channelIndex][foundIndex];
                 if(foundFrame >= searchFrame - searchRadius && foundFrame <= searchFrame + searchRadius) {
                     return true;
                 }
@@ -657,24 +655,24 @@ public:
                             Direction direction) {
             switch(direction) {
                 case Direction.left:
-                    nframes_t leftBound = (onsetIndex > 0) ? _onsets[channelIndex][onsetIndex - 1].dest : 0;
-                    if(_onsets[channelIndex][onsetIndex].dest > relativeSamples &&
-                       _onsets[channelIndex][onsetIndex].dest - relativeSamples > leftBound) {
-                        return (_onsets[channelIndex][onsetIndex].dest -= relativeSamples);
+                    nframes_t leftBound = (onsetIndex > 0) ? _onsets[channelIndex][onsetIndex - 1] : 0;
+                    if(_onsets[channelIndex][onsetIndex] > relativeSamples &&
+                       _onsets[channelIndex][onsetIndex] - relativeSamples > leftBound) {
+                        return (_onsets[channelIndex][onsetIndex] -= relativeSamples);
                     }
                     else {
-                        return (_onsets[channelIndex][onsetIndex].dest = leftBound);
+                        return (_onsets[channelIndex][onsetIndex] = leftBound);
                     }
                     break;
 
                 case Direction.right:
                     nframes_t rightBound = (onsetIndex < _onsets[channelIndex].length - 1) ?
-                        _onsets[channelIndex][onsetIndex + 1].dest : region.nframes - 1;
-                    if(_onsets[channelIndex][onsetIndex].dest + relativeSamples < rightBound) {
-                        return (_onsets[channelIndex][onsetIndex].dest += relativeSamples);
+                        _onsets[channelIndex][onsetIndex + 1] : region.nframes - 1;
+                    if(_onsets[channelIndex][onsetIndex] + relativeSamples < rightBound) {
+                        return (_onsets[channelIndex][onsetIndex] += relativeSamples);
                     }
                     else {
-                        return (_onsets[channelIndex][onsetIndex].dest = rightBound);
+                        return (_onsets[channelIndex][onsetIndex] = rightBound);
                     }
                     break;
 
@@ -685,11 +683,11 @@ public:
         }
 
         nframes_t getPrevOnset(channels_t channelIndex, size_t onsetIndex) const {
-            return (onsetIndex > 0) ? _onsets[channelIndex][onsetIndex - 1].dest : 0;
+            return (onsetIndex > 0) ? _onsets[channelIndex][onsetIndex - 1] : 0;
         }
         nframes_t getNextOnset(channels_t channelIndex, size_t onsetIndex) const {
             return (onsetIndex < _onsets[channelIndex].length - 1) ?
-                _onsets[channelIndex][onsetIndex + 1].dest : region.nframes - 1;
+                _onsets[channelIndex][onsetIndex + 1] : region.nframes - 1;
         }
 
         channels_t mouseOverChannel(pixels_t mouseY) const {
@@ -1028,11 +1026,11 @@ public:
                 if(editMode) {
                     foreach(channelIndex, channel; _onsets) {
                         foreach(onset; channel) {
-                            if(onset.dest + regionOffset >= viewOffset &&
-                               onset.dest + regionOffset < viewOffset + viewWidthSamples) {
-                                cr.moveTo(xOffset + onset.dest / samplesPerPixel - pixelsOffset,
+                            if(onset + regionOffset >= viewOffset &&
+                               onset + regionOffset < viewOffset + viewWidthSamples) {
+                                cr.moveTo(xOffset + onset / samplesPerPixel - pixelsOffset,
                                           yOffset + (channelIndex * channelHeight));
-                                cr.lineTo(xOffset + onset.dest / samplesPerPixel - pixelsOffset,
+                                cr.lineTo(xOffset + onset / samplesPerPixel - pixelsOffset,
                                           yOffset + ((channelIndex + 1) * channelHeight));
                             }
                         }
@@ -1049,7 +1047,7 @@ public:
         }
 
         bool _editMode;
-        Region.Onset[][] _onsets; // indexed as [channel][onset]
+        nframes_t[][] _onsets; // indexed as [channel][onset]
 
         PgLayout _headerLabelLayout;
     }
@@ -1465,6 +1463,12 @@ private:
 
                     case Action.moveOnset:
                         // TODO stretch audio here
+                        RubberBandState r = rubberband_new(_mixer.sampleRate,
+                                                           2,
+                                                           RubberBandOption.RubberBandOptionProcessOffline,
+                                                           2.0,
+                                                           1.0);
+                        rubberband_delete(r);
                         _setAction(Action.none);
                         break;
 

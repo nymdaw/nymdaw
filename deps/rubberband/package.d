@@ -21,6 +21,8 @@
     you must obtain a valid commercial licence before doing so.
 */
 
+module rubberband;
+
 extern(C) @nogc nothrow
 {
 
