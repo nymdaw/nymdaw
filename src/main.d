@@ -200,7 +200,15 @@ public:
         aubio_onset_set_threshold(o, onsetThreshold);
         aubio_onset_set_silence(o, silenceThreshold);
         for(nframes_t samplesRead = 0; samplesRead < nframes; samplesRead += hopSize) {
-            for(auto sample = 0; sample < hopSize; ++sample) {
+            uint hopSizeLimit;
+            if(((hopSize - 1 + samplesRead) * nChannels + channelIndex) > _audioBuffer.length) {
+                hopSizeLimit = nframes - samplesRead;
+                fvec_zeros(hopBuffer);
+            }
+            else {
+                hopSizeLimit = hopSize;
+            }
+            for(auto sample = 0; sample < hopSizeLimit; ++sample) {
                 hopBuffer.data[sample] = _audioBuffer[(sample + samplesRead) * nChannels + channelIndex];
             }
             aubio_onset_do(o, hopBuffer, onsetBuffer);
@@ -312,10 +320,15 @@ public:
                     [sampleOffset * (binSize / cacheSize) .. (sampleOffset + 1) * (binSize / cacheSize)]);
     }
 
-    // overload indexing to return the sample value at a given channel and frame, globally indexed
-    sample_t opIndex(channels_t channelIndex, nframes_t frame) const {
+    // returns the sample value at a given channel and frame, globally indexed
+    sample_t getSampleGlobal(channels_t channelIndex, nframes_t frame) const {
         return frame >= offset ?
             (frame < _offset + _nframes ? _audioBuffer[(frame - _offset) * _nChannels + channelIndex] : 0) : 0;
+    }
+
+    // modifies the sample for a given channel and frame, locallyIndexed
+    void setSampleLocal(channels_t channelIndex, nframes_t frame, sample_t newSample) {
+        _audioBuffer[frame * _nChannels + channelIndex] = newSample;
     }
 
     @property const(sample_t[]) audioBuffer() const { return _audioBuffer; }
@@ -417,8 +430,10 @@ package:
     void mixStereo(nframes_t offset, nframes_t bufNFrames, sample_t* mixBuf1, sample_t* mixBuf2) const {
         for(auto i = 0; i < bufNFrames; ++i) {
             foreach(r; _regions) {
-                mixBuf1[i] += r[0, offset + i];
-                mixBuf2[i] += r[1, offset + i];
+                mixBuf1[i] += r.getSampleGlobal(0, offset + i);
+                if(r.nChannels > 1) {
+                    mixBuf2[i] += r.getSampleGlobal(1, offset + i);
+                }
             }
         }
     }
@@ -1465,18 +1480,86 @@ private:
                         break;
 
                     case Action.moveOnset:
-                        // TODO stretch audio here
-                        
-                        RubberBandState rState = rubberband_new(_mixer.sampleRate,
-                                                                2,
-                                                                RubberBandOption.RubberBandOptionProcessOffline,
-                                                                2.0,
-                                                                1.0);
+                        channels_t channelIndex = 0; // TODO change this
+
+                        immutable(nframes_t) onsetFrameStart =
+                            _editRegion.getPrevOnset(channelIndex, _moveOnsetIndex);
+                        immutable(nframes_t) onsetFrameEnd =
+                            _editRegion.getNextOnset(_moveOnsetChannel, _moveOnsetIndex);
+
+                        immutable(double) firstScaleFactor = (_moveOnsetFrameSrc > onsetFrameStart) ?
+                            (cast(double)(_moveOnsetFrameDest - onsetFrameStart) /
+                             cast(double)(_moveOnsetFrameSrc - onsetFrameStart)) : 0;
+                        immutable(double) secondScaleFactor = (onsetFrameEnd > _moveOnsetFrameSrc) ?
+                            (cast(double)(onsetFrameEnd - _moveOnsetFrameDest) /
+                             cast(double)(onsetFrameEnd - _moveOnsetFrameSrc)) : 0;
+
                         immutable(nframes_t) stretchStart =
                             _editRegion.getPrevOnset(_moveOnsetChannel, _moveOnsetIndex);
                         immutable(nframes_t) stretchEnd =
                             _editRegion.getNextOnset(_moveOnsetChannel, _moveOnsetIndex);
+
+                        float[] firstHalf = new float[](_moveOnsetFrameSrc - onsetFrameStart);
+                        float[] secondHalf = new float[](onsetFrameEnd - _moveOnsetFrameSrc);
+                        float*[] firstHalfPtr = new float*[](1);
+                        float*[] secondHalfPtr = new float*[](1);
+                        firstHalfPtr[0] = firstHalf.ptr;
+                        secondHalfPtr[0] = secondHalf.ptr;
+
+                        foreach(i, ref sample; firstHalf) {
+                            sample = _editRegion.region._audioBuffer
+                                [(onsetFrameStart + i) * _editRegion.region.nChannels + channelIndex];
+                        }
+                        foreach(i, ref sample; secondHalf) {
+                            sample = _editRegion.region._audioBuffer
+                                [(_moveOnsetFrameSrc + i) * _editRegion.region.nChannels + channelIndex];
+                        }
+
+                        uint firstHalfOutputLength = cast(uint)(firstHalf.length * firstScaleFactor);
+                        uint secondHalfOutputLength = cast(uint)(secondHalf.length * secondScaleFactor);
+                        float[] firstHalfOutput = new float[](firstHalfOutputLength);
+                        float[] secondHalfOutput = new float[](secondHalfOutputLength);
+                        float*[] firstHalfOutputPtr = new float*[](1);
+                        float*[] secondHalfOutputPtr = new float*[](1);
+                        firstHalfOutputPtr[0] = firstHalfOutput.ptr;
+                        secondHalfOutputPtr[0] = secondHalfOutput.ptr;
+
+                        RubberBandState rState = rubberband_new(_mixer.sampleRate,
+                                                                1, // 1 channel, TODO change this
+                                                                RubberBandOption.RubberBandOptionProcessOffline |
+                                                                RubberBandOption.RubberBandOptionStretchPrecise,
+                                                                firstScaleFactor,
+                                                                1.0);
+                        rubberband_study(rState, firstHalfPtr.ptr, cast(uint)(firstHalf.length), 1);
+                        rubberband_process(rState, firstHalfPtr.ptr, cast(uint)(firstHalf.length), 1);
+                        auto retrieved = rubberband_retrieve(rState, firstHalfOutputPtr.ptr, firstHalfOutputLength);
+                        assert(retrieved == firstHalfOutputLength);
                         rubberband_delete(rState);
+
+                        rState = rubberband_new(_mixer.sampleRate,
+                                                1, // 1 channel, TODO change this
+                                                RubberBandOption.RubberBandOptionProcessOffline |
+                                                RubberBandOption.RubberBandOptionStretchPrecise,
+                                                secondScaleFactor,
+                                                1.0);
+                        rubberband_study(rState, secondHalfPtr.ptr, cast(uint)(secondHalf.length), 1);
+                        rubberband_process(rState, secondHalfPtr.ptr, cast(uint)(secondHalf.length), 1);
+                        retrieved = rubberband_retrieve(rState, secondHalfOutputPtr.ptr, secondHalfOutputLength);
+                        assert(retrieved == secondHalfOutputLength);
+                        rubberband_delete(rState);
+
+                        foreach(i, sample; firstHalfOutput) {
+                            _editRegion.region.setSampleLocal(channelIndex,
+                                                              cast(nframes_t)(onsetFrameStart + i),
+                                                              sample);
+                        }
+                        foreach(i, sample; secondHalfOutput) {
+                            _editRegion.region.setSampleLocal(channelIndex,
+                                                              cast(nframes_t)(_moveOnsetFrameDest + i),
+                                                              sample);
+                        }
+                        _editRegion.region._initCache();
+                        redraw();
 
                         _setAction(Action.none);
                         break;
