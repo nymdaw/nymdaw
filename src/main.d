@@ -19,12 +19,17 @@ import gtk.VBox;
 import gtk.DrawingArea;
 import gtk.Adjustment;
 import gtk.Scrollbar;
+import gtk.Menu;
+import gtk.MenuItem;
+import gtk.CheckMenuItem;
+
+import gtkc.gtktypes;
+
 import gdk.Cursor;
 import gdk.Display;
 import gdk.Event;
 import gdk.Keysyms;
 import gdk.Window;
-import gtkc.gtktypes;
 
 import glib.Timeout;
 
@@ -184,48 +189,14 @@ public:
     }
 
     // returns an array of frames at which an onset occurs, with frames given locally for this region
-    nframes_t[] getOnsets(channels_t channelIndex) const {
-        immutable(uint) windowSize = 512;
-        immutable(uint) hopSize = 256;
-        string onsetMethod = "default";
-        immutable(smpl_t) onsetThreshold = 0.1;
-        immutable(smpl_t) silenceThreshold = -90.0;
+    // all channels are summed before computing onsets
+    nframes_t[] getOnsetsLinkedChannels() const {
+        return _getOnsets(true);
+    }
 
-        fvec_t* onsetBuffer = new_fvec(1);
-        fvec_t* hopBuffer = new_fvec(hopSize);
-
-        nframes_t[] onsets;
-        auto app = appender(onsets);
-        aubio_onset_t* o = new_aubio_onset(cast(char*)(onsetMethod.toStringz()), windowSize, hopSize, sampleRate);
-        aubio_onset_set_threshold(o, onsetThreshold);
-        aubio_onset_set_silence(o, silenceThreshold);
-        for(nframes_t samplesRead = 0; samplesRead < nframes; samplesRead += hopSize) {
-            uint hopSizeLimit;
-            if(((hopSize - 1 + samplesRead) * nChannels + channelIndex) > _audioBuffer.length) {
-                hopSizeLimit = nframes - samplesRead;
-                fvec_zeros(hopBuffer);
-            }
-            else {
-                hopSizeLimit = hopSize;
-            }
-            for(auto sample = 0; sample < hopSizeLimit; ++sample) {
-                hopBuffer.data[sample] = _audioBuffer[(sample + samplesRead) * nChannels + channelIndex];
-            }
-            aubio_onset_do(o, hopBuffer, onsetBuffer);
-            if(onsetBuffer.data[0] != 0) {
-                auto lastOnset = aubio_onset_get_last(o);
-                if(lastOnset != 0) {
-                    app.put(lastOnset);
-                }
-            }
-        }
-        del_aubio_onset(o);
-
-        del_fvec(onsetBuffer);
-        del_fvec(hopBuffer);
-        aubio_cleanup();
-
-        return app.data;
+    // returns an array of frames at which an onset occurs, with frames given locally for this region
+    nframes_t[] getOnsetsSingleChannel(channels_t channelIndex) const {
+        return _getOnsets(false, channelIndex);
     }
 
     class WaveformCache {
@@ -309,7 +280,7 @@ public:
                     nframes_t sampleOffset) const {
         auto cacheSize = _cacheBinSizes[cacheIndex];
         return _min(_waveformCacheList[channelIndex][cacheIndex].minValues
-                    [sampleOffset * (binSize / cacheSize) .. (sampleOffset + 1) * (binSize / cacheSize)]);
+                    [sampleOffset * (binSize / cacheSize) .. min((sampleOffset + 1) * (binSize / cacheSize), $)]);
     }
     sample_t getMax(channels_t channelIndex,
                     size_t cacheIndex,
@@ -317,7 +288,7 @@ public:
                     nframes_t sampleOffset) const {
         auto cacheSize = _cacheBinSizes[cacheIndex];
         return _max(_waveformCacheList[channelIndex][cacheIndex].maxValues
-                    [sampleOffset * (binSize / cacheSize) .. (sampleOffset + 1) * (binSize / cacheSize)]);
+                    [sampleOffset * (binSize / cacheSize) .. min((sampleOffset + 1) * (binSize / cacheSize), $)]);
     }
 
     // returns the sample value at a given channel and frame, globally indexed
@@ -397,6 +368,62 @@ private:
             }
             _waveformCacheList ~= channelCache;
         }
+    }
+
+    nframes_t[] _getOnsets(bool linkChannels, channels_t channelIndex = 0) const {
+        immutable(uint) windowSize = 512;
+        immutable(uint) hopSize = 256;
+        string onsetMethod = "default";
+        immutable(smpl_t) onsetThreshold = 0.1;
+        immutable(smpl_t) silenceThreshold = -90.0;
+
+        fvec_t* onsetBuffer = new_fvec(1);
+        fvec_t* hopBuffer = new_fvec(hopSize);
+
+        nframes_t[] onsets;
+        auto app = appender(onsets);
+        aubio_onset_t* o = new_aubio_onset(cast(char*)(onsetMethod.toStringz()), windowSize, hopSize, sampleRate);
+        aubio_onset_set_threshold(o, onsetThreshold);
+        aubio_onset_set_silence(o, silenceThreshold);
+        for(nframes_t samplesRead = 0; samplesRead < nframes; samplesRead += hopSize) {
+            uint hopSizeLimit;
+            if(((hopSize - 1 + samplesRead) * nChannels + channelIndex) > _audioBuffer.length) {
+                hopSizeLimit = nframes - samplesRead;
+                fvec_zeros(hopBuffer);
+            }
+            else {
+                hopSizeLimit = hopSize;
+            }
+
+            if(linkChannels) {
+                for(auto sample = 0; sample < hopSizeLimit; ++sample) {
+                    hopBuffer.data[sample] = 0;
+                    for(channels_t i = 0; i < nChannels; ++i) {
+                        hopBuffer.data[sample] += _audioBuffer[(sample + samplesRead) * nChannels + i];
+                    }
+                }
+            }
+            else {
+                for(auto sample = 0; sample < hopSizeLimit; ++sample) {
+                    hopBuffer.data[sample] = _audioBuffer[(sample + samplesRead) * nChannels + channelIndex];
+                }
+            }
+
+            aubio_onset_do(o, hopBuffer, onsetBuffer);
+            if(onsetBuffer.data[0] != 0) {
+                auto lastOnset = aubio_onset_get_last(o);
+                if(lastOnset != 0) {
+                    app.put(lastOnset);
+                }
+            }
+        }
+        del_aubio_onset(o);
+
+        del_fvec(onsetBuffer);
+        del_fvec(hopBuffer);
+        aubio_cleanup();
+
+        return app.data;
     }
 
     static immutable(nframes_t[]) _cacheBinSizes = [10, 100];
@@ -581,6 +608,8 @@ public:
         _hAdjust.addOnValueChanged(&_onHScrollChanged);
         _hScroll = new Scrollbar(Orientation.HORIZONTAL, _hAdjust);
 
+        _createEditRegionMenu();
+
         packStart(_canvas, true, true, 0);
         packEnd(_hScroll, false, false, 0);
     }
@@ -605,31 +634,37 @@ public:
         }
 
         void computeOnsets() {
+            // compute onsets for each channel
             _onsets = new nframes_t[][](region.nChannels);
             for(channels_t c = 0; c < region.nChannels; ++c) {
-                _onsets[c] = region.getOnsets(c);
+                _onsets[c] = region.getOnsetsSingleChannel(c);
             }
+
+            // compute onsets for summed channels
+            _onsetsLinked = region.getOnsetsLinkedChannels();
         }
 
         // finds the index of any onset between (searchFrame - searchRadius) and (searchFrame + searchRadius)
         // if successful, returns true and stores the index in the searchIndex output argument
-        bool getOnset(channels_t channelIndex,
-                      nframes_t searchFrame,
+        bool getOnset(nframes_t searchFrame,
                       nframes_t searchRadius,
                       out nframes_t foundFrame,
-                      out size_t foundIndex) {
+                      out size_t foundIndex,
+                      channels_t channelIndex = 0) {
+            nframes_t[] onsets = linkChannels ? _onsetsLinked : _onsets[channelIndex];
+
             // recursive binary search helper function
-            bool getOnsetRec(channels_t channelIndex,
-                             nframes_t searchFrame,
+            bool getOnsetRec(nframes_t searchFrame,
                              nframes_t searchRadius,
                              out nframes_t foundFrame,
                              out size_t foundIndex,
                              size_t leftIndex,
                              size_t rightIndex) {
-                foundIndex = (leftIndex + rightIndex) / 2;
-                if(foundIndex >= _onsets[channelIndex].length) return false;
 
-                foundFrame = _onsets[channelIndex][foundIndex];
+                foundIndex = (leftIndex + rightIndex) / 2;
+                if(foundIndex >= onsets.length) return false;
+
+                foundFrame = onsets[foundIndex];
                 if(foundFrame >= searchFrame - searchRadius && foundFrame <= searchFrame + searchRadius) {
                     return true;
                 }
@@ -638,8 +673,7 @@ public:
                 }
 
                 if(foundFrame < searchFrame) {
-                    return getOnsetRec(channelIndex,
-                                       searchFrame,
+                    return getOnsetRec(searchFrame,
                                        searchRadius,
                                        foundFrame,
                                        foundIndex,
@@ -647,8 +681,7 @@ public:
                                        rightIndex);
                 }
                 else {
-                    return getOnsetRec(channelIndex,
-                                       searchFrame,
+                    return getOnsetRec(searchFrame,
                                        searchRadius,
                                        foundFrame,
                                        foundIndex,
@@ -656,40 +689,41 @@ public:
                                        foundIndex - 1);
                 }
             }
-            return getOnsetRec(channelIndex,
-                               searchFrame,
+
+            return getOnsetRec(searchFrame,
                                searchRadius,
                                foundFrame,
                                foundIndex,
                                0,
-                               _onsets[channelIndex].length - 1);
+                               onsets.length - 1);
         }
 
         // move a specific onset given by onsetIndex, returns the new onset value (locally indexed for this region)
-        nframes_t moveOnset(channels_t channelIndex,
-                            size_t onsetIndex,
+        nframes_t moveOnset(size_t onsetIndex,
                             nframes_t relativeSamples,
-                            Direction direction) {
+                            Direction direction,
+                            channels_t channelIndex = 0) {
+            nframes_t[] onsets = linkChannels ? _onsetsLinked : _onsets[channelIndex];
             switch(direction) {
                 case Direction.left:
-                    nframes_t leftBound = (onsetIndex > 0) ? _onsets[channelIndex][onsetIndex - 1] : 0;
-                    if(_onsets[channelIndex][onsetIndex] > relativeSamples &&
-                       _onsets[channelIndex][onsetIndex] - relativeSamples > leftBound) {
-                        return (_onsets[channelIndex][onsetIndex] -= relativeSamples);
+                    nframes_t leftBound = (onsetIndex > 0) ? onsets[onsetIndex - 1] : 0;
+                    if(onsets[onsetIndex] > relativeSamples &&
+                       onsets[onsetIndex] - relativeSamples > leftBound) {
+                        return (onsets[onsetIndex] -= relativeSamples);
                     }
                     else {
-                        return (_onsets[channelIndex][onsetIndex] = leftBound);
+                        return (onsets[onsetIndex] = leftBound);
                     }
                     break;
 
                 case Direction.right:
-                    nframes_t rightBound = (onsetIndex < _onsets[channelIndex].length - 1) ?
-                        _onsets[channelIndex][onsetIndex + 1] : region.nframes - 1;
-                    if(_onsets[channelIndex][onsetIndex] + relativeSamples < rightBound) {
-                        return (_onsets[channelIndex][onsetIndex] += relativeSamples);
+                    nframes_t rightBound = (onsetIndex < onsets.length - 1) ?
+                        onsets[onsetIndex + 1] : region.nframes - 1;
+                    if(onsets[onsetIndex] + relativeSamples < rightBound) {
+                        return (onsets[onsetIndex] += relativeSamples);
                     }
                     else {
-                        return (_onsets[channelIndex][onsetIndex] = rightBound);
+                        return (onsets[onsetIndex] = rightBound);
                     }
                     break;
 
@@ -700,12 +734,13 @@ public:
         }
 
         // these functions return onset frames, locally indexed for this region
-        nframes_t getPrevOnset(channels_t channelIndex, size_t onsetIndex) const {
-            return (onsetIndex > 0) ? _onsets[channelIndex][onsetIndex - 1] : 0;
+        nframes_t getPrevOnset(size_t onsetIndex, channels_t channelIndex = 0) const {
+            auto onsets = linkChannels ? _onsetsLinked : _onsets[channelIndex];
+            return (onsetIndex > 0) ? onsets[onsetIndex - 1] : 0;
         }
-        nframes_t getNextOnset(channels_t channelIndex, size_t onsetIndex) const {
-            return (onsetIndex < _onsets[channelIndex].length - 1) ?
-                _onsets[channelIndex][onsetIndex + 1] : region.nframes - 1;
+        nframes_t getNextOnset(size_t onsetIndex, channels_t channelIndex = 0) const {
+            auto onsets = linkChannels ? _onsetsLinked : _onsets[channelIndex];
+            return (onsetIndex < onsets.length - 1) ? onsets[onsetIndex + 1] : region.nframes - 1;
         }
 
         channels_t mouseOverChannel(pixels_t mouseY) const {
@@ -719,17 +754,23 @@ public:
         BoundingBox boundingBox;
         Region region;
 
-        @property bool editMode(bool enabled) {
-            if(enabled && _onsets is null) {
-                computeOnsets();
-            }
-            return (_editMode = enabled);
-        }
+        bool linkChannels;
+
         @property bool editMode() const { return _editMode; }
+        @property bool editMode(bool enable) {
+            if(!_editMode && enable) {
+                _linkChannelsMenuItem.setActive(linkChannels);
+            }
+            else if(_editMode && !enable) {
+                linkChannels = _linkChannelsMenuItem.getActive();
+            }
+            return (_editMode = enable);
+        }
 
     private:
         this(Region region) {
             this.region = region;
+            computeOnsets();
         }
 
         void _drawRegion(ref Scoped!Context cr,
@@ -831,9 +872,9 @@ public:
                 cr.setSource(gradient);
                 cr.fillPreserve();
 
-                // if this region is selected, highlight the borders and region header
+                // if this region is in edit mode or selected, highlight the borders and region header
                 cr.setLineWidth(borderWidth);
-                if(selected && _mode == Mode.editRegion) {
+                if(editMode) {
                     cr.setSourceRgba(1.0, 1.0, 0.0, alpha);
                 }
                 else if(selected) {
@@ -902,14 +943,14 @@ public:
                     onsetPixelsCenterDest,
                     onsetPixelsEnd;
                 double firstScaleFactor, secondScaleFactor;
-                if(_action == Action.moveOnset) {
+                if(editMode && _action == Action.moveOnset) {
                     moveOnset = true;
                     long onsetViewOffset = (viewOffset > regionOffset) ? cast(long)(viewOffset) : 0;
                     long onsetRegionOffset = (viewOffset > regionOffset) ? cast(long)(regionOffset) : 0;
                     long onsetFrameStart, onsetFrameEnd, onsetFrameSrc, onsetFrameDest;
 
-                    onsetFrameStart = onsetRegionOffset + getPrevOnset(_moveOnsetChannel, _moveOnsetIndex);
-                    onsetFrameEnd = onsetRegionOffset + getNextOnset(_moveOnsetChannel, _moveOnsetIndex);
+                    onsetFrameStart = onsetRegionOffset + getPrevOnset(_moveOnsetIndex, _moveOnsetChannel);
+                    onsetFrameEnd = onsetRegionOffset + getNextOnset(_moveOnsetIndex, _moveOnsetChannel);
                     onsetFrameSrc = onsetRegionOffset + _moveOnsetFrameSrc;
                     onsetFrameDest = onsetRegionOffset + _moveOnsetFrameDest;
                     onsetPixelsStart =
@@ -947,9 +988,12 @@ public:
                                             cacheIndex,
                                             samplesPerPixel,
                                             pixelsOffset + startPixel) * (channelHeight / 2));
-                    for(auto i = 1 + startPixel; i < width + endPixel; ++i) {
+                    if(moveOnset) {
+                        onsetDrawState = OnsetDrawState.init;
+                    }
+                    for(auto i = 1 + startPixel; i < width + endPixel; ++i) {                        
                         pixels_t scaledI = i;
-                        if(moveOnset && (channelIndex == _moveOnsetChannel || _moveOnsetLinkChannels)) {
+                        if(moveOnset && (channelIndex == _moveOnsetChannel || linkChannels)) {
                             switch(onsetDrawState) {
                                 case OnsetDrawState.init:
                                     if(i >= onsetPixelsStart) {
@@ -995,7 +1039,7 @@ public:
                     }
                     for(auto i = 1 - endPixel; i <= width - startPixel; ++i) {
                         pixels_t scaledI = width - i;
-                        if(moveOnset && (channelIndex == _moveOnsetChannel || _moveOnsetLinkChannels)) {
+                        if(moveOnset && (channelIndex == _moveOnsetChannel || linkChannels)) {
                             switch(onsetDrawState) {
                                 case OnsetDrawState.init:
                                     if(width - i <= onsetPixelsEnd) {
@@ -1045,14 +1089,25 @@ public:
 
                 // if the edit mode flag is set, draw the onsets
                 if(editMode) {
-                    foreach(channelIndex, channel; _onsets) {
-                        foreach(onset; channel) {
+                    if(linkChannels) {
+                        foreach(onset; _onsetsLinked) {
                             if(onset + regionOffset >= viewOffset &&
                                onset + regionOffset < viewOffset + viewWidthSamples) {
-                                cr.moveTo(xOffset + onset / samplesPerPixel - pixelsOffset,
-                                          yOffset + (channelIndex * channelHeight));
-                                cr.lineTo(xOffset + onset / samplesPerPixel - pixelsOffset,
-                                          yOffset + ((channelIndex + 1) * channelHeight));
+                                cr.moveTo(xOffset + onset / samplesPerPixel - pixelsOffset, yOffset);
+                                cr.lineTo(xOffset + onset / samplesPerPixel - pixelsOffset, yOffset + height);
+                            }
+                        }
+                    }
+                    else {
+                        foreach(channelIndex, channel; _onsets) {
+                            foreach(onset; channel) {
+                                if(onset + regionOffset >= viewOffset &&
+                                   onset + regionOffset < viewOffset + viewWidthSamples) {
+                                    cr.moveTo(xOffset + onset / samplesPerPixel - pixelsOffset,
+                                              yOffset + (channelIndex * channelHeight));
+                                    cr.lineTo(xOffset + onset / samplesPerPixel - pixelsOffset,
+                                              yOffset + ((channelIndex + 1) * channelHeight));
+                                }
                             }
                         }
                     }
@@ -1069,6 +1124,7 @@ public:
 
         bool _editMode;
         nframes_t[][] _onsets; // indexed as [channel][onset]
+        nframes_t[] _onsetsLinked; // indexed as [onset]
 
         PgLayout _headerLabelLayout;
     }
@@ -1145,6 +1201,21 @@ private:
 
     void _onHScrollChanged(Adjustment adjustment) {
         _viewOffset = cast(typeof(_viewOffset))(adjustment.getValue());
+        _canvas.redraw();
+    }
+
+    void _createEditRegionMenu() {
+        _editRegionMenu = new Menu();
+        _linkChannelsMenuItem = new CheckMenuItem("Link Channels");
+        _linkChannelsMenuItem.setDrawAsRadio(true);
+        _linkChannelsMenuItem.addOnToggled(&onLinkChannels);
+        _editRegionMenu.append(_linkChannelsMenuItem);
+        _editRegionMenu.attachToWidget(this, null);
+        _editRegionMenu.showAll();
+    }
+
+    void onLinkChannels(CheckMenuItem linkChannels) {
+        _editRegion.linkChannels = linkChannels.getActive();
         _canvas.redraw();
     }
 
@@ -1384,10 +1455,10 @@ private:
                             if(regionView.selected) {
                                 nframes_t deltaXSamples = abs(_mouseX - prevMouseX) * samplesPerPixel;
                                 Direction direction = (_mouseX > prevMouseX) ? Direction.right : Direction.left;
-                                _moveOnsetFrameDest = regionView.moveOnset(_moveOnsetChannel,
-                                                                           _moveOnsetIndex,
+                                _moveOnsetFrameDest = regionView.moveOnset(_moveOnsetIndex,
                                                                            deltaXSamples,
-                                                                           direction);
+                                                                           direction,
+                                                                           _moveOnsetChannel);
                             }
                         }
                         redraw();
@@ -1406,7 +1477,10 @@ private:
         }
 
         bool onButtonPress(Event event, Widget widget) {
-            if(event.type == EventType.BUTTON_PRESS && event.button.button == 1) {
+            enum leftButton = 1;
+            enum rightButton = 3;
+
+            if(event.type == EventType.BUTTON_PRESS && event.button.button == leftButton) {
                 // if the mouse is over the timestrip, move the transport
                 if(_mouseY >= 0 && _mouseY < timestripHeightPixels) {
                     _setAction(Action.moveTransport);
@@ -1415,21 +1489,17 @@ private:
                     switch(_mode) {
                         // implement different behaviors for button presses depending on the current mode
                         case Mode.arrange:
+                            // deselect all audio regions
+                            foreach(regionView; _regionViews) {
+                                regionView.selected = false;
+                            }
+
                             // detect if the mouse is over an audio region; if so, select that region
-                            bool selectedRegion;
                             foreach(regionView; _regionViews) {
                                 if(_mouseX >= regionView.boundingBox.x0 && _mouseX < regionView.boundingBox.x1 &&
                                    _mouseY >= regionView.boundingBox.y0 && _mouseY < regionView.boundingBox.y1) {
                                     regionView.selected = true;
-                                    selectedRegion = true;
                                     _setAction(Action.selectRegion);
-                                }
-                            }
-
-                            // otherwise, deselect all audio regions
-                            if(!selectedRegion) {
-                                foreach(regionView; _regionViews) {
-                                    regionView.selected = false;
                                 }
                             }
                             break;
@@ -1438,12 +1508,12 @@ private:
                             // detect if the mouse is over an onset
                             if(_editRegion) {
                                 _moveOnsetChannel = _editRegion.mouseOverChannel(_mouseY);
-                                if(_editRegion.getOnset(_moveOnsetChannel,
-                                                        viewOffset + _mouseX * samplesPerPixel -
+                                if(_editRegion.getOnset(viewOffset + _mouseX * samplesPerPixel -
                                                         _editRegion.region.offset,
                                                         mouseOverThreshold * samplesPerPixel,
                                                         _moveOnsetFrameSrc,
-                                                        _moveOnsetIndex)) {
+                                                        _moveOnsetIndex,
+                                                        _moveOnsetChannel)) {
                                     _moveOnsetFrameDest = _moveOnsetFrameSrc;
                                     _setAction(Action.moveOnset);
                                 }
@@ -1455,6 +1525,16 @@ private:
                     }
                 }
                 redraw();
+            }
+            else if(event.type == EventType.BUTTON_PRESS && event.button.button == rightButton) {
+                switch(_mode) {
+                    case Mode.editRegion:
+                        _editRegionMenu.popup(rightButton, 0);
+                        break;
+
+                    default:
+                        break;
+                }
             }
             return false;
         }
@@ -1480,12 +1560,14 @@ private:
                         break;
 
                     case Action.moveOnset:
-                        channels_t channelIndex = 0; // TODO change this
+                        immutable(channels_t) singleChannelIndex = _moveOnsetChannel;
+                        immutable(channels_t) nChannels =
+                            _editRegion.linkChannels ? _editRegion.region.nChannels : 1;
 
                         immutable(nframes_t) onsetFrameStart =
-                            _editRegion.getPrevOnset(channelIndex, _moveOnsetIndex);
+                            _editRegion.getPrevOnset(_moveOnsetIndex, singleChannelIndex);
                         immutable(nframes_t) onsetFrameEnd =
-                            _editRegion.getNextOnset(_moveOnsetChannel, _moveOnsetIndex);
+                            _editRegion.getNextOnset(_moveOnsetIndex, singleChannelIndex);
 
                         immutable(double) firstScaleFactor = (_moveOnsetFrameSrc > onsetFrameStart) ?
                             (cast(double)(_moveOnsetFrameDest - onsetFrameStart) /
@@ -1495,69 +1577,114 @@ private:
                              cast(double)(onsetFrameEnd - _moveOnsetFrameSrc)) : 0;
 
                         immutable(nframes_t) stretchStart =
-                            _editRegion.getPrevOnset(_moveOnsetChannel, _moveOnsetIndex);
+                            _editRegion.getPrevOnset(_moveOnsetIndex, singleChannelIndex);
                         immutable(nframes_t) stretchEnd =
-                            _editRegion.getNextOnset(_moveOnsetChannel, _moveOnsetIndex);
+                            _editRegion.getNextOnset(_moveOnsetIndex, singleChannelIndex);
 
-                        float[] firstHalf = new float[](_moveOnsetFrameSrc - onsetFrameStart);
-                        float[] secondHalf = new float[](onsetFrameEnd - _moveOnsetFrameSrc);
-                        float*[] firstHalfPtr = new float*[](1);
-                        float*[] secondHalfPtr = new float*[](1);
-                        firstHalfPtr[0] = firstHalf.ptr;
-                        secondHalfPtr[0] = secondHalf.ptr;
-
-                        foreach(i, ref sample; firstHalf) {
-                            sample = _editRegion.region._audioBuffer
-                                [(onsetFrameStart + i) * _editRegion.region.nChannels + channelIndex];
+                        uint firstHalfLength = cast(uint)(_moveOnsetFrameSrc - onsetFrameStart);
+                        uint secondHalfLength = cast(uint)(onsetFrameEnd - _moveOnsetFrameSrc);
+                        float[][] firstHalfChannels = new float[][](nChannels);
+                        float[][] secondHalfChannels = new float[][](nChannels);
+                        float*[] firstHalfPtr = new float*[](nChannels);
+                        float*[] secondHalfPtr = new float*[](nChannels);
+                        for(auto i = 0; i < nChannels; ++i) {
+                            float[] firstHalf = new float[](firstHalfLength);
+                            float[] secondHalf = new float[](secondHalfLength);
+                            firstHalfChannels[i] = firstHalf;
+                            secondHalfChannels[i] = secondHalf;
+                            firstHalfPtr[i] = firstHalf.ptr;
+                            secondHalfPtr[i] = secondHalf.ptr;
                         }
-                        foreach(i, ref sample; secondHalf) {
-                            sample = _editRegion.region._audioBuffer
-                                [(_moveOnsetFrameSrc + i) * _editRegion.region.nChannels + channelIndex];
+
+                        if(_editRegion.linkChannels) {
+                            foreach(channels_t channelIndex, channel; firstHalfChannels) {
+                                foreach(i, ref sample; channel) {
+                                    sample = _editRegion.region._audioBuffer
+                                        [(onsetFrameStart + i) * _editRegion.region.nChannels + channelIndex];
+                                }
+                            }
+                            foreach(channels_t channelIndex, channel; secondHalfChannels) {
+                                foreach(i, ref sample; channel) {
+                                    sample = _editRegion.region._audioBuffer
+                                        [(_moveOnsetFrameSrc + i) * _editRegion.region.nChannels + channelIndex];
+                                }
+                            }
+                        }
+                        else {
+                            foreach(i, ref sample; firstHalfChannels[0]) {
+                                sample = _editRegion.region._audioBuffer
+                                    [(onsetFrameStart + i) * _editRegion.region.nChannels + singleChannelIndex];
+                            }
+                            foreach(i, ref sample; secondHalfChannels[0]) {
+                                sample = _editRegion.region._audioBuffer
+                                    [(_moveOnsetFrameSrc + i) * _editRegion.region.nChannels + singleChannelIndex];
+                            }
                         }
 
-                        uint firstHalfOutputLength = cast(uint)(firstHalf.length * firstScaleFactor);
-                        uint secondHalfOutputLength = cast(uint)(secondHalf.length * secondScaleFactor);
-                        float[] firstHalfOutput = new float[](firstHalfOutputLength);
-                        float[] secondHalfOutput = new float[](secondHalfOutputLength);
-                        float*[] firstHalfOutputPtr = new float*[](1);
-                        float*[] secondHalfOutputPtr = new float*[](1);
-                        firstHalfOutputPtr[0] = firstHalfOutput.ptr;
-                        secondHalfOutputPtr[0] = secondHalfOutput.ptr;
+                        uint firstHalfOutputLength = cast(uint)(firstHalfLength * firstScaleFactor);
+                        uint secondHalfOutputLength = cast(uint)(secondHalfLength * secondScaleFactor);
+                        float[][] firstHalfOutputChannels = new float[][](nChannels);
+                        float[][] secondHalfOutputChannels = new float[][](nChannels);
+                        float*[] firstHalfOutputPtr = new float*[](nChannels);
+                        float*[] secondHalfOutputPtr = new float*[](nChannels);
+                        for(auto i = 0; i < nChannels; ++i) {
+                            float[] firstHalfOutput = new float[](firstHalfOutputLength);
+                            float[] secondHalfOutput = new float[](secondHalfOutputLength);
+                            firstHalfOutputChannels[i] = firstHalfOutput;
+                            secondHalfOutputChannels[i] = secondHalfOutput;
+                            firstHalfOutputPtr[i] = firstHalfOutput.ptr;
+                            secondHalfOutputPtr[i] = secondHalfOutput.ptr;
+                        }
 
                         RubberBandState rState = rubberband_new(_mixer.sampleRate,
-                                                                1, // 1 channel, TODO change this
-                                                                RubberBandOption.RubberBandOptionProcessOffline |
-                                                                RubberBandOption.RubberBandOptionStretchPrecise,
+                                                                nChannels,
+                                                                RubberBandOption.RubberBandOptionProcessOffline,
                                                                 firstScaleFactor,
                                                                 1.0);
-                        rubberband_study(rState, firstHalfPtr.ptr, cast(uint)(firstHalf.length), 1);
-                        rubberband_process(rState, firstHalfPtr.ptr, cast(uint)(firstHalf.length), 1);
-                        auto retrieved = rubberband_retrieve(rState, firstHalfOutputPtr.ptr, firstHalfOutputLength);
-                        assert(retrieved == firstHalfOutputLength);
+                        rubberband_study(rState, firstHalfPtr.ptr, firstHalfLength, 1);
+                        rubberband_process(rState, firstHalfPtr.ptr, firstHalfLength, 1);
+                        rubberband_retrieve(rState, firstHalfOutputPtr.ptr, firstHalfOutputLength);
                         rubberband_delete(rState);
 
                         rState = rubberband_new(_mixer.sampleRate,
-                                                1, // 1 channel, TODO change this
-                                                RubberBandOption.RubberBandOptionProcessOffline |
-                                                RubberBandOption.RubberBandOptionStretchPrecise,
+                                                nChannels,
+                                                RubberBandOption.RubberBandOptionProcessOffline,
                                                 secondScaleFactor,
                                                 1.0);
-                        rubberband_study(rState, secondHalfPtr.ptr, cast(uint)(secondHalf.length), 1);
-                        rubberband_process(rState, secondHalfPtr.ptr, cast(uint)(secondHalf.length), 1);
-                        retrieved = rubberband_retrieve(rState, secondHalfOutputPtr.ptr, secondHalfOutputLength);
-                        assert(retrieved == secondHalfOutputLength);
+                        rubberband_study(rState, secondHalfPtr.ptr, secondHalfLength, 1);
+                        rubberband_process(rState, secondHalfPtr.ptr, secondHalfLength, 1);
+                        rubberband_retrieve(rState, secondHalfOutputPtr.ptr, secondHalfOutputLength);
                         rubberband_delete(rState);
 
-                        foreach(i, sample; firstHalfOutput) {
-                            _editRegion.region.setSampleLocal(channelIndex,
-                                                              cast(nframes_t)(onsetFrameStart + i),
-                                                              sample);
+                        if(_editRegion.linkChannels) {
+                            foreach(channels_t channelIndex, channel; firstHalfOutputChannels) {
+                                foreach(i, sample; channel) {
+                                    _editRegion.region.setSampleLocal(channelIndex,
+                                                                      cast(nframes_t)(onsetFrameStart + i),
+                                                                      sample);
+                                }
+                            }
+                            foreach(channels_t channelIndex, channel; secondHalfOutputChannels) {
+                                foreach(i, sample; channel) {
+                                    _editRegion.region.setSampleLocal(channelIndex,
+                                                                      cast(nframes_t)(_moveOnsetFrameDest + i),
+                                                                      sample);
+                                }
+                            }
                         }
-                        foreach(i, sample; secondHalfOutput) {
-                            _editRegion.region.setSampleLocal(channelIndex,
-                                                              cast(nframes_t)(_moveOnsetFrameDest + i),
-                                                              sample);
+                        else {
+                            foreach(i, sample; firstHalfOutputChannels[0]) {
+                                _editRegion.region.setSampleLocal(singleChannelIndex,
+                                                                  cast(nframes_t)(onsetFrameStart + i),
+                                                                  sample);
+                            }
+                            foreach(i, sample; secondHalfOutputChannels[0]) {
+                                _editRegion.region.setSampleLocal(singleChannelIndex,
+                                                                  cast(nframes_t)(_moveOnsetFrameDest + i),
+                                                                  sample);
+                            }
                         }
+
                         _editRegion.region._initCache();
                         redraw();
 
@@ -1649,6 +1776,9 @@ private:
     Scrollbar _hScroll;
     Timeout _refreshTimeout;
 
+    Menu _editRegionMenu;
+    CheckMenuItem _linkChannelsMenuItem;
+
     pixels_t _transportPixelsOffset;
 
     Mode _mode;
@@ -1656,7 +1786,6 @@ private:
     pixels_t _mouseX;
     pixels_t _mouseY;
 
-    bool _moveOnsetLinkChannels; // TODO implement
     size_t _moveOnsetIndex;
     channels_t _moveOnsetChannel;
     nframes_t _moveOnsetFrameSrc; // locally indexed for region
@@ -1666,11 +1795,6 @@ private:
 void main(string[] args) {
     string appName = "dseq";
 
-    if(!(args.length >= 2)) {
-        writeln("Must provide audio file argument!");
-        return;
-    }
-
     try {
         Main.init(args);
         MainWindow win = new MainWindow(appName);
@@ -1679,11 +1803,12 @@ void main(string[] args) {
         ArrangeView arrangeView = new ArrangeView(appName);
         win.add(arrangeView);
 
-        Region testRegion;
         try {
-            testRegion = Region.fromFile(args[1]);
-            ArrangeView.TrackView trackView = arrangeView.createTrackView();
-            trackView.addRegion(testRegion);
+            for(auto i = 1; i < args.length; ++i) {
+                Region testRegion = Region.fromFile(args[i]);
+                ArrangeView.TrackView trackView = arrangeView.createTrackView();
+                trackView.addRegion(testRegion);
+            }
         }
         catch(FileError e) {
             writeln("Fatal file error: ", e.msg);
