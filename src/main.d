@@ -922,11 +922,23 @@ public:
                     desc.free();
                 }
 
+                void drawRegionLabel() {
+                    cr.setSourceRgba(0.5, 0.5, 1.0, alpha);
+                    PgCairo.updateLayout(cr, _headerLabelLayout);
+                    PgCairo.showLayout(cr, _headerLabelLayout);
+                }
+
                 cr.save();
-                cr.translate(xOffset + borderWidth, yOffset);
-                cr.setSourceRgba(0.5, 0.5, 1.0, alpha);
-                PgCairo.updateLayout(cr, _headerLabelLayout);
-                PgCairo.showLayout(cr, _headerLabelLayout);
+                int labelWidth, labelHeight;
+                _headerLabelLayout.getPixelSize(labelWidth, labelHeight);
+                if(xOffset == 0 && regionOffset < viewOffset && labelWidth > width) {
+                    cr.translate(xOffset + borderWidth - (labelWidth - width), yOffset);
+                    drawRegionLabel();
+                }
+                else if(labelWidth <= width || regionOffset + region.nframes > viewOffset + viewWidthSamples) {
+                    cr.translate(xOffset + borderWidth, yOffset);
+                    drawRegionLabel();
+                }
                 cr.restore();
 
                 // compute audio rendering parameters
