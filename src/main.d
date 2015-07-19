@@ -1641,8 +1641,11 @@ private:
                                                                 RubberBandOption.RubberBandOptionProcessOffline,
                                                                 firstScaleFactor,
                                                                 1.0);
+                        rubberband_set_max_process_size(rState, firstHalfLength);
+                        rubberband_set_expected_input_duration(rState, firstHalfLength);
                         rubberband_study(rState, firstHalfPtr.ptr, firstHalfLength, 1);
                         rubberband_process(rState, firstHalfPtr.ptr, firstHalfLength, 1);
+                        while(rubberband_available(rState) < firstHalfOutputLength) {}
                         rubberband_retrieve(rState, firstHalfOutputPtr.ptr, firstHalfOutputLength);
                         rubberband_delete(rState);
 
@@ -1651,8 +1654,11 @@ private:
                                                 RubberBandOption.RubberBandOptionProcessOffline,
                                                 secondScaleFactor,
                                                 1.0);
+                        rubberband_set_max_process_size(rState, secondHalfLength);
+                        rubberband_set_expected_input_duration(rState, secondHalfLength);
                         rubberband_study(rState, secondHalfPtr.ptr, secondHalfLength, 1);
                         rubberband_process(rState, secondHalfPtr.ptr, secondHalfLength, 1);
+                        while(rubberband_available(rState) < secondHalfOutputLength) {}
                         rubberband_retrieve(rState, secondHalfOutputPtr.ptr, secondHalfOutputLength);
                         rubberband_delete(rState);
 
