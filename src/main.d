@@ -308,6 +308,8 @@ public:
     @property nframes_t nframes() const { return _nframes; }
     @property nframes_t offset() const { return _offset; }
     @property nframes_t offset(nframes_t newOffset) { return (_offset = newOffset); }
+    @property bool mute() const { return _mute; }
+    @property bool mute(bool enable) { return (_mute = enable); }
     @property string name() const { return _name; }
     @property string name(string newName) { return (_name = newName); }
 
@@ -437,6 +439,7 @@ private:
     nframes_t _nframes; // number of frames in the audio data, where 1 frame contains 1 sample for each channel
 
     nframes_t _offset; // the offset, in frames, for the start of this region
+    bool _mute; // flag indicating whether to mute all audio in this region during playback
     string _name; // name for this region
 }
 
@@ -457,9 +460,11 @@ package:
     void mixStereo(nframes_t offset, nframes_t bufNFrames, sample_t* mixBuf1, sample_t* mixBuf2) const {
         for(auto i = 0; i < bufNFrames; ++i) {
             foreach(r; _regions) {
-                mixBuf1[i] += r.getSampleGlobal(0, offset + i);
-                if(r.nChannels > 1) {
-                    mixBuf2[i] += r.getSampleGlobal(1, offset + i);
+                if(!r.mute()) {
+                    mixBuf1[i] += r.getSampleGlobal(0, offset + i);
+                    if(r.nChannels > 1) {
+                        mixBuf2[i] += r.getSampleGlobal(1, offset + i);
+                    }
                 }
             }
         }
@@ -882,6 +887,7 @@ public:
                     cr.lineTo(xOffset - (lCorners ? 0 : borderWidth), yOffset + height);
                 }
                 cr.closePath();
+                auto borderPath = cr.copyPath();
 
                 Pattern gradient = Pattern.createLinear(0, yOffset, 0, yOffset + height);
                 gradient.addColorStopRgba(0.0, 0.0, 0.0, 1.0, alpha);
@@ -1147,6 +1153,14 @@ public:
                     cr.setAntialias(cairo_antialias_t.NONE);
                     cr.setLineWidth(1.0);
                     cr.stroke();
+                }
+
+                // if the region is muted, gray it out
+                if(region.mute) {
+                    cr.setOperator(cairo_operator_t.OVER);
+                    cr.appendPath(borderPath);
+                    cr.setSourceRgba(0.5, 0.5, 0.5, 0.6);
+                    cr.fill();
                 }
             }
 
@@ -1866,6 +1880,15 @@ private:
 
                     case GdkKeysyms.GDK_e:
                         _setMode(_mode == Mode.editRegion ? Mode.arrange : Mode.editRegion);
+                        break;
+
+                    case GdkKeysyms.GDK_m:
+                        foreach(regionView; _regionViews) {
+                            if(regionView.selected) {
+                                regionView.region.mute = !regionView.region.mute;
+                            }
+                        }
+                        redraw();
                         break;
 
                     default:
