@@ -575,6 +575,21 @@ enum Direction {
 
 struct BoundingBox {
     pixels_t x0, y0, x1, y1;
+
+    // constructor will automatically adjust coordinates such that x0 <= x1 and y0 <= y1
+    this(pixels_t x0, pixels_t y0, pixels_t x1, pixels_t y1) {
+        if(x0 > x1) swap(x0, x1);
+        if(y0 > y1) swap(y0, y1);
+
+        this.x0 = x0;
+        this.y0 = y0;
+        this.x1 = x1;
+        this.y1 = y1;
+    }
+
+    bool intersect(ref const(BoundingBox) other) const {
+        return !(other.x0 > x1 || other.x1 < x0 || other.y0 > y1 || other.y1 < y0);
+    }
 }
 
 class ArrangeView : VBox {
@@ -592,6 +607,7 @@ public:
     enum Action {
         none,
         selectRegion,
+        selectBox,
         moveOnset,
         moveRegion,
         moveTransport
@@ -612,6 +628,8 @@ public:
 
         packStart(_canvas, true, true, 0);
         packEnd(_hScroll, false, false, 0);
+
+        showAll();
     }
 
     class RegionView {
@@ -929,14 +947,16 @@ public:
                 }
 
                 cr.save();
+                enum labelPadding = borderWidth + 1;
                 int labelWidth, labelHeight;
+                labelWidth += labelPadding;
                 _headerLabelLayout.getPixelSize(labelWidth, labelHeight);
-                if(xOffset == 0 && regionOffset < viewOffset && labelWidth > width) {
-                    cr.translate(xOffset + borderWidth - (labelWidth - width), yOffset);
+                if(xOffset == 0 && regionOffset < viewOffset && labelWidth + labelPadding > width) {
+                    cr.translate(xOffset - (labelWidth - width), yOffset);
                     drawRegionLabel();
                 }
                 else if(labelWidth <= width || regionOffset + region.nframes > viewOffset + viewWidthSamples) {
-                    cr.translate(xOffset + borderWidth, yOffset);
+                    cr.translate(xOffset + labelPadding, yOffset);
                     drawRegionLabel();
                 }
                 cr.restore();
@@ -1223,7 +1243,6 @@ private:
         _linkChannelsMenuItem.addOnToggled(&onLinkChannels);
         _editRegionMenu.append(_linkChannelsMenuItem);
         _editRegionMenu.attachToWidget(this, null);
-        _editRegionMenu.showAll();
     }
 
     void onLinkChannels(CheckMenuItem linkChannels) {
@@ -1341,6 +1360,7 @@ private:
             drawTimestrip(cr);
             drawTracks(cr);
             drawTransport(cr);
+            drawSelectBox(cr);
 
             return true;
         }
@@ -1381,6 +1401,9 @@ private:
             enum transportHeadWidth = 16;
             enum transportHeadHeight = 10;
 
+            // save the existing cairo context state
+            cr.save();
+
             if(_action == Action.moveTransport) {
                 _transportPixelsOffset = clamp(_mouseX, 0, (viewOffset + viewWidthSamples > _mixer.nframes) ?
                                                ((_mixer.nframes - viewOffset) / samplesPerPixel) : viewWidthPixels);
@@ -1407,6 +1430,28 @@ private:
             cr.lineTo(_transportPixelsOffset, transportHeadHeight);
             cr.closePath();
             cr.fill();
+
+            // restore the cairo context state
+            cr.restore();
+        }
+
+        void drawSelectBox(ref Scoped!Context cr) {
+            if(_action == Action.selectBox) {
+                // save the existing cairo context state
+                cr.save();
+                cr.setOperator(cairo_operator_t.OVER);
+                cr.setAntialias(cairo_antialias_t.NONE);
+
+                cr.setLineWidth(1.0);
+                cr.rectangle(_selectMouseX, _selectMouseY, _mouseX - _selectMouseX, _mouseY - _selectMouseY);
+                cr.setSourceRgba(0.0, 1.0, 0.0, 0.5);
+                cr.fillPreserve();
+                cr.setSourceRgb(0.0, 1.0, 0.0);
+                cr.stroke();
+
+                // restore the cairo context state
+                cr.restore();
+            }
         }
 
         void redraw() {
@@ -1441,6 +1486,10 @@ private:
                                 regionView.selectedOffset = regionView.region.offset;
                             }
                         }
+                        redraw();
+                        break;
+
+                    case Action.selectBox:
                         redraw();
                         break;
 
@@ -1501,17 +1550,42 @@ private:
                     switch(_mode) {
                         // implement different behaviors for button presses depending on the current mode
                         case Mode.arrange:
-                            // deselect all audio regions
-                            foreach(regionView; _regionViews) {
-                                regionView.selected = false;
-                            }
+                            GdkModifierType state;
+                            event.getState(state);
+                            auto shiftPressed = state & GdkModifierType.SHIFT_MASK;
 
                             // detect if the mouse is over an audio region; if so, select that region
+                            bool mouseOverSelectedRegion;
                             foreach(regionView; _regionViews) {
                                 if(_mouseX >= regionView.boundingBox.x0 && _mouseX < regionView.boundingBox.x1 &&
-                                   _mouseY >= regionView.boundingBox.y0 && _mouseY < regionView.boundingBox.y1) {
-                                    regionView.selected = true;
-                                    _setAction(Action.selectRegion);
+                                   _mouseY >= regionView.boundingBox.y0 && _mouseY < regionView.boundingBox.y1 &&
+                                    regionView.selected) {
+                                    mouseOverSelectedRegion = true;
+                                    break;
+                                }
+                            }
+
+                            if(mouseOverSelectedRegion && !shiftPressed) {
+                                _setAction(Action.moveRegion);
+                            }
+                            else {
+                                // if shift is not currently pressed, deselect all regions
+                                if(!shiftPressed) {
+                                    foreach(regionView; _regionViews) {
+                                        regionView.selected = false;
+                                    }
+                                }
+
+                                bool mouseOverRegion;
+                                foreach(regionView; _regionViews) {
+                                    if(_mouseX >= regionView.boundingBox.x0 && _mouseX < regionView.boundingBox.x1 &&
+                                       _mouseY >= regionView.boundingBox.y0 && _mouseY < regionView.boundingBox.y1) {
+                                        // if the region is already selected and shift is pressed, deselect it
+                                        regionView.selected = !(regionView.selected && shiftPressed);
+                                        mouseOverRegion = true;
+                                        _setAction(Action.selectRegion);
+                                        break;
+                                    }
                                 }
                             }
                             break;
@@ -1535,14 +1609,21 @@ private:
                         default:
                             break;
                     }
+                    if(_action == Action.none) {
+                        _selectMouseX = _mouseX;
+                        _selectMouseY = _mouseY;
+                        _setAction(Action.selectBox);
+                    }
                 }
                 redraw();
             }
             else if(event.type == EventType.BUTTON_PRESS && event.button.button == rightButton) {
                 switch(_mode) {
                     case Mode.editRegion:
-                        _editRegionMenu.popup(rightButton, 0);
-                        break;
+                        auto buttonEvent = event.button;
+                        _editRegionMenu.showAll();
+                        _editRegionMenu.popup(buttonEvent.button, buttonEvent.time);
+                        return true;
 
                     default:
                         break;
@@ -1553,13 +1634,26 @@ private:
 
         bool onButtonRelease(Event event, Widget widget) {
             if(event.type == EventType.BUTTON_RELEASE && event.button.button == 1) {
-                // reset the cursor if necessary
                 switch(_action) {
+                    // reset the cursor if necessary
                     case Action.selectRegion:
                         _setAction(Action.none);
                         redraw();
                         break;
 
+                    // select all regions within the selection box drawn with the mouse
+                    case Action.selectBox:
+                        BoundingBox selectBox = BoundingBox(_selectMouseX, _selectMouseY, _mouseX, _mouseY);
+                        foreach(regionView; _regionViews) {
+                            if(selectBox.intersect(regionView.boundingBox)) {
+                                regionView.selected = true;
+                            }
+                        }
+                        _setAction(Action.none);
+                        redraw();
+                        break;
+
+                    // move a region
                     case Action.moveRegion:
                         _setAction(Action.none);
                         foreach(regionView; _regionViews) {
@@ -1571,6 +1665,7 @@ private:
                         redraw();
                         break;
 
+                    // stretch the audio inside a region
                     case Action.moveOnset:
                         immutable(channels_t) singleChannelIndex = _moveOnsetChannel;
                         immutable(channels_t) nChannels =
@@ -1803,6 +1898,8 @@ private:
     Action _action;
     pixels_t _mouseX;
     pixels_t _mouseY;
+    pixels_t _selectMouseX;
+    pixels_t _selectMouseY;
 
     size_t _moveOnsetIndex;
     channels_t _moveOnsetChannel;
