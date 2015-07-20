@@ -887,8 +887,14 @@ public:
                     cr.lineTo(xOffset - (lCorners ? 0 : borderWidth), yOffset + height);
                 }
                 cr.closePath();
-                auto borderPath = cr.copyPath();
 
+                // if the region is muted, save the border path for later rendering operations
+                cairo_path_t* borderPath;
+                if(region.mute) {
+                    borderPath = cr.copyPath();
+                }
+
+                // fill the region background with a gradient
                 Pattern gradient = Pattern.createLinear(0, yOffset, 0, yOffset + height);
                 gradient.addColorStopRgba(0.0, 0.0, 0.0, 1.0, alpha);
                 gradient.addColorStopRgba(height, 1.0, 0.0, 0.0, alpha);
