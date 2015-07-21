@@ -1398,10 +1398,13 @@ private:
         }
     }
 
+    @property nframes_t _viewMinSamples() { return 0; }
+    @property nframes_t _viewMaxSamples() { return _mixer.nframes + viewWidthSamples; }
+
     void _configureHScroll() {
-        _hAdjust.configure(0,
-                           0,
-                           _mixer.nframes + viewWidthSamples,
+        _hAdjust.configure(_viewOffset,
+                           _viewMinSamples,
+                           _viewMaxSamples,
                            _samplesPerPixel * 50,
                            _samplesPerPixel * 100,
                            viewWidthSamples);
@@ -1429,10 +1432,12 @@ private:
     void _zoomIn() {
         _samplesPerPixel = max(_samplesPerPixel - _zoomStep, 10);
         _canvas.redraw();
+        _configureHScroll();
     }
     void _zoomOut() {
         _samplesPerPixel += _zoomStep;
         _canvas.redraw();
+        _configureHScroll();
     }
 
     void _setCursor() {
@@ -2000,17 +2005,23 @@ private:
                     case ScrollDirection.LEFT:
                         if(_hAdjust.getStepIncrement() <= viewOffset) {
                             _viewOffset -= _hAdjust.getStepIncrement();
-                            _hAdjust.setValue(viewOffset);
-                            redraw();
                         }
+                        else {
+                            _viewOffset = _viewMinSamples;
+                        }
+                        _hAdjust.setValue(viewOffset);
+                        redraw();
                         break;
 
                     case ScrollDirection.RIGHT:
                         if(_hAdjust.getStepIncrement() + viewOffset <= _mixer.nframes) {
                             _viewOffset += _hAdjust.getStepIncrement();
-                            _hAdjust.setValue(viewOffset);
-                            redraw();
                         }
+                        else {
+                            _viewOffset = _viewMaxSamples;
+                        }
+                        _hAdjust.setValue(viewOffset);
+                        redraw();
                         break;
 
                     default:
