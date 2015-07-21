@@ -37,6 +37,7 @@ def configure( ctx ):
 
     ctx.load( "compiler_d" )
     ctx.load( "compiler_c" )
+    ctx.env.append_value( "DFLAGS", "-w" )
     if opts.debug :
         ctx.env.append_value( "DFLAGS", [ "-gc", "-debug" ] )
     else:

@@ -893,7 +893,6 @@ public:
                     else {
                         return (onsets[onsetIndex] = leftBound);
                     }
-                    break;
 
                 case Direction.right:
                     nframes_t rightBound = (onsetIndex < onsets.length - 1) ?
@@ -904,7 +903,6 @@ public:
                     else {
                         return (onsets[onsetIndex] = rightBound);
                     }
-                    break;
 
                 default:
                     break;
@@ -933,18 +931,8 @@ public:
         BoundingBox boundingBox;
         Region region;
 
+        bool editMode;
         bool linkChannels;
-
-        @property bool editMode() const { return _editMode; }
-        @property bool editMode(bool enable) {
-            if(!_editMode && enable) {
-                _linkChannelsMenuItem.setActive(linkChannels);
-            }
-            else if(_editMode && !enable) {
-                linkChannels = _linkChannelsMenuItem.getActive();
-            }
-            return (_editMode = enable);
-        }
 
     private:
         this(Region region) {
@@ -1143,7 +1131,7 @@ public:
                     onsetPixelsCenterDest,
                     onsetPixelsEnd;
                 double firstScaleFactor, secondScaleFactor;
-                if(editMode && _action == Action.moveOnset) {
+                if(editMode && _editRegion == this && _action == Action.moveOnset) {
                     moveOnset = true;
                     long onsetViewOffset = (viewOffset > regionOffset) ? cast(long)(viewOffset) : 0;
                     long onsetRegionOffset = (viewOffset > regionOffset) ? cast(long)(regionOffset) : 0;
@@ -1169,7 +1157,7 @@ public:
                          cast(double)(onsetFrameEnd - onsetFrameSrc)) : 0;
                 }
 
-                enum OnsetDrawState { init, firstHalf, secondHalf, complete };
+                enum OnsetDrawState { init, firstHalf, secondHalf, complete }
                 OnsetDrawState onsetDrawState;
 
                 // draw the region's waveform
@@ -1198,6 +1186,7 @@ public:
                                 case OnsetDrawState.init:
                                     if(i >= onsetPixelsStart) {
                                         onsetDrawState = OnsetDrawState.firstHalf;
+                                        goto case;
                                     }
                                     else {
                                         break;
@@ -1206,6 +1195,7 @@ public:
                                 case OnsetDrawState.firstHalf:
                                     if(i >= onsetPixelsCenterSrc) {
                                         onsetDrawState = OnsetDrawState.secondHalf;
+                                        goto case;
                                     }
                                     else {
                                         scaledI = cast(pixels_t)(onsetPixelsStart +
@@ -1244,6 +1234,7 @@ public:
                                 case OnsetDrawState.init:
                                     if(width - i <= onsetPixelsEnd) {
                                         onsetDrawState = OnsetDrawState.secondHalf;
+                                        goto case;
                                     }
                                     else {
                                         break;
@@ -1252,6 +1243,7 @@ public:
                                 case OnsetDrawState.secondHalf:
                                     if(width - i <= onsetPixelsCenterSrc) {
                                         onsetDrawState = OnsetDrawState.firstHalf;
+                                        goto case;
                                     }
                                     else {
                                         scaledI = cast(pixels_t)
@@ -1330,7 +1322,6 @@ public:
             cr.restore();
         }
 
-        bool _editMode;
         nframes_t[][] _onsets; // indexed as [channel][onset]
         nframes_t[] _onsetsLinked; // indexed as [onset]
 
@@ -1802,6 +1793,7 @@ private:
                 switch(_mode) {
                     case Mode.editRegion:
                         auto buttonEvent = event.button;
+                        _linkChannelsMenuItem.setActive(_editRegion.linkChannels);
                         _editRegionMenu.showAll();
                         _editRegionMenu.popup(buttonEvent.button, buttonEvent.time);
                         return true;
@@ -2103,6 +2095,32 @@ private:
     nframes_t _moveOnsetFrameDest; // locally indexed for region
 }
 
+class AppMainWindow : MainWindow {
+public:
+    this(string title, Mixer mixer) {
+        _mixer = mixer;
+        super(title);
+    }
+
+protected:
+    override bool windowDelete(Event event, Widget widget) {
+        _cleanupMixer();
+        return super.windowDelete(event, widget);
+    }
+
+    override bool exit(int code, bool force) {
+        _cleanupMixer();
+        return super.exit(code, force);
+    }
+
+private:
+    void _cleanupMixer() {
+        _mixer.destroy();
+    }
+
+    Mixer _mixer;
+}
+
 void main(string[] args) {
     string appName = "dseq";
 
@@ -2150,7 +2168,7 @@ void main(string[] args) {
         }
 
         Main.init(args);
-        MainWindow win = new MainWindow(appName);
+        AppMainWindow win = new AppMainWindow(appName, mixer);
         win.setDefaultSize(960, 600);
 
         ArrangeView arrangeView = new ArrangeView(appName, mixer);
