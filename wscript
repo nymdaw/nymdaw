@@ -47,7 +47,8 @@ def configure( ctx ):
                       args = [ "jack >= 0.120.0", "--cflags", "--libs" ],
                       uselib_store = "jack",
                       mandatory = False if sys.platform == "darwin" else True ):
-        ctx.define( "HAVE_JACK", 1);
+        ctx.define( "HAVE_JACK", 1 )
+        ctx.env.DFLAGS.append( "-version=HAVE_JACK" )
 
     # Configure CoreAudio on OSX
     if sys.platform == "darwin":
@@ -55,6 +56,7 @@ def configure( ctx ):
             ctx.check_cc( framework_name = "AudioUnit", mandatory = False )):
             # Pass OSX frameworks to DMD
             ctx.env.LINKFLAGS_dprogram.extend( [ "-L-framework", "-LCoreAudio", "-L-framework", "-LAudioUnit" ] )
+            ctx.env.DFLAGS.append( "-version=HAVE_COREAUDIO" )
 
     # Check for libsndfile
     ctx.check_cfg( package = "sndfile",

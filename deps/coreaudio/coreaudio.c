@@ -12,17 +12,32 @@ static AudioComponentInstance outputInstance;
 
 static char* errorString = NULL;
 
+typedef void (*AudioCallback)(nframes_t, channels_t, sample_t*);
+static AudioCallback currentAudioCallback = NULL;
+
+static OSStatus coreAudioCallback(void* inRefCon,
+                                  AudioUnitRenderActionFlags* ioActionFlags,
+                                  const AudioTimeStamp* inTimeStamp,
+                                  UInt32 inBusNumber,
+                                  UInt32 inNumberFrames,
+                                  AudioBufferList* ioData) {
+    (*currentAudioCallback)(ioData->mBuffers[0].mDataByteSize / sizeof(sample_t),
+                            ioData->mBuffers[0].mNumberChannels,
+                            (sample_t*)ioData->mBuffers[0].mData);
+    return 0;
+}
+
 char* coreAudioErrorString() {
     return errorString;
 }
 
-bool coreAudioInit() {
+bool coreAudioInit(nframes_t sampleRate, channels_t nChannels, AudioCallback audioCallback) {
     AudioComponentDescription desc;
     desc.componentType = kAudioUnitType_Output;
     desc.componentSubType = kAudioUnitSubType_DefaultOutput;
     desc.componentFlags = 0;
     desc.componentFlagsMask = 0;
-    desc.componentManufacturer = kAudioUnitManufacturer_Apple;
+    desc.componentManufacturer = 0;
 
     outputComponent = AudioComponentFindNext(NULL, &desc);
     if(!outputComponent || AudioComponentInstanceNew(outputComponent, &outputInstance)) {
@@ -30,17 +45,24 @@ bool coreAudioInit() {
         return false;
     }
 
-    return true;
-}
-
-void coreAudioCleanup() {
-    AudioOutputUnitStop(outputInstance);
-    AudioComponentInstanceDispose(outputInstance);
-}
-
-bool coreAudioOpen(nframes_t sampleRate, channels_t nChannels, AURenderCallback* callback) {
     if(AudioUnitInitialize(outputInstance)) {
         errorString = "Unable to initialize audio unit instance";
+        return false;
+    }
+
+    currentAudioCallback = audioCallback;
+
+    AURenderCallbackStruct callbackStruct;
+    callbackStruct.inputProc = &coreAudioCallback;
+    callbackStruct.inputProcRefCon = NULL;
+
+    if(AudioUnitSetProperty(outputInstance,
+                            kAudioUnitProperty_SetRenderCallback,
+                            kAudioUnitScope_Input,
+                            0,
+                            &callbackStruct,
+                            sizeof(AURenderCallbackStruct))) {
+        errorString = "Unable to attach an IOProc to the selected audio unit";
         return false;
     }
 
@@ -64,24 +86,15 @@ bool coreAudioOpen(nframes_t sampleRate, channels_t nChannels, AURenderCallback*
         return false;
     }
 
-    AURenderCallbackStruct callbackStruct;
-    callbackStruct.inputProc = *callback;
-    callbackStruct.inputProcRefCon = NULL;
-
-    if(AudioUnitSetProperty(outputInstance,
-                            kAudioUnitProperty_SetRenderCallback,
-                            kAudioUnitScope_Input,
-                            0,
-                            &callback,
-                            sizeof(AURenderCallbackStruct))) {
-        errorString = "Unable to attach an IOProc to the selected audio unit";
-        return false;
-    }
-
     if(AudioOutputUnitStart(outputInstance)) {
         errorString = "Unable to start audio unit";
         return false;
     }
 
     return true;
+}
+
+void coreAudioCleanup() {
+    AudioOutputUnitStop(outputInstance);
+    AudioComponentInstanceDispose(outputInstance);
 }

@@ -5,8 +5,13 @@ import std.algorithm;
 import std.array;
 import std.path;
 import std.math;
+import std.getopt;
+import std.uni;
 
-import jack.client;
+version(HAVE_JACK) {
+    import jack.client;
+}
+
 import sndfile;
 import samplerate;
 import aubio;
@@ -53,8 +58,14 @@ class FileError: Exception {
     }
 }
 
-alias nframes_t = jack_nframes_t;
-alias sample_t = jack_default_audio_sample_t;
+version(HAVE_JACK) {
+    alias nframes_t = jack_nframes_t;
+    alias sample_t = jack_default_audio_sample_t;
+}
+else {
+    alias nframes_t = uint;
+    alias sample_t = float;
+}
 alias channels_t = uint;
 
 alias pixels_t = int;
@@ -458,13 +469,12 @@ package:
     }
 
     void mixStereoInterleaved(nframes_t offset, nframes_t bufNFrames, channels_t nChannels, sample_t* mixBuf) const {
-        auto framesPerChannel = bufNFrames / nChannels;
-        for(auto i = 0; i < bufNFrames; i += framesPerChannel) {
+        for(auto i = 0, j = 0; i < bufNFrames; i += nChannels, ++j) {
             foreach(r; _regions) {
                 if(!r.mute()) {
-                    mixBuf[i] += r.getSampleGlobal(0, offset + i);
+                    mixBuf[i] += r.getSampleGlobal(0, offset + j);
                     if(r.nChannels > 1) {
-                        mixBuf[i + 1] += r.getSampleGlobal(1, offset + i);
+                        mixBuf[i + 1] += r.getSampleGlobal(1, offset + j);
                     }
                 }
             }
@@ -528,19 +538,28 @@ public:
     final void play() { _playing = true; }
     final void pause() { _playing = false; }
 
-    final void mixStereo(nframes_t bufNFrames, sample_t* mixBuf1, sample_t* mixBuf2) {
+    final void mixStereoInterleaved(nframes_t bufNFrames, channels_t nChannels, sample_t* mixBuf) {
+        // initialize the buffer to silence
+        import core.stdc.string: memset;
+        memset(mixBuf, 0, sample_t.sizeof * bufNFrames);
+
+        // mix all tracks down to stereo
+        if(!_transportFinished() && _playing) {
+            foreach(t; _tracks) {
+                t.mixStereoInterleaved(_transportOffset, bufNFrames, nChannels, mixBuf);
+            }
+            _transportOffset += bufNFrames / nChannels;
+        }
+    }
+
+    final void mixStereoNonInterleaved(nframes_t bufNFrames, sample_t* mixBuf1, sample_t* mixBuf2) {
         // initialize the buffers to silence
         import core.stdc.string: memset;
-        memset(mixBuf1, 0, jack_nframes_t.sizeof * bufNFrames);
-        memset(mixBuf2, 0, jack_nframes_t.sizeof * bufNFrames);
+        memset(mixBuf1, 0, sample_t.sizeof * bufNFrames);
+        memset(mixBuf2, 0, sample_t.sizeof * bufNFrames);
 
-        // stop playing if the transport is at the end of the project
-        if(_playing && _transportOffset >= _nframes) {
-            _playing = false;
-            _transportOffset = _nframes;
-        }
-        // otherwise, mix all tracks down to stereo
-        else if(_playing) {
+        // mix all tracks down to stereo
+        if(!_transportFinished() && _playing) {
             foreach(t; _tracks) {
                 t.mixStereoNonInterleaved(_transportOffset, bufNFrames, mixBuf1, mixBuf2);
             }
@@ -553,6 +572,16 @@ protected:
     void cleanupMixer();
 
 private:
+    // stop playing if the transport is at the end of the project
+    bool _transportFinished() {
+        if(_playing && _transportOffset >= _nframes) {
+            _playing = false;
+            _transportOffset = _nframes;
+            return true;
+        }
+        return false;
+    }
+
     string _appName;
 
     Track[] _tracks;
@@ -560,6 +589,8 @@ private:
     nframes_t _transportOffset;
     bool _playing;
 }
+
+version(HAVE_JACK) {
 
 final class JackMixer : Mixer {
 public:
@@ -596,7 +627,7 @@ private:
             float* mixBuf1 = mixOut1.get_audio_buffer(bufNFrames);
             float* mixBuf2 = mixOut2.get_audio_buffer(bufNFrames);
 
-            mixStereo(bufNFrames, mixBuf1, mixBuf2);
+            mixStereoNonInterleaved(bufNFrames, mixBuf1, mixBuf2);
 
             return 0;
         };
@@ -621,35 +652,79 @@ private:
     JackClient _client;
 }
 
-version(OSX) {
+}
+
+version(HAVE_COREAUDIO) {
+
+private extern(C) {
+    alias OSStatus = int;
+    alias AudioUnitRenderActionFlags = int;
+    struct AudioTimeStamp;
+    struct AudioBuffer {
+        uint mNumberChannels;
+        uint mDataByteSize;
+        void* mData;
+    }
+    struct AudioBufferList {
+        uint mNumberBuffers;
+        AudioBuffer* mBuffers;
+    }
+    alias AURenderCallback = OSStatus function(void* inRefCon,
+                                               AudioUnitRenderActionFlags* ioActionFlags,
+                                               const AudioTimeStamp* inTimeStamp,
+                                               uint inBusNumber,
+                                               uint inNumberFrames,
+                                               AudioBufferList* ioData);
+
+    alias AudioCallback = void function(nframes_t, channels_t, sample_t*);
+}
+
+private extern(C) @nogc nothrow {
+    char* coreAudioErrorString();
+    bool coreAudioInit(nframes_t sampleRate, channels_t nChannels, AudioCallback callback);
+    void coreAudioCleanup();
+}
 
 final class CoreAudioMixer : Mixer {
 public:
+    enum outputChannels = 2; // default to stereo
+
     this(string appName, nframes_t sampleRate = 44100) {
+        if(!(_instance is null)) {
+            throw new AudioError("Only one CoreAudioMixer instance may be constructed per process");
+        }
+        _instance = this;
         _sampleRate = sampleRate;
         super(appName);
+    }
+
+    ~this() {
+        _instance = null;
     }
 
     @property override nframes_t sampleRate() { return _sampleRate; }
 
 protected:
     override void initializeMixer() {
-        /*if(!coreAudioInit()) {
+        if(!coreAudioInit(sampleRate, outputChannels, &_coreAudioCallback)) {
             throw new AudioError(to!string(coreAudioErrorString()));
         }
-        if(!coreAudioOpen(_sampleRate, _outputChannels, &mixCallback)) {
-            throw new AudioError(to!string(coreAudioErrorString()));
-        }*/
     }
 
     override void cleanupMixer() {
-        //coreAudioCleanup();
+        coreAudioCleanup();
     }
 
 private:
-        enum _outputChannels = 2; // default to stereo
+    extern(C) static void _coreAudioCallback(nframes_t bufNFrames,
+                                             channels_t nChannels,
+                                             sample_t* mixBuffer) {
+        _instance.mixStereoInterleaved(bufNFrames, nChannels, mixBuffer);
+    }
 
-        nframes_t _sampleRate;
+    __gshared static CoreAudioMixer _instance; // there should only be one instance for this process
+
+    nframes_t _sampleRate;
 }
 
 }
@@ -2020,12 +2095,47 @@ private:
 void main(string[] args) {
     string appName = "dseq";
 
+    string[] availableAudioDrivers;
+    version(HAVE_JACK) {
+        availableAudioDrivers ~= "JACK";
+    }
+    version(HAVE_COREAUDIO) {
+        availableAudioDrivers ~= "CoreAudio";
+    }
+    assert(availableAudioDrivers.length > 0);
+    string audioDriver;
+
+    auto opts = getopt(args,
+                       "driver|d", "Available audio drivers: " ~ reduce!((string x, y) => x ~ ", " ~ y)
+                       (availableAudioDrivers[0], availableAudioDrivers[1 .. $]), &audioDriver);
+
+    if(opts.helpWanted) {
+        defaultGetoptPrinter(appName ~ " command line options:", opts.options);
+        return;
+    }
+
     try {
-        version(OSX) {
-            Mixer mixer = new CoreAudioMixer(appName);
-        }
-        else {
-            Mixer mixer = new JackMixer(appName);
+        Mixer mixer;
+        switch(audioDriver.toUpper()) {
+            version(HAVE_JACK) {
+                case "JACK":
+                    mixer = new JackMixer(appName);
+                    break;
+            }
+
+            version(HAVE_COREAUDIO) {
+                case "COREAUDIO":
+                    mixer = new CoreAudioMixer(appName);
+                    break;
+            }
+
+            default:
+                version(OSX) {
+                    mixer = new CoreAudioMixer(appName);
+                }
+                else {
+                    mixer = new JackMixer(appName);
+                }
         }
 
         Main.init(args);
