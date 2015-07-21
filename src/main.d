@@ -456,8 +456,22 @@ package:
     this(bool delegate(nframes_t) resizeIfNecessary) {
         _resizeIfNecessary = resizeIfNecessary;
     }
-    
-    void mixStereo(nframes_t offset, nframes_t bufNFrames, sample_t* mixBuf1, sample_t* mixBuf2) const {
+
+    void mixStereoInterleaved(nframes_t offset, nframes_t bufNFrames, channels_t nChannels, sample_t* mixBuf) const {
+        auto framesPerChannel = bufNFrames / nChannels;
+        for(auto i = 0; i < bufNFrames; i += framesPerChannel) {
+            foreach(r; _regions) {
+                if(!r.mute()) {
+                    mixBuf[i] += r.getSampleGlobal(0, offset + i);
+                    if(r.nChannels > 1) {
+                        mixBuf[i + 1] += r.getSampleGlobal(1, offset + i);
+                    }
+                }
+            }
+        }
+    }
+
+    void mixStereoNonInterleaved(nframes_t offset, nframes_t bufNFrames, sample_t* mixBuf1, sample_t* mixBuf2) const {
         for(auto i = 0; i < bufNFrames; ++i) {
             foreach(r; _regions) {
                 if(!r.mute()) {
@@ -475,27 +489,25 @@ private:
     bool delegate(nframes_t) _resizeIfNecessary;
 }
 
-class Mixer {
+abstract class Mixer {
 public:
     this(string appName) {
-        try {
-            _openJack(appName);
-        }
-        catch(JackError e) {
-            throw new AudioError(e.msg);
-        }
-    }
-    ~this() {
-        _closeJack();
+        _appName = appName;
+
+        initializeMixer();
     }
 
-    Track createTrack() {
+    ~this() {
+        cleanupMixer();
+    }
+
+    final Track createTrack() {
         Track track = new Track(&resizeIfNecessary);
         _tracks ~= track;
         return track;
     }
 
-    bool resizeIfNecessary(nframes_t newNFrames) {
+    final bool resizeIfNecessary(nframes_t newNFrames) {
         if(newNFrames > _nframes) {
             _nframes = newNFrames;
             return true;
@@ -503,18 +515,74 @@ public:
         return false;
     }
 
-    @property nframes_t sampleRate() { return _client.get_sample_rate(); }
+    @property nframes_t sampleRate();
 
-    @property nframes_t nframes() const { return _nframes; }
-    @property nframes_t nframes(nframes_t newNFrames) { return (_nframes = newNFrames); }
+    @property final string appName() const { return _appName; }
+    @property final nframes_t nframes() const { return _nframes; }
+    @property final nframes_t nframes(nframes_t newNFrames) { return (_nframes = newNFrames); }
+    @property final nframes_t transportOffset() const { return _transportOffset; }
+    @property final nframes_t transportOffset(nframes_t newOffset) {
+        return (_transportOffset = min(newOffset, nframes));
+    }
+    @property final bool playing() const { return _playing; }
+    final void play() { _playing = true; }
+    final void pause() { _playing = false; }
 
-    @property nframes_t transportOffset() const { return _transportOffset; }
-    @property nframes_t transportOffset(nframes_t newOffset) { return (_transportOffset = min(newOffset, nframes)); }
+    final void mixStereo(nframes_t bufNFrames, sample_t* mixBuf1, sample_t* mixBuf2) {
+        // initialize the buffers to silence
+        import core.stdc.string: memset;
+        memset(mixBuf1, 0, jack_nframes_t.sizeof * bufNFrames);
+        memset(mixBuf2, 0, jack_nframes_t.sizeof * bufNFrames);
 
-    @property bool playing() const { return _playing; }
-    void play() { _playing = true; }
-    void pause() { _playing = false; }
-    
+        // stop playing if the transport is at the end of the project
+        if(_playing && _transportOffset >= _nframes) {
+            _playing = false;
+            _transportOffset = _nframes;
+        }
+        // otherwise, mix all tracks down to stereo
+        else if(_playing) {
+            foreach(t; _tracks) {
+                t.mixStereoNonInterleaved(_transportOffset, bufNFrames, mixBuf1, mixBuf2);
+            }
+            _transportOffset += bufNFrames;
+        }
+    }
+
+protected:
+    void initializeMixer();
+    void cleanupMixer();
+
+private:
+    string _appName;
+
+    Track[] _tracks;
+    nframes_t _nframes;
+    nframes_t _transportOffset;
+    bool _playing;
+}
+
+final class JackMixer : Mixer {
+public:
+    this(string appName) {
+        super(appName);
+    }
+
+    @property override nframes_t sampleRate() { return _client.get_sample_rate(); }
+
+protected:
+    override void initializeMixer() {
+        try {
+            _openJack(appName);
+        }
+        catch(JackError e) {
+            throw new AudioError(e.msg);
+        }
+    }
+
+    override void cleanupMixer() {
+        _closeJack();
+    }
+
 private:
     void _openJack(string appName) {
         _client = new JackClient;
@@ -528,22 +596,7 @@ private:
             float* mixBuf1 = mixOut1.get_audio_buffer(bufNFrames);
             float* mixBuf2 = mixOut2.get_audio_buffer(bufNFrames);
 
-            // initialize the buffers to silence
-            import core.stdc.string: memset;
-            memset(mixBuf1, 0, jack_nframes_t.sizeof * bufNFrames);
-            memset(mixBuf2, 0, jack_nframes_t.sizeof * bufNFrames);
-
-            if(_playing && _transportOffset >= _nframes) {
-                _playing = false;
-                _transportOffset = _nframes;
-            }
-            else if(_playing) {
-                foreach(t; _tracks) {
-                    t.mixStereo(_transportOffset, bufNFrames, mixBuf1, mixBuf2);
-                }
-
-                _transportOffset += bufNFrames;
-            }
+            mixStereo(bufNFrames, mixBuf1, mixBuf2);
 
             return 0;
         };
@@ -566,11 +619,39 @@ private:
     }
 
     JackClient _client;
-    Track[] _tracks;
+}
 
-    nframes_t _nframes;
-    nframes_t _transportOffset;
-    bool _playing;
+version(OSX) {
+
+final class CoreAudioMixer : Mixer {
+public:
+    this(string appName, nframes_t sampleRate = 44100) {
+        _sampleRate = sampleRate;
+        super(appName);
+    }
+
+    @property override nframes_t sampleRate() { return _sampleRate; }
+
+protected:
+    override void initializeMixer() {
+        /*if(!coreAudioInit()) {
+            throw new AudioError(to!string(coreAudioErrorString()));
+        }
+        if(!coreAudioOpen(_sampleRate, _outputChannels, &mixCallback)) {
+            throw new AudioError(to!string(coreAudioErrorString()));
+        }*/
+    }
+
+    override void cleanupMixer() {
+        //coreAudioCleanup();
+    }
+
+private:
+        enum _outputChannels = 2; // default to stereo
+
+        nframes_t _sampleRate;
+}
+
 }
 
 enum Direction {
@@ -618,8 +699,8 @@ public:
         moveTransport
     }
 
-    this(string appName) {
-        _mixer = new Mixer(appName);
+    this(string appName, Mixer mixer) {
+        _mixer = mixer;
         _samplesPerPixel = defaultSamplesPerPixel;
 
         super(false, 0);
@@ -1940,11 +2021,18 @@ void main(string[] args) {
     string appName = "dseq";
 
     try {
+        version(OSX) {
+            Mixer mixer = new CoreAudioMixer(appName);
+        }
+        else {
+            Mixer mixer = new JackMixer(appName);
+        }
+
         Main.init(args);
         MainWindow win = new MainWindow(appName);
         win.setDefaultSize(960, 600);
 
-        ArrangeView arrangeView = new ArrangeView(appName);
+        ArrangeView arrangeView = new ArrangeView(appName, mixer);
         win.add(arrangeView);
 
         try {
