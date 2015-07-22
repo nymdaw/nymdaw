@@ -940,7 +940,6 @@ public:
     private:
         this(Region region) {
             this.region = region;
-            _headerLabelLayout = null;
             computeOnsets();
         }
 
@@ -1326,8 +1325,6 @@ public:
             cr.restore();
         }
 
-        static PgLayout _headerLabelLayout;
-
         nframes_t[][] _onsets; // indexed as [channel][onset]
         nframes_t[] _onsetsLinked; // indexed as [onset]
     }
@@ -1540,8 +1537,6 @@ private:
         enum timeMarkerFont = "Arial 10";
 
         this() {
-            _timestripMarkerLayout = null;
-
             setCanFocus(true);
 
             addOnDraw(&drawCallback);
@@ -1688,8 +1683,9 @@ private:
             auto firstMarkerOffset = (viewOffset + tickDistanceSamples) % tickDistanceSamples;
             for(auto i = viewOffset - firstMarkerOffset;
                 i < viewOffset + viewWidthSamples + tickDistanceSamples; i += tickDistanceSamples) {
-                pixels_t xOffset = cast(pixels_t)(
-                    ((i >= viewOffset) ? cast(long)(i - viewOffset) : -cast(long)(viewOffset - i)) / samplesPerPixel);
+                pixels_t xOffset =
+                    cast(pixels_t)(((i >= viewOffset) ?
+                                    cast(long)(i - viewOffset) : -cast(long)(viewOffset - i)) / samplesPerPixel);
                 drawMarkers(xOffset);
 
                 pixels_t timeMarkerXOffset;
@@ -2225,9 +2221,6 @@ private:
             }
             return false;
         }
-
-        static PgLayout _timestripMarkerLayout;
-        float _timestripScaleFactor = 1;
     }
 
     Mixer _mixer;
@@ -2235,6 +2228,10 @@ private:
     RegionView[] _regionViews;
     RegionView _editRegion;
     RegionView _earliestSelectedRegion;
+
+    PgLayout _headerLabelLayout;
+    PgLayout _timestripMarkerLayout;
+    float _timestripScaleFactor = 1;
 
     nframes_t _samplesPerPixel;
     nframes_t _viewOffset;
