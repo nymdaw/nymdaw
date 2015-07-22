@@ -6,7 +6,8 @@ import std.array;
 import std.path;
 import std.math;
 import std.getopt;
-import std.uni;
+import std.string;
+import std.format;
 
 version(HAVE_JACK) {
     import jack.client;
@@ -291,7 +292,8 @@ public:
                     nframes_t sampleOffset) const {
         auto cacheSize = _cacheBinSizes[cacheIndex];
         return _min(_waveformCacheList[channelIndex][cacheIndex].minValues
-                    [sampleOffset * (binSize / cacheSize) .. min((sampleOffset + 1) * (binSize / cacheSize), $)]);
+                    [min(sampleOffset * (binSize / cacheSize), $ - 1) ..
+                     min((sampleOffset + 1) * (binSize / cacheSize), $)]);
     }
     sample_t getMax(channels_t channelIndex,
                     size_t cacheIndex,
@@ -299,7 +301,8 @@ public:
                     nframes_t sampleOffset) const {
         auto cacheSize = _cacheBinSizes[cacheIndex];
         return _max(_waveformCacheList[channelIndex][cacheIndex].maxValues
-                    [sampleOffset * (binSize / cacheSize) .. min((sampleOffset + 1) * (binSize / cacheSize), $)]);
+                    [min(sampleOffset * (binSize / cacheSize), $ - 1) ..
+                     min((sampleOffset + 1) * (binSize / cacheSize), $)]);
     }
 
     // returns the sample value at a given channel and frame, globally indexed
@@ -937,6 +940,7 @@ public:
     private:
         this(Region region) {
             this.region = region;
+            _headerLabelLayout = null;
             computeOnsets();
         }
 
@@ -1090,7 +1094,6 @@ public:
                 if(!_headerLabelLayout) {
                     PgFontDescription desc;
                     _headerLabelLayout = PgCairo.createLayout(cr);
-                    _headerLabelLayout.setText(region.name);
                     desc = PgFontDescription.fromString(headerFont);
                     _headerLabelLayout.setFontDescription(desc);
                     desc.free();
@@ -1106,6 +1109,7 @@ public:
                 enum labelPadding = borderWidth + 1;
                 int labelWidth, labelHeight;
                 labelWidth += labelPadding;
+                _headerLabelLayout.setText(region.name);
                 _headerLabelLayout.getPixelSize(labelWidth, labelHeight);
                 if(xOffset == 0 && regionOffset < viewOffset && labelWidth + labelPadding > width) {
                     cr.translate(xOffset - (labelWidth - width), yOffset);
@@ -1322,10 +1326,10 @@ public:
             cr.restore();
         }
 
+        static PgLayout _headerLabelLayout;
+
         nframes_t[][] _onsets; // indexed as [channel][onset]
         nframes_t[] _onsetsLinked; // indexed as [onset]
-
-        PgLayout _headerLabelLayout;
     }
 
     class TrackView {
@@ -1380,12 +1384,28 @@ public:
     @property nframes_t viewWidthSamples() { return _canvas.viewWidthPixels * _samplesPerPixel; }
 
 private:
-    @property nframes_t _zoomStep() const {
-        if(samplesPerPixel <= 100) {
+    enum _zoomStep = 10;
+    @property size_t _zoomMultiplier() const {
+        if(_samplesPerPixel > 2000) {
+            return 20;
+        }
+        if(_samplesPerPixel > 1000) {
             return 10;
         }
+        if(_samplesPerPixel > 700) {
+            return 5;
+        }
+        if(_samplesPerPixel > 400) {
+            return 4;
+        }
+        else if(_samplesPerPixel > 200) {
+            return 3;
+        }
+        else if(_samplesPerPixel > 100) {
+            return 2;
+        }
         else {
-            return 100;
+            return 1;
         }
     }
 
@@ -1421,12 +1441,20 @@ private:
     }
 
     void _zoomIn() {
-        _samplesPerPixel = max(_samplesPerPixel - _zoomStep, 10);
+        auto zoomCount = _zoomMultiplier;
+        for(auto i = 0; i < zoomCount; ++i) {
+            auto step = _zoomStep;
+            _samplesPerPixel = max(_samplesPerPixel - step, 10);
+        }
         _canvas.redraw();
         _configureHScroll();
     }
     void _zoomOut() {
-        _samplesPerPixel += _zoomStep;
+        auto zoomCount = _zoomMultiplier;
+        for(auto i = 0; i < zoomCount; ++i) {
+            auto step = _zoomStep;
+            _samplesPerPixel += step;
+        }
         _canvas.redraw();
         _configureHScroll();
     }
@@ -1461,6 +1489,23 @@ private:
     }
 
     void _setAction(Action action) {
+        switch(action) {
+            case Action.moveRegion:
+                nframes_t minOffset = nframes_t.max;
+                foreach(regionView; _regionViews) {
+                    if(regionView.selected) {
+                        regionView.selectedOffset = regionView.region.offset;
+                        if(regionView.region.offset < minOffset) {
+                            minOffset = regionView.region.offset;
+                            _earliestSelectedRegion = regionView;
+                        }
+                    }
+                }
+                break;
+
+            default:
+                break;
+        }
         _action = action;
         _setCursor();
     }
@@ -1492,7 +1537,11 @@ private:
     }
 
     class Canvas : DrawingArea {
+        enum timeMarkerFont = "Arial 10";
+
         this() {
+            _timestripMarkerLayout = null;
+
             setCanFocus(true);
 
             addOnDraw(&drawCallback);
@@ -1546,14 +1595,131 @@ private:
             cr.setSourceRgb(0.1, 0.1, 0.1);
             cr.fill();
 
-            // draw the time ticks (for seconds)            
+            if(!_timestripMarkerLayout) {
+                PgFontDescription desc;
+                _timestripMarkerLayout = PgCairo.createLayout(cr);
+                desc = PgFontDescription.fromString(timeMarkerFont);
+                _timestripMarkerLayout.setFontDescription(desc);
+                desc.free();
+            }
+
+            // draw the time ticks (for seconds)
             cr.setSourceRgb(1.0, 1.0, 1.0);
             cr.setAntialias(cairo_antialias_t.NONE);
             cr.setLineWidth(1.0);
-            for(auto i = viewOffset + ((viewOffset + _mixer.sampleRate) % _mixer.sampleRate);
-                i < viewOffset + viewWidthSamples; i += _mixer.sampleRate) {
-                cr.moveTo((i - viewOffset) / samplesPerPixel, 0);
-                cr.lineTo((i - viewOffset) / samplesPerPixel, timestripHeightPixels * 0.5);
+            nframes_t secondsDistanceSamples = _mixer.sampleRate;
+            pixels_t secondsDistancePixels = secondsDistanceSamples / samplesPerPixel;
+
+            void autoScale() {
+                nframes_t tickDistanceSamples = cast(nframes_t)(secondsDistanceSamples * _timestripScaleFactor);
+                pixels_t tickDistancePixels = tickDistanceSamples / samplesPerPixel;
+                if(tickDistancePixels > 200) {
+                    _timestripScaleFactor *= 0.5f;
+                }
+                else if(tickDistancePixels < 100) {
+                    _timestripScaleFactor *= 2.0f;
+                }
+            }
+
+            if(secondsDistancePixels > 150) {
+                autoScale();
+            }
+            else if(secondsDistancePixels > 60) {
+                _timestripScaleFactor = 1;
+            }
+            else if(secondsDistancePixels > 25) {
+                _timestripScaleFactor = 2;
+            }
+            else if(secondsDistancePixels > 15) {
+                _timestripScaleFactor = 5.0;
+            }
+            else if(secondsDistancePixels > 10) {
+                _timestripScaleFactor = 10;
+            }
+            else if(secondsDistancePixels > 3) {
+                _timestripScaleFactor = 15;
+            }
+            else {
+                autoScale();
+            }
+
+            nframes_t tickDistanceSamples = cast(nframes_t)(secondsDistanceSamples * _timestripScaleFactor);
+            pixels_t tickDistancePixels = tickDistanceSamples / samplesPerPixel;
+
+            auto decDigits = 1;
+            if(secondsDistancePixels <= 3) {
+                decDigits = 0;
+            }
+            else if(secondsDistancePixels >= 750) {
+                decDigits = clamp(cast(typeof(decDigits))(10 - log(tickDistanceSamples)), 1, 5);
+            }
+
+            auto minuteSpec = singleSpec("%.0f");
+            auto decDigitsFormat = to!string(decDigits) ~ 'f';
+            auto secondsSpec = singleSpec("%." ~ decDigitsFormat);
+            auto secondsSpecTwoDigitsString = appender!string();
+            secondsSpecTwoDigitsString.put("%0");
+            secondsSpecTwoDigitsString.put(to!string(decDigits > 0 ? decDigits + 3 : 2));
+            secondsSpecTwoDigitsString.put('.');
+            secondsSpecTwoDigitsString.put(decDigitsFormat);
+            auto secondsSpecTwoDigits = singleSpec(secondsSpecTwoDigitsString.data);
+
+            void drawMarkers(pixels_t xOffset) {
+                enum primaryHeightFactor = 0.5;
+                enum secondaryHeightFactor = 0.35;
+                enum tertiaryHeightFactor = 0.2;
+
+                // draw primary marker
+                cr.moveTo(xOffset, 0);
+                cr.lineTo(xOffset, timestripHeightPixels * primaryHeightFactor);
+
+                // draw one secondary marker
+                cr.moveTo(xOffset + tickDistancePixels / 2, 0);
+                cr.lineTo(xOffset + tickDistancePixels / 2, timestripHeightPixels * secondaryHeightFactor);
+
+                // draw two tertiary markers
+                cr.moveTo(xOffset + tickDistancePixels / 4, 0);
+                cr.lineTo(xOffset + tickDistancePixels / 4, timestripHeightPixels * tertiaryHeightFactor);
+                cr.moveTo(xOffset + (tickDistancePixels / 4) * 3, 0);
+                cr.lineTo(xOffset + (tickDistancePixels / 4) * 3, timestripHeightPixels * tertiaryHeightFactor);
+            }
+
+            // draw all currently visible markers and their time labels
+            auto firstMarkerOffset = (viewOffset + tickDistanceSamples) % tickDistanceSamples;
+            for(auto i = viewOffset - firstMarkerOffset;
+                i < viewOffset + viewWidthSamples + tickDistanceSamples; i += tickDistanceSamples) {
+                pixels_t xOffset = cast(pixels_t)(
+                    ((i >= viewOffset) ? cast(long)(i - viewOffset) : -cast(long)(viewOffset - i)) / samplesPerPixel);
+                drawMarkers(xOffset);
+
+                pixels_t timeMarkerXOffset;
+                auto timeString = appender!string();
+                auto minutes = (i / secondsDistanceSamples) / 60;
+                if(i == 0) {
+                    timeString.put('0');
+                    timeMarkerXOffset = xOffset;
+                }
+                else {
+                    if(minutes > 0) {
+                        timeString.put(to!string(minutes));
+                        timeString.put(':');
+                        formatValue(timeString, float(i) / float(secondsDistanceSamples) - minutes * 60,
+                                    secondsSpecTwoDigits);
+                    }
+                    else {
+                        formatValue(timeString, float(i) / float(secondsDistanceSamples), secondsSpec);
+                    }
+
+                    int widthPixels, heightPixels;
+                    _timestripMarkerLayout.getPixelSize(widthPixels, heightPixels);
+                    timeMarkerXOffset = xOffset - widthPixels / 2;
+                }
+
+                _timestripMarkerLayout.setText(timeString.data);
+
+                cr.moveTo(timeMarkerXOffset, timestripHeightPixels * 0.5);
+                PgCairo.updateLayout(cr, _timestripMarkerLayout);
+                PgCairo.showLayout(cr, _timestripMarkerLayout);
             }
             cr.stroke();
 
@@ -1653,11 +1819,6 @@ private:
                 switch(_action) {
                     case Action.selectRegion:
                         _setAction(Action.moveRegion);
-                        foreach(regionView; _regionViews) {
-                            if(regionView.selected) {
-                                regionView.selectedOffset = regionView.region.offset;
-                            }
-                        }
                         redraw();
                         break;
 
@@ -1672,11 +1833,13 @@ private:
                                 if(_mouseX > prevMouseX) {
                                     regionView.selectedOffset += deltaXSamples;
                                 }
-                                else if(regionView.selectedOffset > abs(deltaXSamples)) {
+                                else if(_earliestSelectedRegion.selectedOffset > abs(deltaXSamples)) {
                                     regionView.selectedOffset -= deltaXSamples;
                                 }
                                 else {
-                                    regionView.selectedOffset = 0;
+                                    regionView.selectedOffset =
+                                        regionView.region.offset > _earliestSelectedRegion.region.offset ?
+                                        regionView.region.offset - _earliestSelectedRegion.region.offset : 0;
                                 }
                             }
                         }
@@ -2062,12 +2225,16 @@ private:
             }
             return false;
         }
+
+        static PgLayout _timestripMarkerLayout;
+        float _timestripScaleFactor = 1;
     }
 
     Mixer _mixer;
     TrackView[] _trackViews;
     RegionView[] _regionViews;
     RegionView _editRegion;
+    RegionView _earliestSelectedRegion;
 
     nframes_t _samplesPerPixel;
     nframes_t _viewOffset;
