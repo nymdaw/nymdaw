@@ -659,34 +659,13 @@ private:
 
 version(HAVE_COREAUDIO) {
 
-private extern(C) {
-    alias OSStatus = int;
-    alias AudioUnitRenderActionFlags = int;
-    struct AudioTimeStamp;
-    struct AudioBuffer {
-        uint mNumberChannels;
-        uint mDataByteSize;
-        void* mData;
-    }
-    struct AudioBufferList {
-        uint mNumberBuffers;
-        AudioBuffer* mBuffers;
-    }
-    alias AURenderCallback = OSStatus function(void* inRefCon,
-                                               AudioUnitRenderActionFlags* ioActionFlags,
-                                               const AudioTimeStamp* inTimeStamp,
-                                               uint inBusNumber,
-                                               uint inNumberFrames,
-                                               AudioBufferList* ioData);
-
-    alias AudioCallback = void function(nframes_t, channels_t, sample_t*);
-}
-
 private extern(C) @nogc nothrow {
     char* coreAudioErrorString();
     bool coreAudioInit(nframes_t sampleRate, channels_t nChannels, AudioCallback callback);
     void coreAudioCleanup();
 }
+
+private extern(C) alias AudioCallback = void function(nframes_t, channels_t, sample_t*);
 
 final class CoreAudioMixer : Mixer {
 public:
