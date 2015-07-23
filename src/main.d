@@ -8,6 +8,7 @@ import std.math;
 import std.getopt;
 import std.string;
 import std.format;
+import std.random;
 
 version(HAVE_JACK) {
     import jack.client;
@@ -735,6 +736,12 @@ struct BoundingBox {
     }
 }
 
+struct Color {
+    double r = 0;
+    double g = 0;
+    double b = 0;
+}
+
 class ArrangeView : VBox {
 public:
     enum defaultSamplesPerPixel = 500; // default zoom level, in samples per pixel
@@ -917,8 +924,9 @@ public:
         bool linkChannels;
 
     private:
-        this(Region region) {
+        this(Region region, Color* color) {
             this.region = region;
+            _regionColor = color;
             computeOnsets();
         }
 
@@ -1021,9 +1029,19 @@ public:
                 }
 
                 // fill the region background with a gradient
+                enum gradientScale1 = 0.80;
+                enum gradientScale2 = 0.65;
                 Pattern gradient = Pattern.createLinear(0, yOffset, 0, yOffset + height);
-                gradient.addColorStopRgba(0.0, 0.0, 0.0, 1.0, alpha);
-                gradient.addColorStopRgba(height, 1.0, 0.0, 0.0, alpha);
+                gradient.addColorStopRgba(0,
+                                          _regionColor.r * gradientScale1,
+                                          _regionColor.g * gradientScale1,
+                                          _regionColor.b * gradientScale1,
+                                          alpha);
+                gradient.addColorStopRgba(1,
+                                          _regionColor.r - gradientScale2,
+                                          _regionColor.g - gradientScale2,
+                                          _regionColor.b - gradientScale2,
+                                          alpha);
 
                 cr.setSource(gradient);
                 cr.fillPreserve();
@@ -1078,7 +1096,15 @@ public:
                 }
 
                 void drawRegionLabel() {
-                    cr.setSourceRgba(0.5, 0.5, 1.0, alpha);
+                    if(selected) {
+                        enum labelColorScale = 0.5;
+                        cr.setSourceRgba(_regionColor.r * labelColorScale,
+                                         _regionColor.g * labelColorScale,
+                                         _regionColor.b * labelColorScale, alpha);
+                    }
+                    else {
+                        cr.setSourceRgba(1.0, 1.0, 1.0, alpha);
+                    }
                     PgCairo.updateLayout(cr, _headerLabelLayout);
                     PgCairo.showLayout(cr, _headerLabelLayout);
                 }
@@ -1087,7 +1113,7 @@ public:
                 enum labelPadding = borderWidth + 1;
                 int labelWidth, labelHeight;
                 labelWidth += labelPadding;
-                _headerLabelLayout.setText(region.name);
+                _headerLabelLayout.setText(region.mute ? region.name ~ " (muted)" : region.name);
                 _headerLabelLayout.getPixelSize(labelWidth, labelHeight);
                 if(xOffset == 0 && regionOffset < viewOffset && labelWidth + labelPadding > width) {
                     cr.translate(xOffset - (labelWidth - width), yOffset);
@@ -1306,6 +1332,8 @@ public:
 
         nframes_t[][] _onsets; // indexed as [channel][onset]
         nframes_t[] _onsetsLinked; // indexed as [onset]
+
+        Color* _regionColor;
     }
 
     class TrackView {
@@ -1313,7 +1341,7 @@ public:
         void addRegion(Region region, nframes_t sampleRate) {
             _track.addRegion(region);
 
-            RegionView regionView = new RegionView(region);
+            RegionView regionView = new RegionView(region, &_trackColor);
             _regionViews ~= regionView;
             this.outer._regionViews ~= regionView;
 
@@ -1341,11 +1369,32 @@ public:
         this(Track track, pixels_t heightPixels) {
             _track = track;
             _heightPixels = heightPixels;
+            _trackColor = _newTrackColor();
+        }
+
+        static Color _newTrackColor() {
+            Color color;
+            auto i = uniform(0, 2);
+            auto j = uniform(0, 2);
+            auto k = uniform(0, 5);
+
+            color.r = (i == 0) ? 1 : 0;
+            color.g = (j == 0) ? 1 : 0;
+            color.b = (j == 1) ? 1 : 0;
+            color.g = (color.g == 0 && k == 0) ? 1 : color.g;
+            color.b = (color.b == 0 && k == 1) ? 1 : color.b;
+
+            if(uniform(0, 2)) color.r *= uniform(0.8, 1.0);
+            if(uniform(0, 2)) color.g *= uniform(0.8, 1.0);
+            if(uniform(0, 2)) color.b *= uniform(0.8, 1.0);
+
+            return color;
         }
 
         Track _track;
         pixels_t _heightPixels;
         RegionView[] _regionViews;
+        Color _trackColor;
     }
 
     TrackView createTrackView() {
@@ -1566,7 +1615,10 @@ private:
 
             // draw the timestrip background
             cr.rectangle(0, 0, viewWidthPixels, timestripHeightPixels);
-            cr.setSourceRgb(0.1, 0.1, 0.1);
+            Pattern gradient = Pattern.createLinear(0, 0, 0, timestripHeightPixels);
+            gradient.addColorStopRgb(0, 0.2, 0.2, 0.2);
+            gradient.addColorStopRgb(1, 0.0, 0.0, 0.0);
+            cr.setSource(gradient);
             cr.fill();
 
             if(!_timestripMarkerLayout) {
