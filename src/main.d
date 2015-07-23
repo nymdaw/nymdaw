@@ -21,16 +21,22 @@ import samplerate;
 import aubio;
 import rubberband;
 
+import gtk.Window;
 import gtk.MainWindow;
 import gtk.Main;
 import gtk.Widget;
-import gtk.VBox;
+import gtk.Box;
 import gtk.DrawingArea;
 import gtk.Adjustment;
 import gtk.Scrollbar;
 import gtk.Menu;
 import gtk.MenuItem;
 import gtk.CheckMenuItem;
+import gtk.Dialog;
+import gtk.Label;
+import gtk.ButtonBox;
+import gtk.Button;
+import gtk.Scale;
 
 import gtkc.gtktypes;
 
@@ -39,7 +45,6 @@ import gdk.Display;
 import gdk.Event;
 import gdk.Keymap;
 import gdk.Keysyms;
-import gdk.Window;
 
 import glib.Timeout;
 
@@ -81,7 +86,7 @@ public:
         _sampleRate = sampleRate;
         _nChannels = nChannels;
         _audioBuffer = audioBuffer;
-        _nframes = cast(typeof(_nframes))(audioBuffer.length / nChannels);
+        _nframes = cast(nframes_t)(audioBuffer.length / nChannels);
         _name = name;
 
         _initCache();
@@ -132,6 +137,11 @@ public:
         Region region = fromFile(fileName);
         region.convertSampleRate(sampleRate);
         return region;
+    }
+
+    // reanalyze the entire audio data for this region, in the case of edits
+    void reanalyze() {
+        _initCache(); 
     }
 
     // normalize region to the given maximum gain, in dBFS
@@ -204,15 +214,25 @@ public:
         }
     }
 
-    // returns an array of frames at which an onset occurs, with frames given locally for this region
-    // all channels are summed before computing onsets
-    nframes_t[] getOnsetsLinkedChannels() const {
-        return _getOnsets(true);
+    struct OnsetParams {
+        enum onsetThresholdMin = 0.0;
+        enum onsetThresholdMax = 1.0;
+        sample_t onsetThreshold = 0.3;
+
+        enum silenceThresholdMin = -90;
+        enum silenceThresholdMax = 0.0;
+        sample_t silenceThreshold = -90;
     }
 
     // returns an array of frames at which an onset occurs, with frames given locally for this region
-    nframes_t[] getOnsetsSingleChannel(channels_t channelIndex) const {
-        return _getOnsets(false, channelIndex);
+    // all channels are summed before computing onsets
+    nframes_t[] getOnsetsLinkedChannels(ref const(OnsetParams) params) const {
+        return _getOnsets(params, true);
+    }
+
+    // returns an array of frames at which an onset occurs, with frames given locally for this region
+    nframes_t[] getOnsetsSingleChannel(ref const(OnsetParams) params, channels_t channelIndex) const {
+        return _getOnsets(params, false, channelIndex);
     }
 
     class WaveformCache {
@@ -390,12 +410,17 @@ private:
         }
     }
 
-    nframes_t[] _getOnsets(bool linkChannels, channels_t channelIndex = 0) const {
+    nframes_t[] _getOnsets(ref const(OnsetParams) params, bool linkChannels, channels_t channelIndex = 0) const {
         immutable(uint) windowSize = 512;
         immutable(uint) hopSize = 256;
         string onsetMethod = "default";
-        immutable(smpl_t) onsetThreshold = 0.1;
-        immutable(smpl_t) silenceThreshold = -90.0;
+
+        auto onsetThreshold = clamp(params.onsetThreshold,
+                                    OnsetParams.onsetThresholdMin,
+                                    OnsetParams.onsetThresholdMax);
+        auto silenceThreshold = clamp(params.silenceThreshold,
+                                      OnsetParams.silenceThresholdMin,
+                                      OnsetParams.silenceThresholdMax);
 
         fvec_t* onsetBuffer = new_fvec(1);
         fvec_t* hopBuffer = new_fvec(hopSize);
@@ -546,11 +571,23 @@ public:
     @property final nframes_t lastFrame() const { return (_nframes > 0 ? nframes - 1 : 0); }
     @property final nframes_t transportOffset() const { return _transportOffset; }
     @property final nframes_t transportOffset(nframes_t newOffset) {
+        disableLoop();
         return (_transportOffset = min(newOffset, nframes));
     }
+
     @property final bool playing() const { return _playing; }
     final void play() { _playing = true; }
     final void pause() { _playing = false; }
+
+    @property final bool looping() const { return _looping; }
+    final void enableLoop(nframes_t loopStart, nframes_t loopEnd) {
+        _looping = true;
+        _loopStart = loopStart;
+        _loopEnd = loopEnd;
+    }
+    final void disableLoop() {
+        _looping = false;
+    }
 
     final void mixStereoInterleaved(nframes_t bufNFrames, channels_t nChannels, sample_t* mixBuf) {
         // initialize the buffer to silence
@@ -562,7 +599,12 @@ public:
             foreach(t; _tracks) {
                 t.mixStereoInterleaved(_transportOffset, bufNFrames, nChannels, mixBuf);
             }
+
             _transportOffset += bufNFrames / nChannels;
+
+            if(_looping && _transportOffset >= _loopEnd) {
+                _transportOffset = _loopStart;
+            }
         }
     }
 
@@ -577,7 +619,12 @@ public:
             foreach(t; _tracks) {
                 t.mixStereoNonInterleaved(_transportOffset, bufNFrames, mixBuf1, mixBuf2);
             }
+
             _transportOffset += bufNFrames;
+
+            if(_looping && _transportOffset >= _loopEnd) {
+                _transportOffset = _loopStart;
+            }
         }
     }
 
@@ -589,7 +636,7 @@ private:
     // stop playing if the transport is at the end of the project
     bool _transportFinished() {
         if(_playing && _transportOffset >= lastFrame) {
-            _playing = false;
+            _playing = _looping; // don't stop playing if currently looping
             _transportOffset = lastFrame;
             return true;
         }
@@ -602,6 +649,9 @@ private:
     nframes_t _nframes;
     nframes_t _transportOffset;
     bool _playing;
+    bool _looping;
+    nframes_t _loopStart;
+    nframes_t _loopEnd;
 }
 
 version(HAVE_JACK) {
@@ -752,7 +802,7 @@ struct Color {
     double b = 0;
 }
 
-class ArrangeView : VBox {
+class ArrangeView : Box {
 public:
     enum defaultSamplesPerPixel = 500; // default zoom level, in samples per pixel
     enum defaultTrackHeightPixels = 200; // default height in pixels of new tracks in the arrange view
@@ -780,11 +830,12 @@ public:
         moveMarker
     }
 
-    this(string appName, Mixer mixer) {
+    this(string appName, Window parentWindow, Mixer mixer) {
+        _parentWindow = parentWindow;
         _mixer = mixer;
         _samplesPerPixel = defaultSamplesPerPixel;
 
-        super(false, 0);
+        super(Orientation.VERTICAL, 0);
         _canvas = new Canvas();
         _hAdjust = new Adjustment(0, 0, 0, 0, 0, 0);
         _configureHScroll();
@@ -822,12 +873,12 @@ public:
             // compute onsets for each channel
             _onsets = new nframes_t[][](region.nChannels);
             for(channels_t c = 0; c < region.nChannels; ++c) {
-                _onsets[c] = region.getOnsetsSingleChannel(c);
+                _onsets[c] = region.getOnsetsSingleChannel(onsetParams, c);
             }
 
             // compute onsets for summed channels
             if(region.nChannels > 1) {
-                _onsetsLinked = region.getOnsetsLinkedChannels();
+                _onsetsLinked = region.getOnsetsLinkedChannels(onsetParams);
             }
         }
 
@@ -938,6 +989,7 @@ public:
         nframes_t selectedOffset;
         BoundingBox boundingBox;
         Region region;
+        Region.OnsetParams onsetParams;
 
         bool editMode;
         bool linkChannels;
@@ -1486,11 +1538,194 @@ private:
 
     void _createEditRegionMenu() {
         _editRegionMenu = new Menu();
+
+        _editRegionMenu.append(new MenuItem(&onOnsetDetection, "Onset Detection..."));
+
+        _stretchSelectionMenuItem = new MenuItem(&onStretchSelection, "Stretch Selection...");
+        _editRegionMenu.append(_stretchSelectionMenuItem);
+
+        _editRegionMenu.append(new MenuItem(&onNormalize, "Normalize"));
+
         _linkChannelsMenuItem = new CheckMenuItem("Link Channels");
         _linkChannelsMenuItem.setDrawAsRadio(true);
         _linkChannelsMenuItem.addOnToggled(&onLinkChannels);
         _editRegionMenu.append(_linkChannelsMenuItem);
+
         _editRegionMenu.attachToWidget(this, null);
+    }
+
+    void _createOnsetDetectionDialog() {
+        _onsetDetectionDialog = new Dialog();
+        _onsetDetectionDialog.setDefaultSize(250, 150);
+        _onsetDetectionDialog.setTransientFor(_parentWindow);
+
+        auto dialogBox = _onsetDetectionDialog.getContentArea();
+
+        auto box1 = new Box(Orientation.VERTICAL, 5);
+        box1.packStart(new Label("Onset Threshold"), false, false, 0);
+        _onsetThresholdAdjustment = new Adjustment(_editRegion.onsetParams.onsetThreshold,
+                                                   Region.OnsetParams.onsetThresholdMin,
+                                                   Region.OnsetParams.onsetThresholdMax,
+                                                   0.01,
+                                                   0.1,
+                                                   0);
+        auto onsetThresholdScale = new Scale(Orientation.HORIZONTAL, _onsetThresholdAdjustment);
+        onsetThresholdScale.setDigits(3);
+        box1.packStart(onsetThresholdScale, false, false, 0);
+        dialogBox.packStart(box1, false, false, 10);
+
+        auto box2 = new Box(Orientation.VERTICAL, 5);
+        box2.packStart(new Label("Silence Threshold (dbFS)"), false, false, 0);
+        _silenceThresholdAdjustment = new Adjustment(_editRegion.onsetParams.silenceThreshold,
+                                                     Region.OnsetParams.silenceThresholdMin,
+                                                     Region.OnsetParams.silenceThresholdMax,
+                                                     0.1,
+                                                     1,
+                                                     0);
+        auto silenceThresholdScale = new Scale(Orientation.HORIZONTAL, _silenceThresholdAdjustment);
+        silenceThresholdScale.setDigits(3);
+        box2.packStart(silenceThresholdScale, false, false, 0);
+        dialogBox.packStart(box2, false, false, 10);
+
+        auto buttonBox = new ButtonBox(Orientation.HORIZONTAL);
+        buttonBox.setLayout(ButtonBoxStyle.END);
+        buttonBox.setBorderWidth(5);
+        buttonBox.setSpacing(7);
+        buttonBox.add(new Button("OK", &onOnsetDetectionOK));
+        buttonBox.add(new Button("Cancel", &onOnsetDetectionCancel));
+        dialogBox.packEnd(buttonBox, false, false, 10);
+
+        _onsetDetectionDialog.showAll();
+    }
+
+    void onOnsetDetectionOK(Button button) {
+        _editRegion.onsetParams.onsetThreshold = _onsetThresholdAdjustment.getValue();
+        _editRegion.onsetParams.silenceThreshold = _silenceThresholdAdjustment.getValue();
+        _editRegion.computeOnsets();
+        _canvas.redraw();
+
+        _onsetDetectionDialog.destroy();
+    }
+
+    void onOnsetDetectionCancel(Button button) {
+        _onsetDetectionDialog.destroy();
+    }
+
+    void onOnsetDetection(MenuItem menuItem) {
+        _createOnsetDetectionDialog();
+    }
+
+    void _createStretchSelectionDialog() {
+        _stretchSelectionDialog = new Dialog();
+        _stretchSelectionDialog.setDefaultSize(250, 100);
+        _stretchSelectionDialog.setTransientFor(_parentWindow);
+
+        auto dialogBox = _stretchSelectionDialog.getContentArea();
+
+        dialogBox.packStart(new Label("Stretch ratio"), false, false, 0);
+        _stretchSelectionRatioAdjustment = new Adjustment(1,
+                                                          0.01,
+                                                          10,
+                                                          0.1,
+                                                          0.5,
+                                                          0);
+        auto stretchSelectionRatioScale = new Scale(Orientation.HORIZONTAL, _stretchSelectionRatioAdjustment);
+        stretchSelectionRatioScale.setDigits(2);
+        dialogBox.packStart(stretchSelectionRatioScale, false, false, 10);
+
+        // TODO implement this as helper function
+        auto buttonBox = new ButtonBox(Orientation.HORIZONTAL);
+        buttonBox.setLayout(ButtonBoxStyle.END);
+        buttonBox.setBorderWidth(5);
+        buttonBox.setSpacing(7);
+        buttonBox.add(new Button("OK", &onStretchSelectionOK));
+        buttonBox.add(new Button("Cancel", &onStretchSelectionCancel));
+        dialogBox.packEnd(buttonBox, false, false, 10);
+
+        _stretchSelectionDialog.showAll();
+    }
+
+    void onStretchSelectionOK(Button button) {
+        immutable(double) stretchFactor = _stretchSelectionRatioAdjustment.getValue();
+        immutable(channels_t) nChannels = _editRegion.region.nChannels;
+
+        uint selectionLength = cast(uint)(_subregionEndFrame - _subregionStartFrame);
+        float[][] selectionChannels = new float[][](nChannels);
+        float*[] selectionPtr = new float*[](nChannels);
+        for(auto i = 0; i < nChannels; ++i) {
+            float[] selection = new float[](selectionLength);
+            selectionChannels[i] = selection;
+            selectionPtr[i] = selection.ptr;
+        }
+
+        foreach(channels_t channelIndex, channel; selectionChannels) {
+            foreach(i, ref sample; channel) {
+                sample = _editRegion.region._audioBuffer
+                    [(_subregionStartFrame + i) * _editRegion.region.nChannels + channelIndex];
+            }
+        }
+
+        uint selectionOutputLength = cast(uint)(selectionLength * stretchFactor);
+        float[][] selectionOutputChannels = new float[][](nChannels);
+        float*[] selectionOutputPtr = new float*[](nChannels);
+        for(auto i = 0; i < nChannels; ++i) {
+            float[] selectionOutput = new float[](selectionOutputLength);
+            selectionOutputChannels[i] = selectionOutput;
+            selectionOutputPtr[i] = selectionOutput.ptr;
+        }
+
+        RubberBandState rState = rubberband_new(_mixer.sampleRate,
+                                                nChannels,
+                                                RubberBandOption.RubberBandOptionProcessOffline,
+                                                stretchFactor,
+                                                1.0);
+        rubberband_set_max_process_size(rState, selectionLength);
+        rubberband_set_expected_input_duration(rState, selectionLength);
+        rubberband_study(rState, selectionPtr.ptr, selectionLength, 1);
+        rubberband_process(rState, selectionPtr.ptr, selectionLength, 1);
+        while(rubberband_available(rState) < selectionOutputLength) {}
+        rubberband_retrieve(rState, selectionOutputPtr.ptr, selectionOutputLength);
+        rubberband_delete(rState);
+
+        nframes_t newSubregionEndFrame =
+            _subregionStartFrame + cast(nframes_t)((_subregionEndFrame - _subregionStartFrame) * stretchFactor);
+        long sizeDelta = (cast(long)(selectionOutputLength) - cast(long)(selectionLength)) * cast(long)(nChannels);
+        sample_t[] oldAudioBuffer = _editRegion.region._audioBuffer;
+        sample_t[] newAudioBuffer = new sample_t[](oldAudioBuffer.length + sizeDelta);
+        newAudioBuffer[0 .. _subregionStartFrame * nChannels] =
+            oldAudioBuffer[0 .. _subregionStartFrame * nChannels];
+        foreach(channels_t channelIndex, channel; selectionOutputChannels) {
+            foreach(i, sample; channel) {
+                newAudioBuffer[(_subregionStartFrame + i) * nChannels + channelIndex] = sample;
+            }
+        }
+        newAudioBuffer[newSubregionEndFrame * nChannels .. $] =
+            oldAudioBuffer[_subregionEndFrame * nChannels .. $];
+        _editRegion.region._audioBuffer = newAudioBuffer;
+        _editRegion.region._nframes = cast(nframes_t)(newAudioBuffer.length / nChannels);
+
+        _subregionEndFrame = newSubregionEndFrame;
+        _editRegion.region.reanalyze();
+        _mixer.resizeIfNecessary(_editRegion.region.offset + _editRegion.region.nframes);
+        _editRegion.computeOnsets();
+        _canvas.redraw();
+
+        _stretchSelectionDialog.destroy();
+    }
+
+    void onStretchSelectionCancel(Button button) {
+        _stretchSelectionDialog.destroy();
+    }
+
+    void onStretchSelection(MenuItem menuItem) {
+        _createStretchSelectionDialog();
+    }
+
+    void onNormalize(MenuItem menuItem) {
+        // TODO implement a dialog here
+        _editRegion.region.normalize();
+        _editRegion.region.reanalyze();
+        _canvas.redraw();
     }
 
     void onLinkChannels(CheckMenuItem linkChannels) {
@@ -1636,6 +1871,14 @@ private:
 
         @property pixels_t firstTrackYOffset() {
             return markerYOffset + markerHeightPixels;
+        }
+
+        @property nframes_t smallSeekIncrement() {
+            return viewWidthSamples / 10;
+        }
+
+        @property nframes_t largeSeekIncrement() {
+            return viewWidthSamples / 5;
         }
 
         bool drawCallback(Scoped!Context cr, Widget widget) {
@@ -1992,6 +2235,34 @@ private:
             _configureHScroll();
         }
 
+        void onSelectSubregion() {
+            if(_mouseX >= 0 && _mouseX <= viewWidthPixels) {
+                nframes_t mouseFrame = _mouseX * samplesPerPixel;
+                if(mouseFrame < _subregionStartFrame) {
+                    _subregionStartFrame = mouseFrame;
+                    _subregionDirection = Direction.left;
+                }
+                else if(mouseFrame > _subregionEndFrame) {
+                    _subregionEndFrame = mouseFrame;
+                    _subregionDirection = Direction.right;
+                }
+                else {
+                    if(_subregionDirection == Direction.left) {
+                        _subregionStartFrame = mouseFrame;
+                    }
+                    else {
+                        _subregionEndFrame = mouseFrame;
+                    }
+                }
+
+                if(_mixer.looping) {
+                    _mixer.enableLoop(_subregionStartFrame, _subregionEndFrame);
+                }
+
+                redraw();
+            }
+        }
+
         bool onMotionNotify(Event event, Widget widget) {
             if(event.type == EventType.MOTION_NOTIFY) {
                 pixels_t prevMouseX = _mouseX;
@@ -2006,27 +2277,7 @@ private:
                         break;
 
                     case Action.selectSubregion:
-                        if(_mouseX >= 0 && _mouseX <= viewWidthPixels) {
-                            nframes_t mouseFrame = _mouseX * samplesPerPixel;
-                            if(mouseFrame < _subregionStartFrame) {
-                                _subregionStartFrame = mouseFrame;
-                                _subregionDirection = Direction.left;
-                            }
-                            else if(mouseFrame > _subregionEndFrame) {
-                                _subregionEndFrame = mouseFrame;
-                                _subregionDirection = Direction.right;
-                            }
-                            else {
-                                if(_subregionDirection == Direction.left) {
-                                    _subregionStartFrame = mouseFrame;
-                                }
-                                else {
-                                    _subregionEndFrame = mouseFrame;
-                                }
-                            }
-
-                            redraw();
-                        }
+                        onSelectSubregion();
                         break;
 
                     case Action.selectBox:
@@ -2176,16 +2427,21 @@ private:
                                 break;
 
                             case Mode.editRegion:
-                                // detect if the mouse is over an onset
                                 if(_editRegion) {
+                                    // select a subregion
                                     if(controlPressed) {
                                         _subregionStartFrame = _subregionEndFrame =
                                             cast(nframes_t)(_mouseX * samplesPerPixel) - viewOffset;
                                         _setAction(Action.selectSubregion);
                                         newAction = true;
                                     }
+                                    else if(_subregionSelected && shiftPressed) {
+                                        onSelectSubregion();
+                                        _setAction(Action.selectSubregion);
+                                        newAction = true;
+                                    }
                                     else {
-                                        _subregionSelected = false;
+                                        // detect if the mouse is over an onset
                                         _moveOnsetChannel = _editRegion.mouseOverChannel(_mouseY);
                                         if(_editRegion.getOnset(viewOffset + _mouseX * samplesPerPixel -
                                                                 _editRegion.region.offset,
@@ -2221,6 +2477,9 @@ private:
                         auto buttonEvent = event.button;
                         _linkChannelsMenuItem.setSensitive(_editRegion.region.nChannels > 1);
                         _linkChannelsMenuItem.setActive(_editRegion.linkChannels);
+
+                        _stretchSelectionMenuItem.setSensitive(_subregionSelected);
+
                         _editRegionMenu.showAll();
                         _editRegionMenu.popup(buttonEvent.button, buttonEvent.time);
                         return true;
@@ -2414,7 +2673,7 @@ private:
                             }
                         }
 
-                        _editRegion.region._initCache();
+                        _editRegion.region.reanalyze();
                         redraw();
 
                         _setAction(Action.none);
@@ -2521,16 +2780,28 @@ private:
 
                 GdkModifierType state;
                 event.getState(state);
+                auto shiftPressed = state & GdkModifierType.SHIFT_MASK;
                 auto controlPressed = state & GdkModifierType.CONTROL_MASK;
 
                 switch(event.key.keyval) {
                     case GdkKeysyms.GDK_space:
-                        // toggle play/pause for the mixer
-                        if(_mixer.playing) {
-                            _mixer.pause();
+                        if(shiftPressed) {
+                            if(_subregionSelected) {
+                                // loop the selected subregion
+                                _mixer.transportOffset = _subregionStartFrame;
+                                _mixer.enableLoop(_subregionStartFrame, _subregionEndFrame);
+                                _mixer.play();
+                            }
                         }
                         else {
-                            _mixer.play();
+                            // toggle play/pause for the mixer
+                            if(_mixer.playing) {
+                                _mixer.disableLoop();
+                                _mixer.pause();
+                            }
+                            else {
+                                _mixer.play();
+                            }
                         }
                         break;
 
@@ -2559,6 +2830,20 @@ private:
                         redraw();
                         break;
 
+                    case GdkKeysyms.GDK_function:
+                        // seek the transport forward (large increment)
+                        _mixer.transportOffset = min(_mixer.lastFrame,
+                                                     _mixer.transportOffset + largeSeekIncrement);
+                        redraw();
+                        break;
+
+                    case GdkKeysyms.GDK_integral:
+                        // seek the transport backward (large increment)
+                        _mixer.transportOffset = _mixer.transportOffset > largeSeekIncrement ?
+                            _mixer.transportOffset - largeSeekIncrement : 0;
+                        redraw();
+                        break;
+
                     case GdkKeysyms.GDK_a:
                         if(controlPressed) {
                             // move the transport to the minimum offset of all selected regions
@@ -2569,8 +2854,18 @@ private:
                         }
                         break;
 
+                    case GdkKeysyms.GDK_b:
+                        if(controlPressed) {
+                            // seek the transport backward (small increment)
+                            _mixer.transportOffset = _mixer.transportOffset > smallSeekIncrement ?
+                                _mixer.transportOffset - smallSeekIncrement : 0;
+                            redraw();
+                        }
+                        break;
+
                     case GdkKeysyms.GDK_e:
                         if(controlPressed) {
+                            // move the transport to the maximum length of all selected regions
                             nframes_t maxOffset = 0;
                             bool foundRegion;
                             foreach(regionView; _regionViews) {
@@ -2588,6 +2883,15 @@ private:
                         else {
                             // toggle edit mode
                             _setMode(_mode == Mode.editRegion ? Mode.arrange : Mode.editRegion);
+                        }
+                        break;
+
+                    case GdkKeysyms.GDK_f:
+                        if(controlPressed) {
+                            // seek the transport forward (small increment)
+                            _mixer.transportOffset = min(_mixer.lastFrame,
+                                                         _mixer.transportOffset + smallSeekIncrement);
+                            redraw();
                         }
                         break;
 
@@ -2654,6 +2958,8 @@ private:
         }
     }
 
+    Window _parentWindow;
+
     Mixer _mixer;
     TrackView[] _trackViews;
     RegionView[] _regionViews;
@@ -2682,7 +2988,15 @@ private:
     Timeout _refreshTimeout;
 
     Menu _editRegionMenu;
+    MenuItem _stretchSelectionMenuItem;
     CheckMenuItem _linkChannelsMenuItem;
+
+    Dialog _onsetDetectionDialog;
+    Adjustment _onsetThresholdAdjustment;
+    Adjustment _silenceThresholdAdjustment;
+
+    Dialog _stretchSelectionDialog;
+    Adjustment _stretchSelectionRatioAdjustment;
 
     pixels_t _transportPixelsOffset;
 
@@ -2776,7 +3090,7 @@ void main(string[] args) {
         AppMainWindow win = new AppMainWindow(appName, mixer);
         win.setDefaultSize(960, 600);
 
-        ArrangeView arrangeView = new ArrangeView(appName, mixer);
+        ArrangeView arrangeView = new ArrangeView(appName, win, mixer);
         win.add(arrangeView);
 
         try {
