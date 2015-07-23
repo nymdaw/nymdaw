@@ -767,6 +767,7 @@ public:
     enum Action {
         none,
         selectRegion,
+        selectSubregion,        
         selectBox,
         moveOnset,
         moveRegion,
@@ -776,7 +777,7 @@ public:
         centerView,
         centerViewStart,
         centerViewEnd,
-        moveMarker,
+        moveMarker
     }
 
     this(string appName, Mixer mixer) {
@@ -825,7 +826,9 @@ public:
             }
 
             // compute onsets for summed channels
-            _onsetsLinked = region.getOnsetsLinkedChannels();
+            if(region.nChannels > 1) {
+                _onsetsLinked = region.getOnsetsLinkedChannels();
+            }
         }
 
         // finds the index of any onset between (searchFrame - searchRadius) and (searchFrame + searchRadius)
@@ -1584,6 +1587,7 @@ private:
             default:
                 // if the last mode was editRegion, unset the edit mode flag for the edited region
                 if(_mode == Mode.editRegion) {
+                    _subregionSelected = false;
                     _editRegion.editMode = false;
                     _editRegion = null;
                 }
@@ -1630,7 +1634,7 @@ private:
             return timestripHeightPixels;
         }
 
-        @property pixels_t trackFirstYOffset() {
+        @property pixels_t firstTrackYOffset() {
             return markerYOffset + markerHeightPixels;
         }
 
@@ -1736,6 +1740,16 @@ private:
             secondsSpecTwoDigitsString.put(decDigitsFormat);
             auto secondsSpecTwoDigits = singleSpec(secondsSpecTwoDigitsString.data);
 
+            void setTimestripTickColor() {
+                cr.setSourceRgb(1.0, 1.0, 1.0);
+            }
+            void setPrimaryArrangeTickColor() {
+                cr.setSourceRgb(0.2, 0.2, 0.2);
+            }
+            void setSecondaryArrangeTickColor() {
+                cr.setSourceRgb(0.1, 0.1, 0.1);
+            }
+
             // draw all currently visible time ticks and their time labels
             auto firstMarkerOffset = (viewOffset + tickDistanceSamples) % tickDistanceSamples;
             for(auto i = viewOffset - firstMarkerOffset;
@@ -1744,15 +1758,15 @@ private:
                     cast(pixels_t)(((i >= viewOffset) ?
                                     cast(long)(i - viewOffset) : -cast(long)(viewOffset - i)) / samplesPerPixel);
 
-                // draw primary tick
+                // draw primary timestrip tick
                 cr.moveTo(xOffset, 0);
                 cr.lineTo(xOffset, timestripHeightPixels * primaryTickHeightFactor);
 
-                // draw one secondary tick
+                // draw one secondary timestrip tick
                 cr.moveTo(xOffset + tickDistancePixels / 2, 0);
                 cr.lineTo(xOffset + tickDistancePixels / 2, timestripHeightPixels * secondaryTickHeightFactor);
 
-                // draw two tertiary ticks
+                // draw two tertiary timestrip ticks
                 cr.moveTo(xOffset + tickDistancePixels / 4, 0);
                 cr.lineTo(xOffset + tickDistancePixels / 4, timestripHeightPixels * tertiaryTickHeightFactor);
                 cr.moveTo(xOffset + (tickDistancePixels / 4) * 3, 0);
@@ -1781,20 +1795,37 @@ private:
                     timeMarkerXOffset = xOffset - widthPixels / 2;
                 }
 
-                _timestripMarkerLayout.setText(timeString.data);
+                setTimestripTickColor();
+                cr.stroke();
 
+                _timestripMarkerLayout.setText(timeString.data);
                 cr.moveTo(timeMarkerXOffset, timestripHeightPixels * 0.5);
                 PgCairo.updateLayout(cr, _timestripMarkerLayout);
                 PgCairo.showLayout(cr, _timestripMarkerLayout);
+
+                // draw primary arrange ticks
+                cr.moveTo(xOffset, markerYOffset);
+                cr.lineTo(xOffset, viewHeightPixels);
+                setPrimaryArrangeTickColor();
+                cr.stroke();
+
+                // draw secondary arrange ticks
+                cr.moveTo(xOffset + tickDistancePixels / 2, markerYOffset);
+                cr.lineTo(xOffset + tickDistancePixels / 2, viewHeightPixels);
+                cr.moveTo(xOffset + tickDistancePixels / 4, markerYOffset);
+                cr.lineTo(xOffset + tickDistancePixels / 4, viewHeightPixels);
+                cr.moveTo(xOffset + (tickDistancePixels / 4) * 3, markerYOffset);
+                cr.lineTo(xOffset + (tickDistancePixels / 4) * 3, viewHeightPixels);
+                setSecondaryArrangeTickColor();
+                cr.stroke();
             }
-            cr.stroke();
 
             // restore the cairo context state
             cr.restore();
         }
 
         void drawTracks(ref Scoped!Context cr) {
-            pixels_t yOffset = trackFirstYOffset;
+            pixels_t yOffset = firstTrackYOffset;
             foreach(t; _trackViews) {
                 t.draw(cr, yOffset);
                 yOffset += t.heightPixels;
@@ -1854,6 +1885,23 @@ private:
                 cr.fillPreserve();
                 cr.setSourceRgb(0.0, 1.0, 0.0);
                 cr.stroke();
+
+                // restore the cairo context state
+                cr.restore();
+            }
+            else if(_mode == Mode.editRegion && (_subregionSelected || _action == Action.selectSubregion)) {
+                // save the existing cairo context state
+                cr.save();
+
+                cr.setOperator(cairo_operator_t.OVER);
+                cr.setAntialias(cairo_antialias_t.NONE);
+
+                pixels_t x0 = (_subregionStartFrame - viewOffset) / samplesPerPixel;
+                pixels_t x1 = (_subregionEndFrame - viewOffset) / samplesPerPixel;
+                cr.rectangle(x0, _editRegion.boundingBox.y0,
+                             x1 - x0,  _editRegion.boundingBox.y1 - _editRegion.boundingBox.y0);
+                cr.setSourceRgba(0.0, 1.0, 0.0, 0.5);
+                cr.fill();
 
                 // restore the cairo context state
                 cr.restore();
@@ -1957,6 +2005,30 @@ private:
                         redraw();
                         break;
 
+                    case Action.selectSubregion:
+                        if(_mouseX >= 0 && _mouseX <= viewWidthPixels) {
+                            nframes_t mouseFrame = _mouseX * samplesPerPixel;
+                            if(mouseFrame < _subregionStartFrame) {
+                                _subregionStartFrame = mouseFrame;
+                                _subregionDirection = Direction.left;
+                            }
+                            else if(mouseFrame > _subregionEndFrame) {
+                                _subregionEndFrame = mouseFrame;
+                                _subregionDirection = Direction.right;
+                            }
+                            else {
+                                if(_subregionDirection == Direction.left) {
+                                    _subregionStartFrame = mouseFrame;
+                                }
+                                else {
+                                    _subregionEndFrame = mouseFrame;
+                                }
+                            }
+
+                            redraw();
+                        }
+                        break;
+
                     case Action.selectBox:
                         redraw();
                         break;
@@ -2030,6 +2102,11 @@ private:
             enum leftButton = 1;
             enum rightButton = 3;
 
+            GdkModifierType state;
+            event.getState(state);
+            auto shiftPressed = state & GdkModifierType.SHIFT_MASK;
+            auto controlPressed = state & GdkModifierType.CONTROL_MASK;
+
             if(event.type == EventType.BUTTON_PRESS && event.button.button == leftButton) {
                 // if the mouse is over a marker, move that marker
                 if(_mouseY >= markerYOffset && _mouseY < markerYOffset + markerHeightPixels) {
@@ -2057,10 +2134,6 @@ private:
                         switch(_mode) {
                             // implement different behaviors for button presses depending on the current mode
                             case Mode.arrange:
-                                GdkModifierType state;
-                                event.getState(state);
-                                auto shiftPressed = state & GdkModifierType.SHIFT_MASK;
-
                                 // detect if the mouse is over an audio region; if so, select that region
                                 bool mouseOverSelectedRegion;
                                 foreach(regionView; _regionViews) {
@@ -2105,16 +2178,25 @@ private:
                             case Mode.editRegion:
                                 // detect if the mouse is over an onset
                                 if(_editRegion) {
-                                    _moveOnsetChannel = _editRegion.mouseOverChannel(_mouseY);
-                                    if(_editRegion.getOnset(viewOffset + _mouseX * samplesPerPixel -
-                                                            _editRegion.region.offset,
-                                                            mouseOverThreshold * samplesPerPixel,
-                                                            _moveOnsetFrameSrc,
-                                                            _moveOnsetIndex,
-                                                            _moveOnsetChannel)) {
-                                        _moveOnsetFrameDest = _moveOnsetFrameSrc;
-                                        _setAction(Action.moveOnset);
+                                    if(controlPressed) {
+                                        _subregionStartFrame = _subregionEndFrame =
+                                            cast(nframes_t)(_mouseX * samplesPerPixel) - viewOffset;
+                                        _setAction(Action.selectSubregion);
                                         newAction = true;
+                                    }
+                                    else {
+                                        _subregionSelected = false;
+                                        _moveOnsetChannel = _editRegion.mouseOverChannel(_mouseY);
+                                        if(_editRegion.getOnset(viewOffset + _mouseX * samplesPerPixel -
+                                                                _editRegion.region.offset,
+                                                                mouseOverThreshold * samplesPerPixel,
+                                                                _moveOnsetFrameSrc,
+                                                                _moveOnsetIndex,
+                                                                _moveOnsetChannel)) {
+                                            _moveOnsetFrameDest = _moveOnsetFrameSrc;
+                                            _setAction(Action.moveOnset);
+                                            newAction = true;
+                                        }
                                     }
                                 }
                                 break;
@@ -2122,12 +2204,14 @@ private:
                             default:
                                 break;
                         }
-                        if(!newAction) {
+
+                        if(!newAction && _mode == Mode.arrange) {
                             _selectMouseX = _mouseX;
                             _selectMouseY = _mouseY;
                             _setAction(Action.selectBox);
                         }
                     }
+
                     redraw();
                 }
             }
@@ -2135,6 +2219,7 @@ private:
                 switch(_mode) {
                     case Mode.editRegion:
                         auto buttonEvent = event.button;
+                        _linkChannelsMenuItem.setSensitive(_editRegion.region.nChannels > 1);
                         _linkChannelsMenuItem.setActive(_editRegion.linkChannels);
                         _editRegionMenu.showAll();
                         _editRegionMenu.popup(buttonEvent.button, buttonEvent.time);
@@ -2152,6 +2237,15 @@ private:
                 switch(_action) {
                     // reset the cursor if necessary
                     case Action.selectRegion:
+                        _setAction(Action.none);
+                        redraw();
+                        break;
+
+                    // stop selecting a subregion
+                    case Action.selectSubregion:
+                        if(_subregionStartFrame != _subregionEndFrame) {
+                            _subregionSelected = true;
+                        }
                         _setAction(Action.none);
                         redraw();
                         break;
@@ -2182,7 +2276,7 @@ private:
                         redraw();
                         break;
 
-                    // move a marker
+                    // stop moving a marker
                     case Action.moveMarker:
                         _setAction(Action.none);
                         break;
@@ -2340,6 +2434,10 @@ private:
 
         bool onScroll(Event event, Widget widget) {
             if(event.type == EventType.SCROLL) {
+                GdkModifierType state;
+                event.getState(state);
+                auto controlPressed = state & GdkModifierType.CONTROL_MASK;
+
                 ScrollDirection direction;
                 event.getScrollDirection(direction);
                 switch(direction) {
@@ -2364,7 +2462,7 @@ private:
                             _viewOffset += _hAdjust.getStepIncrement();
                         }
                         else {
-                            _viewOffset = _viewMaxSamples;
+                            _viewOffset = _mixer.lastFrame;
                         }
                         _hAdjust.setValue(viewOffset);
                         if(_action == Action.centerView ||
@@ -2373,6 +2471,18 @@ private:
                             _setAction(Action.none);
                         }
                         redraw();
+                        break;
+
+                    case ScrollDirection.UP:
+                        if(controlPressed) {
+                            _zoomIn();
+                        }
+                        break;
+
+                    case ScrollDirection.DOWN:
+                        if(controlPressed) {
+                            _zoomOut();
+                        }
                         break;
 
                     default:
@@ -2552,6 +2662,11 @@ private:
 
     Marker[uint] _markers;
     Marker* _moveMarker;
+
+    bool _subregionSelected;
+    nframes_t _subregionStartFrame;
+    nframes_t _subregionEndFrame;
+    Direction _subregionDirection;
 
     PgLayout _headerLabelLayout;
     PgLayout _markerLabelLayout;
