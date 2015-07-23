@@ -543,6 +543,7 @@ public:
     @property final string appName() const { return _appName; }
     @property final nframes_t nframes() const { return _nframes; }
     @property final nframes_t nframes(nframes_t newNFrames) { return (_nframes = newNFrames); }
+    @property final nframes_t lastFrame() const { return (_nframes > 0 ? nframes - 1 : 0); }
     @property final nframes_t transportOffset() const { return _transportOffset; }
     @property final nframes_t transportOffset(nframes_t newOffset) {
         return (_transportOffset = min(newOffset, nframes));
@@ -587,9 +588,9 @@ protected:
 private:
     // stop playing if the transport is at the end of the project
     bool _transportFinished() {
-        if(_playing && _transportOffset + 1 >= _nframes) {
+        if(_playing && _transportOffset >= lastFrame) {
             _playing = false;
-            _transportOffset = _nframes > 0 ? _nframes - 1 : 0;
+            _transportOffset = lastFrame;
             return true;
         }
         return false;
@@ -1456,7 +1457,7 @@ private:
     }
 
     @property nframes_t _viewMinSamples() { return 0; }
-    @property nframes_t _viewMaxSamples() { return _mixer.nframes + viewWidthSamples; }
+    @property nframes_t _viewMaxSamples() { return _mixer.lastFrame + viewWidthSamples; }
 
     void _configureHScroll() {
         _hAdjust.configure(_viewOffset,
@@ -1468,12 +1469,15 @@ private:
     }
 
     void _onHScrollChanged(Adjustment adjustment) {
-        _viewOffset = cast(typeof(_viewOffset))(adjustment.getValue());
-        if(_action == Action.centerView ||
+        if(_centeredView) {
+            _centeredView = false;
+        }
+        else if(_action == Action.centerView ||
            _action == Action.centerViewStart ||
            _action == Action.centerViewEnd) {
             _setAction(Action.none);
         }
+        _viewOffset = cast(typeof(_viewOffset))(adjustment.getValue());
         _canvas.redraw();
     }
 
@@ -1805,8 +1809,9 @@ private:
             cr.save();
 
             if(_action == Action.moveTransport) {
-                _transportPixelsOffset = clamp(_mouseX, 0, (viewOffset + viewWidthSamples > _mixer.nframes) ?
-                                               ((_mixer.nframes - viewOffset) / samplesPerPixel) : viewWidthPixels);
+                _transportPixelsOffset = clamp(_mouseX, 0, (viewOffset + viewWidthSamples > _mixer.lastFrame) ?
+                                               ((_mixer.lastFrame - viewOffset) / samplesPerPixel) :
+                                               viewWidthPixels);
             }
             else if(viewOffset <= _mixer.transportOffset + (transportHeadWidth / 2) &&
                     _mixer.transportOffset <= viewOffset + viewWidthSamples + (transportHeadWidth / 2)) {
@@ -1872,6 +1877,7 @@ private:
             cr.setAntialias(cairo_antialias_t.NONE);
             cr.setLineWidth(1.0);
 
+            // draw the visible markers
             pixels_t yOffset = markerYOffset + markerHeightPixels;
             foreach(ref marker; _markers) {
                 if(marker.offset >= viewOffset && marker.offset < viewOffset + viewWidthSamples) {
@@ -1902,6 +1908,19 @@ private:
                     PgCairo.updateLayout(cr, _markerLabelLayout);
                     PgCairo.showLayout(cr, _markerLabelLayout);
                 }
+            }
+
+            // draw a dotted line at the end of the project, if visible
+            if(_mixer.lastFrame > viewOffset && _mixer.lastFrame <= viewOffset + viewWidthSamples) {
+                enum dottedLinePixels = 15;
+                pixels_t xOffset = (_mixer.lastFrame - viewOffset) / samplesPerPixel;
+
+                for(auto y = markerYOffset; y < viewHeightPixels; y += dottedLinePixels * 2) {
+                    cr.moveTo(xOffset, y);
+                    cr.lineTo(xOffset, y + dottedLinePixels);
+                }
+                cr.setSourceRgb(1.0, 1.0, 1.0);
+                cr.stroke();
             }
 
             // restore the cairo context state
@@ -1965,8 +1984,8 @@ private:
                     case Action.moveMarker:
                         nframes_t deltaXSamples = abs(_mouseX - prevMouseX) * samplesPerPixel;
                         if(_mouseX > prevMouseX) {
-                            if(_mixer.nframes == 0 || _moveMarker.offset + deltaXSamples >= _mixer.nframes - 1) {
-                                _moveMarker.offset = (_mixer.nframes == 0) ? 0 : _mixer.nframes - 1;
+                            if(_moveMarker.offset + deltaXSamples >= _mixer.lastFrame) {
+                                _moveMarker.offset = _mixer.lastFrame;
                             }
                             else {
                                 _moveMarker.offset += deltaXSamples;
@@ -2341,7 +2360,7 @@ private:
                         break;
 
                     case ScrollDirection.RIGHT:
-                        if(_hAdjust.getStepIncrement() + viewOffset <= _mixer.nframes) {
+                        if(_hAdjust.getStepIncrement() + viewOffset <= _mixer.lastFrame) {
                             _viewOffset += _hAdjust.getStepIncrement();
                         }
                         else {
@@ -2393,7 +2412,6 @@ private:
                 GdkModifierType state;
                 event.getState(state);
                 auto controlPressed = state & GdkModifierType.CONTROL_MASK;
-                auto metaPressed = state & GdkModifierType.MOD1_MASK;
 
                 switch(event.key.keyval) {
                     case GdkKeysyms.GDK_space:
@@ -2414,24 +2432,21 @@ private:
                         _zoomOut();
                         break;
 
+                    case GdkKeysyms.GDK_Return:
                     case GdkKeysyms.GDK_Aring:
-                        if(metaPressed) {
-                            // move the transport and view to the beginning of the project
-                            _mixer.transportOffset = 0;
-                            _viewOffset = _viewMinSamples;
-                            redraw();
-                        }
+                        // move the transport and view to the beginning of the project
+                        _mixer.transportOffset = 0;
+                        _viewOffset = _viewMinSamples;
+                        redraw();
                         break;
 
                     case GdkKeysyms.GDK_acute:
-                        if(metaPressed) {
-                            // move the transport to end of the project and center the view on the transport
-                            _mixer.transportOffset = _mixer.nframes > 0 ? _mixer.nframes - 1 : 0;
-                            if(_viewMaxSamples >= (viewWidthSamples / 2) * 3) {
-                                _viewOffset = _viewMaxSamples - (viewWidthSamples / 2) * 3;
-                            }
-                            redraw();
+                        // move the transport to end of the project and center the view on the transport
+                        _mixer.transportOffset = _mixer.lastFrame;
+                        if(_viewMaxSamples >= (viewWidthSamples / 2) * 3) {
+                            _viewOffset = _viewMaxSamples - (viewWidthSamples / 2) * 3;
                         }
+                        redraw();
                         break;
 
                     case GdkKeysyms.GDK_a:
@@ -2500,6 +2515,7 @@ private:
                             }
                             _setAction(Action.centerViewStart);
                         }
+                        _centeredView = true;
                         redraw();
                         _configureHScroll();
                         break;
@@ -2557,6 +2573,7 @@ private:
 
     Mode _mode;
     Action _action;
+    bool _centeredView;
     pixels_t _mouseX;
     pixels_t _mouseY;
     pixels_t _selectMouseX;
