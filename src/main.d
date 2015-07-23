@@ -774,7 +774,8 @@ public:
         jumpToMarker,
         centerView,
         centerViewStart,
-        centerViewEnd
+        centerViewEnd,
+        moveMarker,
     }
 
     this(string appName, Mixer mixer) {
@@ -1468,6 +1469,11 @@ private:
 
     void _onHScrollChanged(Adjustment adjustment) {
         _viewOffset = cast(typeof(_viewOffset))(adjustment.getValue());
+        if(_action == Action.centerView ||
+           _action == Action.centerViewStart ||
+           _action == Action.centerViewEnd) {
+            _setAction(Action.none);
+        }
         _canvas.redraw();
     }
 
@@ -1519,6 +1525,7 @@ private:
         }
 
         switch(_action) {
+            case Action.moveMarker:
             case Action.moveRegion:
                 setCursorByType(cursorMoving, CursorType.FLEUR);
                 break;
@@ -1584,7 +1591,13 @@ private:
     }
 
     class Canvas : DrawingArea {
+        enum timestripHeightPixels = 40;
+
+        enum markerHeightPixels = 20;
+        enum markerHeadWidthPixels = 16;
+
         enum timeMarkerFont = "Arial 10";
+        enum markerLabelFont = "Arial 10";
 
         this() {
             setCanFocus(true);
@@ -1609,9 +1622,12 @@ private:
             return cast(pixels_t)(size.height);
         }
 
-        @property pixels_t timestripHeightPixels() {
-            enum timeStripHeight = 40;
-            return timeStripHeight;
+        @property pixels_t markerYOffset() {
+            return timestripHeightPixels;
+        }
+
+        @property pixels_t trackFirstYOffset() {
+            return markerYOffset + markerHeightPixels;
         }
 
         bool drawCallback(Scoped!Context cr, Widget widget) {
@@ -1774,7 +1790,7 @@ private:
         }
 
         void drawTracks(ref Scoped!Context cr) {
-            pixels_t yOffset = timestripHeightPixels;
+            pixels_t yOffset = trackFirstYOffset;
             foreach(t; _trackViews) {
                 t.draw(cr, yOffset);
                 yOffset += t.heightPixels;
@@ -1840,22 +1856,53 @@ private:
         }
 
         void drawMarkers(ref Scoped!Context cr) {
+            enum taperFactor = 0.75;
+
             // save the existing cairo context state
             cr.save();
 
-            cr.setSourceRgb(1.0, 0.65, 0.0);
+            if(!_markerLabelLayout) {
+                PgFontDescription desc;
+                _markerLabelLayout = PgCairo.createLayout(cr);
+                desc = PgFontDescription.fromString(markerLabelFont);
+                _markerLabelLayout.setFontDescription(desc);
+                desc.free();
+            }
+
             cr.setAntialias(cairo_antialias_t.NONE);
             cr.setLineWidth(1.0);
 
-            pixels_t yOffset = timestripHeightPixels;
-            foreach(marker; _markers) {
+            pixels_t yOffset = markerYOffset + markerHeightPixels;
+            foreach(ref marker; _markers) {
                 if(marker.offset >= viewOffset && marker.offset < viewOffset + viewWidthSamples) {
                     pixels_t xOffset = (marker.offset - viewOffset) / samplesPerPixel;
+
+                    cr.setAntialias(cairo_antialias_t.GOOD);
+                    cr.moveTo(xOffset, yOffset);
+                    cr.lineTo(xOffset - markerHeadWidthPixels / 2, markerYOffset + markerHeightPixels * taperFactor);
+                    cr.lineTo(xOffset - markerHeadWidthPixels / 2, markerYOffset);
+                    cr.lineTo(xOffset + markerHeadWidthPixels / 2, markerYOffset);
+                    cr.lineTo(xOffset + markerHeadWidthPixels / 2, markerYOffset + markerHeightPixels * taperFactor);
+                    cr.closePath();
+                    cr.setSourceRgb(1.0, 0.90, 0.0);
+                    cr.fillPreserve();
+                    cr.setSourceRgb(1.0, 0.65, 0.0);
+                    cr.stroke();
+
+                    cr.setAntialias(cairo_antialias_t.NONE);
                     cr.moveTo(xOffset, yOffset);
                     cr.lineTo(xOffset, viewHeightPixels);
+                    cr.stroke();
+
+                    cr.setSourceRgb(0.0, 0.0, 0.0);
+                    _markerLabelLayout.setText(marker.name);
+                    int widthPixels, heightPixels;
+                    _markerLabelLayout.getPixelSize(widthPixels, heightPixels);
+                    cr.moveTo(xOffset - widthPixels / 2, markerYOffset);
+                    PgCairo.updateLayout(cr, _markerLabelLayout);
+                    PgCairo.showLayout(cr, _markerLabelLayout);
                 }
             }
-            cr.stroke();
 
             // restore the cairo context state
             cr.restore();
@@ -1915,6 +1962,25 @@ private:
                         redraw();
                         break;
 
+                    case Action.moveMarker:
+                        nframes_t deltaXSamples = abs(_mouseX - prevMouseX) * samplesPerPixel;
+                        if(_mouseX > prevMouseX) {
+                            if(_mixer.nframes == 0 || _moveMarker.offset + deltaXSamples >= _mixer.nframes - 1) {
+                                _moveMarker.offset = (_mixer.nframes == 0) ? 0 : _mixer.nframes - 1;
+                            }
+                            else {
+                                _moveMarker.offset += deltaXSamples;
+                            }
+                        }
+                        else if(_moveMarker.offset > abs(deltaXSamples)) {
+                            _moveMarker.offset -= deltaXSamples;
+                        }
+                        else {
+                            _moveMarker.offset = 0;
+                        }
+                        redraw();
+                        break;
+
                     case Action.moveOnset:
                         foreach(regionView; _regionViews) {
                             if(regionView.selected) {
@@ -1946,85 +2012,105 @@ private:
             enum rightButton = 3;
 
             if(event.type == EventType.BUTTON_PRESS && event.button.button == leftButton) {
-                // if the mouse is over the timestrip, move the transport
-                if(_mouseY >= 0 && _mouseY < timestripHeightPixels) {
-                    _setAction(Action.moveTransport);
+                // if the mouse is over a marker, move that marker
+                if(_mouseY >= markerYOffset && _mouseY < markerYOffset + markerHeightPixels) {
+                    foreach(ref marker; _markers) {
+                        if(marker.offset >= viewOffset && marker.offset < viewOffset + viewWidthSamples &&
+                           (cast(pixels_t)((marker.offset - viewOffset) / samplesPerPixel) -
+                            markerHeadWidthPixels / 2 <= _mouseX) &&
+                           (cast(pixels_t)((marker.offset - viewOffset) / samplesPerPixel) +
+                            markerHeadWidthPixels / 2 >= _mouseX)) {
+                            _moveMarker = &marker;
+                            _setAction(Action.moveMarker);
+                            break;
+                        }
+                    }
                 }
-                else {
-                    bool newAction;
-                    switch(_mode) {
-                        // implement different behaviors for button presses depending on the current mode
-                        case Mode.arrange:
-                            GdkModifierType state;
-                            event.getState(state);
-                            auto shiftPressed = state & GdkModifierType.SHIFT_MASK;
 
-                            // detect if the mouse is over an audio region; if so, select that region
-                            bool mouseOverSelectedRegion;
-                            foreach(regionView; _regionViews) {
-                                if(_mouseX >= regionView.boundingBox.x0 && _mouseX < regionView.boundingBox.x1 &&
-                                   _mouseY >= regionView.boundingBox.y0 && _mouseY < regionView.boundingBox.y1 &&
-                                    regionView.selected) {
-                                    mouseOverSelectedRegion = true;
-                                    break;
-                                }
-                            }
+                // if the mouse was not over a marker
+                if(_action != Action.moveMarker) {
+                    // if the mouse is over the timestrip, move the transport
+                    if(_mouseY >= 0 && _mouseY < timestripHeightPixels + markerHeightPixels) {
+                        _setAction(Action.moveTransport);
+                    }
+                    else {
+                        bool newAction;
+                        switch(_mode) {
+                            // implement different behaviors for button presses depending on the current mode
+                            case Mode.arrange:
+                                GdkModifierType state;
+                                event.getState(state);
+                                auto shiftPressed = state & GdkModifierType.SHIFT_MASK;
 
-                            if(mouseOverSelectedRegion && !shiftPressed) {
-                                _setAction(Action.moveRegion);
-                                newAction = true;
-                            }
-                            else {
-                                // if shift is not currently pressed, deselect all regions
-                                if(!shiftPressed) {
-                                    foreach(regionView; _regionViews) {
-                                        regionView.selected = false;
-                                    }
-                                    _earliestSelectedRegion = null;
-                                }
-
-                                bool mouseOverRegion;
+                                // detect if the mouse is over an audio region; if so, select that region
+                                bool mouseOverSelectedRegion;
                                 foreach(regionView; _regionViews) {
                                     if(_mouseX >= regionView.boundingBox.x0 && _mouseX < regionView.boundingBox.x1 &&
-                                       _mouseY >= regionView.boundingBox.y0 && _mouseY < regionView.boundingBox.y1) {
-                                        // if the region is already selected and shift is pressed, deselect it
-                                        regionView.selected = !(regionView.selected && shiftPressed);
-                                        mouseOverRegion = true;
-                                        _setAction(Action.selectRegion);
-                                        newAction = true;
+                                       _mouseY >= regionView.boundingBox.y0 && _mouseY < regionView.boundingBox.y1 &&
+                                       regionView.selected) {
+                                        mouseOverSelectedRegion = true;
                                         break;
                                     }
                                 }
-                            }
-                            break;
 
-                        case Mode.editRegion:
-                            // detect if the mouse is over an onset
-                            if(_editRegion) {
-                                _moveOnsetChannel = _editRegion.mouseOverChannel(_mouseY);
-                                if(_editRegion.getOnset(viewOffset + _mouseX * samplesPerPixel -
-                                                        _editRegion.region.offset,
-                                                        mouseOverThreshold * samplesPerPixel,
-                                                        _moveOnsetFrameSrc,
-                                                        _moveOnsetIndex,
-                                                        _moveOnsetChannel)) {
-                                    _moveOnsetFrameDest = _moveOnsetFrameSrc;
-                                    _setAction(Action.moveOnset);
+                                if(mouseOverSelectedRegion && !shiftPressed) {
+                                    _setAction(Action.moveRegion);
                                     newAction = true;
                                 }
-                            }
-                            break;
+                                else {
+                                    // if shift is not currently pressed, deselect all regions
+                                    if(!shiftPressed) {
+                                        foreach(regionView; _regionViews) {
+                                            regionView.selected = false;
+                                        }
+                                        _earliestSelectedRegion = null;
+                                    }
 
-                        default:
-                            break;
+                                    bool mouseOverRegion;
+                                    foreach(regionView; _regionViews) {
+                                        if(_mouseX >= regionView.boundingBox.x0 &&
+                                           _mouseX < regionView.boundingBox.x1 &&
+                                           _mouseY >= regionView.boundingBox.y0 &&
+                                           _mouseY < regionView.boundingBox.y1) {
+                                            // if the region is already selected and shift is pressed, deselect it
+                                            regionView.selected = !(regionView.selected && shiftPressed);
+                                            mouseOverRegion = true;
+                                            _setAction(Action.selectRegion);
+                                            newAction = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                                break;
+
+                            case Mode.editRegion:
+                                // detect if the mouse is over an onset
+                                if(_editRegion) {
+                                    _moveOnsetChannel = _editRegion.mouseOverChannel(_mouseY);
+                                    if(_editRegion.getOnset(viewOffset + _mouseX * samplesPerPixel -
+                                                            _editRegion.region.offset,
+                                                            mouseOverThreshold * samplesPerPixel,
+                                                            _moveOnsetFrameSrc,
+                                                            _moveOnsetIndex,
+                                                            _moveOnsetChannel)) {
+                                        _moveOnsetFrameDest = _moveOnsetFrameSrc;
+                                        _setAction(Action.moveOnset);
+                                        newAction = true;
+                                    }
+                                }
+                                break;
+
+                            default:
+                                break;
+                        }
+                        if(!newAction) {
+                            _selectMouseX = _mouseX;
+                            _selectMouseY = _mouseY;
+                            _setAction(Action.selectBox);
+                        }
                     }
-                    if(!newAction) {
-                        _selectMouseX = _mouseX;
-                        _selectMouseY = _mouseY;
-                        _setAction(Action.selectBox);
-                    }
+                    redraw();
                 }
-                redraw();
             }
             else if(event.type == EventType.BUTTON_PRESS && event.button.button == rightButton) {
                 switch(_mode) {
@@ -2075,6 +2161,11 @@ private:
                             }
                         }
                         redraw();
+                        break;
+
+                    // move a marker
+                    case Action.moveMarker:
+                        _setAction(Action.none);
                         break;
 
                     // stretch the audio inside a region
@@ -2241,6 +2332,11 @@ private:
                             _viewOffset = _viewMinSamples;
                         }
                         _hAdjust.setValue(viewOffset);
+                        if(_action == Action.centerView ||
+                           _action == Action.centerViewStart ||
+                           _action == Action.centerViewEnd) {
+                            _setAction(Action.none);
+                        }
                         redraw();
                         break;
 
@@ -2252,6 +2348,11 @@ private:
                             _viewOffset = _viewMaxSamples;
                         }
                         _hAdjust.setValue(viewOffset);
+                        if(_action == Action.centerView ||
+                           _action == Action.centerViewStart ||
+                           _action == Action.centerViewEnd) {
+                            _setAction(Action.none);
+                        }
                         redraw();
                         break;
 
@@ -2270,7 +2371,7 @@ private:
                         _setAction(Action.none);
                         wchar keyval = cast(wchar)(Keymap.keyvalToUnicode(event.key.keyval));
                         if(isAlpha(keyval) || isNumber(keyval)) {
-                            _markers[event.key.keyval] = Marker(_mixer.transportOffset, ""); // TODO implement name
+                            _markers[event.key.keyval] = Marker(_mixer.transportOffset, to!string(keyval));
                             redraw();
                         }
                         return false;
@@ -2432,9 +2533,12 @@ private:
     RegionView[] _regionViews;
     RegionView _editRegion;
     RegionView _earliestSelectedRegion;
+
     Marker[uint] _markers;
+    Marker* _moveMarker;
 
     PgLayout _headerLabelLayout;
+    PgLayout _markerLabelLayout;
     PgLayout _timestripMarkerLayout;
     float _timestripScaleFactor = 1;
 
