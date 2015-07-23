@@ -9,6 +9,8 @@ import std.getopt;
 import std.string;
 import std.format;
 import std.random;
+import std.container;
+import std.uni;
 
 version(HAVE_JACK) {
     import jack.client;
@@ -35,6 +37,7 @@ import gtkc.gtktypes;
 import gdk.Cursor;
 import gdk.Display;
 import gdk.Event;
+import gdk.Keymap;
 import gdk.Keysyms;
 import gdk.Window;
 
@@ -472,7 +475,10 @@ package:
         _resizeIfNecessary = resizeIfNecessary;
     }
 
-    void mixStereoInterleaved(nframes_t offset, nframes_t bufNFrames, channels_t nChannels, sample_t* mixBuf) const {
+    void mixStereoInterleaved(nframes_t offset,
+                              nframes_t bufNFrames,
+                              channels_t nChannels,
+                              sample_t* mixBuf) const {
         for(auto i = 0, j = 0; i < bufNFrames; i += nChannels, ++j) {
             foreach(r; _regions) {
                 if(!r.mute()) {
@@ -485,7 +491,10 @@ package:
         }
     }
 
-    void mixStereoNonInterleaved(nframes_t offset, nframes_t bufNFrames, sample_t* mixBuf1, sample_t* mixBuf2) const {
+    void mixStereoNonInterleaved(nframes_t offset,
+                                 nframes_t bufNFrames,
+                                 sample_t* mixBuf1,
+                                 sample_t* mixBuf2) const {
         for(auto i = 0; i < bufNFrames; ++i) {
             foreach(r; _regions) {
                 if(!r.mute()) {
@@ -578,9 +587,9 @@ protected:
 private:
     // stop playing if the transport is at the end of the project
     bool _transportFinished() {
-        if(_playing && _transportOffset >= _nframes) {
+        if(_playing && _transportOffset + 1 >= _nframes) {
             _playing = false;
-            _transportOffset = _nframes;
+            _transportOffset = _nframes > 0 ? _nframes - 1 : 0;
             return true;
         }
         return false;
@@ -760,7 +769,12 @@ public:
         selectBox,
         moveOnset,
         moveRegion,
-        moveTransport
+        moveTransport,
+        createMarker,
+        jumpToMarker,
+        centerView,
+        centerViewStart,
+        centerViewEnd
     }
 
     this(string appName, Mixer mixer) {
@@ -1374,6 +1388,7 @@ public:
 
         static Color _newTrackColor() {
             Color color;
+            Random gen;
             auto i = uniform(0, 2);
             auto j = uniform(0, 2);
             auto k = uniform(0, 5);
@@ -1395,6 +1410,11 @@ public:
         pixels_t _heightPixels;
         RegionView[] _regionViews;
         Color _trackColor;
+    }
+
+    struct Marker {
+        nframes_t offset;
+        string name;
     }
 
     TrackView createTrackView() {
@@ -1515,7 +1535,9 @@ private:
 
     void _setAction(Action action) {
         switch(action) {
+            case Action.selectRegion:
             case Action.moveRegion:
+                _earliestSelectedRegion = null;
                 nframes_t minOffset = nframes_t.max;
                 foreach(regionView; _regionViews) {
                     if(regionView.selected) {
@@ -1603,6 +1625,7 @@ private:
 
             drawTimestrip(cr);
             drawTracks(cr);
+            drawMarkers(cr);
             drawTransport(cr);
             drawSelectBox(cr);
 
@@ -1610,6 +1633,10 @@ private:
         }
 
         void drawTimestrip(ref Scoped!Context cr) {
+            enum primaryTickHeightFactor = 0.5;
+            enum secondaryTickHeightFactor = 0.35;
+            enum tertiaryTickHeightFactor = 0.2;
+
             // save the existing cairo context state
             cr.save();
 
@@ -1629,7 +1656,6 @@ private:
                 desc.free();
             }
 
-            // draw the time ticks (for seconds)
             cr.setSourceRgb(1.0, 1.0, 1.0);
             cr.setAntialias(cairo_antialias_t.NONE);
             cr.setLineWidth(1.0);
@@ -1673,7 +1699,7 @@ private:
             pixels_t tickDistancePixels = tickDistanceSamples / samplesPerPixel;
 
             auto decDigits = 1;
-            if(secondsDistancePixels <= 3) {
+            if(secondsDistancePixels <= 15) {
                 decDigits = 0;
             }
             else if(secondsDistancePixels >= 750) {
@@ -1690,34 +1716,27 @@ private:
             secondsSpecTwoDigitsString.put(decDigitsFormat);
             auto secondsSpecTwoDigits = singleSpec(secondsSpecTwoDigitsString.data);
 
-            void drawMarkers(pixels_t xOffset) {
-                enum primaryHeightFactor = 0.5;
-                enum secondaryHeightFactor = 0.35;
-                enum tertiaryHeightFactor = 0.2;
-
-                // draw primary marker
-                cr.moveTo(xOffset, 0);
-                cr.lineTo(xOffset, timestripHeightPixels * primaryHeightFactor);
-
-                // draw one secondary marker
-                cr.moveTo(xOffset + tickDistancePixels / 2, 0);
-                cr.lineTo(xOffset + tickDistancePixels / 2, timestripHeightPixels * secondaryHeightFactor);
-
-                // draw two tertiary markers
-                cr.moveTo(xOffset + tickDistancePixels / 4, 0);
-                cr.lineTo(xOffset + tickDistancePixels / 4, timestripHeightPixels * tertiaryHeightFactor);
-                cr.moveTo(xOffset + (tickDistancePixels / 4) * 3, 0);
-                cr.lineTo(xOffset + (tickDistancePixels / 4) * 3, timestripHeightPixels * tertiaryHeightFactor);
-            }
-
-            // draw all currently visible markers and their time labels
+            // draw all currently visible time ticks and their time labels
             auto firstMarkerOffset = (viewOffset + tickDistanceSamples) % tickDistanceSamples;
             for(auto i = viewOffset - firstMarkerOffset;
                 i < viewOffset + viewWidthSamples + tickDistanceSamples; i += tickDistanceSamples) {
                 pixels_t xOffset =
                     cast(pixels_t)(((i >= viewOffset) ?
                                     cast(long)(i - viewOffset) : -cast(long)(viewOffset - i)) / samplesPerPixel);
-                drawMarkers(xOffset);
+
+                // draw primary tick
+                cr.moveTo(xOffset, 0);
+                cr.lineTo(xOffset, timestripHeightPixels * primaryTickHeightFactor);
+
+                // draw one secondary tick
+                cr.moveTo(xOffset + tickDistancePixels / 2, 0);
+                cr.lineTo(xOffset + tickDistancePixels / 2, timestripHeightPixels * secondaryTickHeightFactor);
+
+                // draw two tertiary ticks
+                cr.moveTo(xOffset + tickDistancePixels / 4, 0);
+                cr.lineTo(xOffset + tickDistancePixels / 4, timestripHeightPixels * tertiaryTickHeightFactor);
+                cr.moveTo(xOffset + (tickDistancePixels / 4) * 3, 0);
+                cr.lineTo(xOffset + (tickDistancePixels / 4) * 3, timestripHeightPixels * tertiaryTickHeightFactor);
 
                 pixels_t timeMarkerXOffset;
                 auto timeString = appender!string();
@@ -1804,6 +1823,7 @@ private:
             if(_action == Action.selectBox) {
                 // save the existing cairo context state
                 cr.save();
+
                 cr.setOperator(cairo_operator_t.OVER);
                 cr.setAntialias(cairo_antialias_t.NONE);
 
@@ -1817,6 +1837,28 @@ private:
                 // restore the cairo context state
                 cr.restore();
             }
+        }
+
+        void drawMarkers(ref Scoped!Context cr) {
+            // save the existing cairo context state
+            cr.save();
+
+            cr.setSourceRgb(1.0, 0.65, 0.0);
+            cr.setAntialias(cairo_antialias_t.NONE);
+            cr.setLineWidth(1.0);
+
+            pixels_t yOffset = timestripHeightPixels;
+            foreach(marker; _markers) {
+                if(marker.offset >= viewOffset && marker.offset < viewOffset + viewWidthSamples) {
+                    pixels_t xOffset = (marker.offset - viewOffset) / samplesPerPixel;
+                    cr.moveTo(xOffset, yOffset);
+                    cr.lineTo(xOffset, viewHeightPixels);
+                }
+            }
+            cr.stroke();
+
+            // restore the cairo context state
+            cr.restore();
         }
 
         void redraw() {
@@ -1909,6 +1951,7 @@ private:
                     _setAction(Action.moveTransport);
                 }
                 else {
+                    bool newAction;
                     switch(_mode) {
                         // implement different behaviors for button presses depending on the current mode
                         case Mode.arrange:
@@ -1929,6 +1972,7 @@ private:
 
                             if(mouseOverSelectedRegion && !shiftPressed) {
                                 _setAction(Action.moveRegion);
+                                newAction = true;
                             }
                             else {
                                 // if shift is not currently pressed, deselect all regions
@@ -1936,6 +1980,7 @@ private:
                                     foreach(regionView; _regionViews) {
                                         regionView.selected = false;
                                     }
+                                    _earliestSelectedRegion = null;
                                 }
 
                                 bool mouseOverRegion;
@@ -1946,6 +1991,7 @@ private:
                                         regionView.selected = !(regionView.selected && shiftPressed);
                                         mouseOverRegion = true;
                                         _setAction(Action.selectRegion);
+                                        newAction = true;
                                         break;
                                     }
                                 }
@@ -1964,6 +2010,7 @@ private:
                                                         _moveOnsetChannel)) {
                                     _moveOnsetFrameDest = _moveOnsetFrameSrc;
                                     _setAction(Action.moveOnset);
+                                    newAction = true;
                                 }
                             }
                             break;
@@ -1971,7 +2018,7 @@ private:
                         default:
                             break;
                     }
-                    if(_action == Action.none) {
+                    if(!newAction) {
                         _selectMouseX = _mouseX;
                         _selectMouseY = _mouseY;
                         _setAction(Action.selectBox);
@@ -2006,10 +2053,12 @@ private:
 
                     // select all regions within the selection box drawn with the mouse
                     case Action.selectBox:
-                        BoundingBox selectBox = BoundingBox(_selectMouseX, _selectMouseY, _mouseX, _mouseY);
-                        foreach(regionView; _regionViews) {
-                            if(selectBox.intersect(regionView.boundingBox)) {
-                                regionView.selected = true;
+                        if(_mode == Mode.arrange) {
+                            BoundingBox selectBox = BoundingBox(_selectMouseX, _selectMouseY, _mouseX, _mouseY);
+                            foreach(regionView; _regionViews) {
+                                if(selectBox.intersect(regionView.boundingBox)) {
+                                    regionView.selected = true;
+                                }
                             }
                         }
                         _setAction(Action.none);
@@ -2215,8 +2264,39 @@ private:
 
         bool onKeyPress(Event event, Widget widget) {
             if(event.type == EventType.KEY_PRESS) {
+                switch(_action) {
+                // insert a new marker
+                    case Action.createMarker:
+                        _setAction(Action.none);
+                        wchar keyval = cast(wchar)(Keymap.keyvalToUnicode(event.key.keyval));
+                        if(isAlpha(keyval) || isNumber(keyval)) {
+                            _markers[event.key.keyval] = Marker(_mixer.transportOffset, ""); // TODO implement name
+                            redraw();
+                        }
+                        return false;
+
+                    case Action.jumpToMarker:
+                        _setAction(Action.none);
+                        try {
+                            _mixer.transportOffset = _markers[event.key.keyval].offset;
+                            redraw();
+                        }
+                        catch(RangeError) {
+                        }
+                        return false;
+
+                    default:
+                        break;
+                }
+
+                GdkModifierType state;
+                event.getState(state);
+                auto controlPressed = state & GdkModifierType.CONTROL_MASK;
+                auto metaPressed = state & GdkModifierType.MOD1_MASK;
+
                 switch(event.key.keyval) {
                     case GdkKeysyms.GDK_space:
+                        // toggle play/pause for the mixer
                         if(_mixer.playing) {
                             _mixer.pause();
                         }
@@ -2233,17 +2313,110 @@ private:
                         _zoomOut();
                         break;
 
+                    case GdkKeysyms.GDK_Aring:
+                        if(metaPressed) {
+                            // move the transport and view to the beginning of the project
+                            _mixer.transportOffset = 0;
+                            _viewOffset = _viewMinSamples;
+                            redraw();
+                        }
+                        break;
+
+                    case GdkKeysyms.GDK_acute:
+                        if(metaPressed) {
+                            // move the transport to end of the project and center the view on the transport
+                            _mixer.transportOffset = _mixer.nframes > 0 ? _mixer.nframes - 1 : 0;
+                            if(_viewMaxSamples >= (viewWidthSamples / 2) * 3) {
+                                _viewOffset = _viewMaxSamples - (viewWidthSamples / 2) * 3;
+                            }
+                            redraw();
+                        }
+                        break;
+
+                    case GdkKeysyms.GDK_a:
+                        if(controlPressed) {
+                            // move the transport to the minimum offset of all selected regions
+                            if(!(_earliestSelectedRegion is null)) {
+                                _mixer.transportOffset = _earliestSelectedRegion.region.offset;
+                                redraw();
+                            }
+                        }
+                        break;
+
                     case GdkKeysyms.GDK_e:
-                        _setMode(_mode == Mode.editRegion ? Mode.arrange : Mode.editRegion);
+                        if(controlPressed) {
+                            nframes_t maxOffset = 0;
+                            bool foundRegion;
+                            foreach(regionView; _regionViews) {
+                                if(regionView.selected &&
+                                   regionView.region.offset + regionView.region.nframes > maxOffset) {
+                                    maxOffset = regionView.region.offset + regionView.region.nframes;
+                                    foundRegion = true;
+                                }
+                            }
+                            if(foundRegion) {
+                                _mixer.transportOffset = maxOffset;
+                                redraw();
+                            }
+                        }
+                        else {
+                            // toggle edit mode
+                            _setMode(_mode == Mode.editRegion ? Mode.arrange : Mode.editRegion);
+                        }
+                        break;
+
+                    case GdkKeysyms.GDK_j:
+                        // if control is pressed, jump to a marker that is about to be specified
+                        if(controlPressed) {
+                            _setAction(Action.jumpToMarker);
+                        }
+                        break;
+
+                    case GdkKeysyms.GDK_l:
+                        // center the view on the transport, emacs-style
+                        if(_action == Action.centerViewStart) {
+                            _viewOffset = _mixer.transportOffset;
+                            _setAction(Action.centerViewEnd);
+                        }
+                        else if(_action == Action.centerViewEnd) {
+                            if(_mixer.transportOffset > viewWidthSamples) {
+                                _viewOffset = _mixer.transportOffset - viewWidthSamples;
+                            }
+                            else {
+                                _viewOffset = _viewMinSamples;
+                            }
+                            _setAction(Action.centerView);
+                        }
+                        else {
+                            if(_mixer.transportOffset < viewWidthSamples / 2) {
+                                _viewOffset = _viewMinSamples;
+                            }
+                            else if(_mixer.transportOffset > _viewMaxSamples - viewWidthSamples / 2) {
+                                _viewOffset = _viewMaxSamples;
+                            }
+                            else {
+                                _viewOffset = _mixer.transportOffset - viewWidthSamples / 2;
+                            }
+                            _setAction(Action.centerViewStart);
+                        }
+                        redraw();
+                        _configureHScroll();
                         break;
 
                     case GdkKeysyms.GDK_m:
-                        foreach(regionView; _regionViews) {
-                            if(regionView.selected) {
-                                regionView.region.mute = !regionView.region.mute;
-                            }
+                        // if control is pressed, create a marker at the current transport position
+                        if(controlPressed) {
+                            _setAction(Action.createMarker);
                         }
-                        redraw();
+                        // otherwise, mute selected regions
+                        else if(_mode == Mode.arrange) {
+                            foreach(regionView; _regionViews) {
+                                if(regionView.selected) {
+                                    regionView.region.mute = !regionView.region.mute;
+                                }
+                            }
+                            redraw();
+                        }
                         break;
 
                     default:
@@ -2259,6 +2432,7 @@ private:
     RegionView[] _regionViews;
     RegionView _editRegion;
     RegionView _earliestSelectedRegion;
+    Marker[uint] _markers;
 
     PgLayout _headerLabelLayout;
     PgLayout _timestripMarkerLayout;
