@@ -37,6 +37,8 @@ import gtk.Label;
 import gtk.ButtonBox;
 import gtk.Button;
 import gtk.Scale;
+import gtk.FileChooserDialog;
+import gtk.MessageDialog;
 
 import gtkc.gtktypes;
 
@@ -47,6 +49,9 @@ import gdk.Keymap;
 import gdk.Keysyms;
 
 import glib.Timeout;
+import glib.ListSG;
+import glib.Str;
+import glib.URI;
 
 import cairo.Context;
 import cairo.Pattern;
@@ -802,6 +807,23 @@ struct Color {
     double b = 0;
 }
 
+class ErrorDialog : MessageDialog {
+public:
+    this(Window parentWindow, string errorMessage) {
+        super(parentWindow,
+              DialogFlags.MODAL,
+              MessageType.ERROR,
+              ButtonsType.OK,
+              "Error: " ~ errorMessage);
+    }
+
+    static display(Window parentWindow, string errorMessage) {
+        auto dialog = new ErrorDialog(parentWindow, errorMessage);
+        dialog.run();
+        dialog.destroy();
+    }
+}
+
 class ArrangeView : Box {
 public:
     enum defaultSamplesPerPixel = 500; // default zoom level, in samples per pixel
@@ -842,6 +864,7 @@ public:
         _hAdjust.addOnValueChanged(&_onHScrollChanged);
         _hScroll = new Scrollbar(Orientation.HORIZONTAL, _hAdjust);
 
+        _createArrangeMenu();
         _createEditRegionMenu();
 
         packStart(_canvas, true, true, 0);
@@ -990,6 +1013,10 @@ public:
         BoundingBox boundingBox;
         Region region;
         Region.OnsetParams onsetParams;
+
+        bool subregionSelected;
+        nframes_t subregionStartFrame;
+        nframes_t subregionEndFrame;
 
         bool editMode;
         bool linkChannels;
@@ -1536,6 +1563,41 @@ private:
         _canvas.redraw();
     }
 
+    void _createArrangeMenu() {
+        _arrangeMenu = new Menu();
+
+        _arrangeMenu.append(new MenuItem(&onImportFile, "Import file..."));
+
+        _arrangeMenu.attachToWidget(this, null);
+    }
+
+    void onImportFile(MenuItem menuItem) {
+        if(_importFileChooser is null) {
+            _importFileChooser = new FileChooserDialog("Import Audio file",
+                                                       _parentWindow,
+                                                       FileChooserAction.OPEN,
+                                                       null,
+                                                       null);
+        }
+
+        _importFileChooser.setSelectMultiple(true);
+        _importFileChooser.run();
+
+        ListSG fileList = _importFileChooser.getUris();
+        for(auto i = 0; i < fileList.length(); ++i) {
+            string hostname;
+            string fileName = URI.filenameFromUri(Str.toString(cast(char*)(fileList.nthData(i))), hostname);
+            try {
+                ArrangeView.TrackView newTrack = createTrackView();
+                newTrack.addRegion(Region.fromFile(fileName), _mixer.sampleRate);
+            }
+            catch(FileError e) {
+                ErrorDialog.display(_parentWindow, e.msg);
+            }
+        }
+        _importFileChooser.hide();
+    }
+
     void _createEditRegionMenu() {
         _editRegionMenu = new Menu();
 
@@ -1552,6 +1614,16 @@ private:
         _editRegionMenu.append(_linkChannelsMenuItem);
 
         _editRegionMenu.attachToWidget(this, null);
+    }
+
+    static ButtonBox _createOKCancelButtons(void delegate(Button) onOK, void delegate(Button) onCancel) {
+        auto buttonBox = new ButtonBox(Orientation.HORIZONTAL);
+        buttonBox.setLayout(ButtonBoxStyle.END);
+        buttonBox.setBorderWidth(5);
+        buttonBox.setSpacing(7);
+        buttonBox.add(new Button("OK", onOK));
+        buttonBox.add(new Button("Cancel", onCancel));
+        return buttonBox;
     }
 
     void _createOnsetDetectionDialog() {
@@ -1587,13 +1659,7 @@ private:
         box2.packStart(silenceThresholdScale, false, false, 0);
         dialogBox.packStart(box2, false, false, 10);
 
-        auto buttonBox = new ButtonBox(Orientation.HORIZONTAL);
-        buttonBox.setLayout(ButtonBoxStyle.END);
-        buttonBox.setBorderWidth(5);
-        buttonBox.setSpacing(7);
-        buttonBox.add(new Button("OK", &onOnsetDetectionOK));
-        buttonBox.add(new Button("Cancel", &onOnsetDetectionCancel));
-        dialogBox.packEnd(buttonBox, false, false, 10);
+        dialogBox.packEnd(_createOKCancelButtons(&onOnsetDetectionOK, &onOnsetDetectionCancel), false, false, 10);
 
         _onsetDetectionDialog.showAll();
     }
@@ -1633,14 +1699,7 @@ private:
         stretchSelectionRatioScale.setDigits(2);
         dialogBox.packStart(stretchSelectionRatioScale, false, false, 10);
 
-        // TODO implement this as helper function
-        auto buttonBox = new ButtonBox(Orientation.HORIZONTAL);
-        buttonBox.setLayout(ButtonBoxStyle.END);
-        buttonBox.setBorderWidth(5);
-        buttonBox.setSpacing(7);
-        buttonBox.add(new Button("OK", &onStretchSelectionOK));
-        buttonBox.add(new Button("Cancel", &onStretchSelectionCancel));
-        dialogBox.packEnd(buttonBox, false, false, 10);
+        dialogBox.packEnd(_createOKCancelButtons(&onStretchSelectionOK, &onStretchSelectionCancel), false, false, 10);
 
         _stretchSelectionDialog.showAll();
     }
@@ -1648,6 +1707,7 @@ private:
     void onStretchSelectionOK(Button button) {
         immutable(double) stretchFactor = _stretchSelectionRatioAdjustment.getValue();
         immutable(channels_t) nChannels = _editRegion.region.nChannels;
+        immutable(nframes_t) localStartFrame = _subregionStartFrame - _editRegion.region.offset;
 
         uint selectionLength = cast(uint)(_subregionEndFrame - _subregionStartFrame);
         float[][] selectionChannels = new float[][](nChannels);
@@ -1661,7 +1721,7 @@ private:
         foreach(channels_t channelIndex, channel; selectionChannels) {
             foreach(i, ref sample; channel) {
                 sample = _editRegion.region._audioBuffer
-                    [(_subregionStartFrame + i) * _editRegion.region.nChannels + channelIndex];
+                    [(localStartFrame + i) * _editRegion.region.nChannels + channelIndex];
             }
         }
 
@@ -1687,20 +1747,19 @@ private:
         rubberband_retrieve(rState, selectionOutputPtr.ptr, selectionOutputLength);
         rubberband_delete(rState);
 
-        nframes_t newSubregionEndFrame =
-            _subregionStartFrame + cast(nframes_t)((_subregionEndFrame - _subregionStartFrame) * stretchFactor);
+        nframes_t newSubregionEndFrame = _subregionStartFrame + selectionOutputLength;
         long sizeDelta = (cast(long)(selectionOutputLength) - cast(long)(selectionLength)) * cast(long)(nChannels);
         sample_t[] oldAudioBuffer = _editRegion.region._audioBuffer;
         sample_t[] newAudioBuffer = new sample_t[](oldAudioBuffer.length + sizeDelta);
-        newAudioBuffer[0 .. _subregionStartFrame * nChannels] =
-            oldAudioBuffer[0 .. _subregionStartFrame * nChannels];
+        newAudioBuffer[0 .. localStartFrame * nChannels] =
+            oldAudioBuffer[0 .. localStartFrame * nChannels];
         foreach(channels_t channelIndex, channel; selectionOutputChannels) {
             foreach(i, sample; channel) {
-                newAudioBuffer[(_subregionStartFrame + i) * nChannels + channelIndex] = sample;
+                newAudioBuffer[(localStartFrame + i) * nChannels + channelIndex] = sample;
             }
         }
-        newAudioBuffer[newSubregionEndFrame * nChannels .. $] =
-            oldAudioBuffer[_subregionEndFrame * nChannels .. $];
+        newAudioBuffer[(newSubregionEndFrame - _editRegion.region.offset) * nChannels .. $] =
+            oldAudioBuffer[(_subregionEndFrame - _editRegion.region.offset) * nChannels .. $];
         _editRegion.region._audioBuffer = newAudioBuffer;
         _editRegion.region._nframes = cast(nframes_t)(newAudioBuffer.length / nChannels);
 
@@ -1810,21 +1869,35 @@ private:
         switch(mode) {
             case Mode.editRegion:
                 // enable edit mode for the first selected region
+                _editRegion = null;
                 foreach(regionView; _regionViews) {
                     if(regionView.selected) {
                         regionView.editMode = true;
                         _editRegion = regionView;
+                        if(_editRegion.subregionSelected) {
+                            _subregionSelected = true;
+                            _subregionStartFrame = _editRegion.subregionStartFrame + _editRegion.region.offset;
+                            _subregionEndFrame = _editRegion.subregionEndFrame + _editRegion.region.offset;
+                        }
                         break;
                     }
+                }
+                if(_editRegion is null) {
+                    return;
                 }
                 break;
 
             default:
                 // if the last mode was editRegion, unset the edit mode flag for the edited region
                 if(_mode == Mode.editRegion) {
-                    _subregionSelected = false;
+                    _editRegion.subregionSelected = _subregionSelected;
+                    if(_subregionSelected) {
+                        _editRegion.subregionStartFrame = _subregionStartFrame - _editRegion.region.offset;
+                        _editRegion.subregionEndFrame = _subregionEndFrame - _editRegion.region.offset;
+                    }
                     _editRegion.editMode = false;
                     _editRegion = null;
+                    _subregionSelected = false;
                 }
                 break;
         }
@@ -2237,7 +2310,7 @@ private:
 
         void onSelectSubregion() {
             if(_mouseX >= 0 && _mouseX <= viewWidthPixels) {
-                nframes_t mouseFrame = _mouseX * samplesPerPixel;
+                nframes_t mouseFrame = _mouseX * samplesPerPixel + viewOffset;
                 if(mouseFrame < _subregionStartFrame) {
                     _subregionStartFrame = mouseFrame;
                     _subregionDirection = Direction.left;
@@ -2431,7 +2504,7 @@ private:
                                     // select a subregion
                                     if(controlPressed) {
                                         _subregionStartFrame = _subregionEndFrame =
-                                            cast(nframes_t)(_mouseX * samplesPerPixel) - viewOffset;
+                                            cast(nframes_t)(_mouseX * samplesPerPixel) + viewOffset;
                                         _setAction(Action.selectSubregion);
                                         newAction = true;
                                     }
@@ -2472,17 +2545,23 @@ private:
                 }
             }
             else if(event.type == EventType.BUTTON_PRESS && event.button.button == rightButton) {
+                auto buttonEvent = event.button;
+
                 switch(_mode) {
+                    case Mode.arrange:
+                        _arrangeMenu.popup(buttonEvent.button, buttonEvent.time);
+                        _arrangeMenu.showAll();
+                        break;
+
                     case Mode.editRegion:
-                        auto buttonEvent = event.button;
                         _linkChannelsMenuItem.setSensitive(_editRegion.region.nChannels > 1);
                         _linkChannelsMenuItem.setActive(_editRegion.linkChannels);
 
                         _stretchSelectionMenuItem.setSensitive(_subregionSelected);
 
-                        _editRegionMenu.showAll();
                         _editRegionMenu.popup(buttonEvent.button, buttonEvent.time);
-                        return true;
+                        _editRegionMenu.showAll();
+                        break;
 
                     default:
                         break;
@@ -2500,10 +2579,13 @@ private:
                         redraw();
                         break;
 
-                    // stop selecting a subregion
+                    // select a subregion
                     case Action.selectSubregion:
                         if(_subregionStartFrame != _subregionEndFrame) {
                             _subregionSelected = true;
+                            _editRegion.subregionSelected = true;
+                            _editRegion.subregionStartFrame = _subregionStartFrame;
+                            _editRegion.subregionEndFrame = _subregionEndFrame;
                         }
                         _setAction(Action.none);
                         redraw();
@@ -2987,6 +3069,9 @@ private:
     Scrollbar _hScroll;
     Timeout _refreshTimeout;
 
+    Menu _arrangeMenu;
+    FileChooserDialog _importFileChooser;
+
     Menu _editRegionMenu;
     MenuItem _stretchSelectionMenuItem;
     CheckMenuItem _linkChannelsMenuItem;
@@ -3087,25 +3172,24 @@ void main(string[] args) {
         }
 
         Main.init(args);
-        AppMainWindow win = new AppMainWindow(appName, mixer);
-        win.setDefaultSize(960, 600);
+        AppMainWindow mainWindow = new AppMainWindow(appName, mixer);
+        mainWindow.setDefaultSize(960, 600);
 
-        ArrangeView arrangeView = new ArrangeView(appName, win, mixer);
-        win.add(arrangeView);
+        ArrangeView arrangeView = new ArrangeView(appName, mainWindow, mixer);
+        mainWindow.add(arrangeView);
 
         try {
             for(auto i = 1; i < args.length; ++i) {
-                Region testRegion = Region.fromFile(args[i]);
-                ArrangeView.TrackView trackView = arrangeView.createTrackView();
-                trackView.addRegion(testRegion);
+                ArrangeView.TrackView newTrack = arrangeView.createTrackView();
+                newTrack.addRegion(Region.fromFile(args[i]), mixer.sampleRate);
             }
         }
         catch(FileError e) {
-            writeln("Fatal file error: ", e.msg);
+            ErrorDialog.display(mainWindow, e.msg);
             return;
         }
 
-        win.showAll();
+        mainWindow.showAll();
         Main.run();
     }
     catch(AudioError e) {
