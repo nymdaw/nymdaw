@@ -1,6 +1,7 @@
 module dseq;
 
 import std.stdio;
+import std.conv;
 import std.algorithm;
 import std.array;
 import std.path;
@@ -12,8 +13,10 @@ import std.random;
 import std.container;
 import std.uni;
 
+import core.memory;
+
 version(HAVE_JACK) {
-    import jack.client;
+    import jack.jack;
 }
 
 import sndfile;
@@ -335,8 +338,8 @@ public:
     }
 
     // returns the sample value at a given channel and frame, globally indexed
-    sample_t getSampleGlobal(channels_t channelIndex, nframes_t frame) const {
-        return frame >= offset ?
+    sample_t getSampleGlobal(channels_t channelIndex, nframes_t frame) const @nogc nothrow {
+        return frame >= _offset ?
             (frame < _offset + _nframes ? _audioBuffer[(frame - _offset) * _nChannels + channelIndex] : 0) : 0;
     }
 
@@ -346,13 +349,14 @@ public:
     }
 
     @property const(sample_t[]) audioBuffer() const { return _audioBuffer; }
-    @property nframes_t sampleRate() const { return _sampleRate; }
-    @property channels_t nChannels() const { return _nChannels; }
-    @property nframes_t nframes() const { return _nframes; }
-    @property nframes_t offset() const { return _offset; }
+    @property nframes_t sampleRate() const @nogc nothrow { return _sampleRate; }
+    @property channels_t nChannels() const @nogc nothrow { return _nChannels; }
+    @property nframes_t nframes() const @nogc nothrow { return _nframes; }
+    @property nframes_t offset() const @nogc nothrow { return _offset; }
     @property nframes_t offset(nframes_t newOffset) { return (_offset = newOffset); }
-    @property bool mute() const { return _mute; }
+    @property bool mute() const @nogc nothrow { return _mute; }
     @property bool mute(bool enable) { return (_mute = enable); }
+
     @property string name() const { return _name; }
     @property string name(string newName) { return (_name = newName); }
 
@@ -508,7 +512,7 @@ package:
     void mixStereoInterleaved(nframes_t offset,
                               nframes_t bufNFrames,
                               channels_t nChannels,
-                              sample_t* mixBuf) const {
+                              sample_t* mixBuf) const @nogc nothrow {
         for(auto i = 0, j = 0; i < bufNFrames; i += nChannels, ++j) {
             foreach(r; _regions) {
                 if(!r.mute()) {
@@ -524,7 +528,7 @@ package:
     void mixStereoNonInterleaved(nframes_t offset,
                                  nframes_t bufNFrames,
                                  sample_t* mixBuf1,
-                                 sample_t* mixBuf2) const {
+                                 sample_t* mixBuf2) const @nogc nothrow {
         for(auto i = 0; i < bufNFrames; ++i) {
             foreach(r; _regions) {
                 if(!r.mute()) {
@@ -570,31 +574,51 @@ public:
 
     @property nframes_t sampleRate();
 
-    @property final string appName() const { return _appName; }
-    @property final nframes_t nframes() const { return _nframes; }
-    @property final nframes_t nframes(nframes_t newNFrames) { return (_nframes = newNFrames); }
-    @property final nframes_t lastFrame() const { return (_nframes > 0 ? nframes - 1 : 0); }
-    @property final nframes_t transportOffset() const { return _transportOffset; }
-    @property final nframes_t transportOffset(nframes_t newOffset) {
+    @property final string appName() const @nogc nothrow {
+        return _appName;
+    }
+    @property final nframes_t nframes() const @nogc nothrow {
+        return _nframes;
+    }
+    @property final nframes_t nframes(nframes_t newNFrames) @nogc nothrow {
+        return (_nframes = newNFrames);
+    }
+    @property final nframes_t lastFrame() const @nogc nothrow {
+        return (_nframes > 0 ? nframes - 1 : 0);
+    }
+    @property final nframes_t transportOffset() const @nogc nothrow {
+        return _transportOffset;
+    }
+    @property final nframes_t transportOffset(nframes_t newOffset) @nogc nothrow {
         disableLoop();
         return (_transportOffset = min(newOffset, nframes));
     }
 
-    @property final bool playing() const { return _playing; }
-    final void play() { _playing = true; }
-    final void pause() { _playing = false; }
+    @property final bool playing() const @nogc nothrow {
+        return _playing;
+    }
+    final void play() nothrow {
+        GC.disable(); // disable garbage collection while playing
+        _playing = true;
+    }
+    final void pause() nothrow {
+        GC.enable(); // enable garbage collection while paused
+        _playing = false;
+    }
 
-    @property final bool looping() const { return _looping; }
-    final void enableLoop(nframes_t loopStart, nframes_t loopEnd) {
+    @property final bool looping() const @nogc nothrow {
+        return _looping;
+    }
+    final void enableLoop(nframes_t loopStart, nframes_t loopEnd) @nogc nothrow {
         _looping = true;
         _loopStart = loopStart;
         _loopEnd = loopEnd;
     }
-    final void disableLoop() {
+    final void disableLoop() @nogc nothrow {
         _looping = false;
     }
 
-    final void mixStereoInterleaved(nframes_t bufNFrames, channels_t nChannels, sample_t* mixBuf) {
+    final void mixStereoInterleaved(nframes_t bufNFrames, channels_t nChannels, sample_t* mixBuf) @nogc nothrow {
         // initialize the buffer to silence
         import core.stdc.string: memset;
         memset(mixBuf, 0, sample_t.sizeof * bufNFrames);
@@ -613,7 +637,7 @@ public:
         }
     }
 
-    final void mixStereoNonInterleaved(nframes_t bufNFrames, sample_t* mixBuf1, sample_t* mixBuf2) {
+    final void mixStereoNonInterleaved(nframes_t bufNFrames, sample_t* mixBuf1, sample_t* mixBuf2) @nogc nothrow {
         // initialize the buffers to silence
         import core.stdc.string: memset;
         memset(mixBuf1, 0, sample_t.sizeof * bufNFrames);
@@ -639,7 +663,7 @@ protected:
 
 private:
     // stop playing if the transport is at the end of the project
-    bool _transportFinished() {
+    bool _transportFinished() @nogc nothrow {
         if(_playing && _transportOffset >= lastFrame) {
             _playing = _looping; // don't stop playing if currently looping
             _transportOffset = lastFrame;
@@ -664,61 +688,81 @@ version(HAVE_JACK) {
 final class JackMixer : Mixer {
 public:
     this(string appName) {
+        if(!(_instance is null)) {
+            throw new AudioError("Only one JackMixer instance may be constructed per process");
+        }
+        _instance = this;
         super(appName);
     }
 
-    @property override nframes_t sampleRate() { return _client.get_sample_rate(); }
+    @property override nframes_t sampleRate() { return jack_get_sample_rate(_client); }
 
 protected:
     override void initializeMixer() {
-        try {
-            _openJack(appName);
+        _client = jack_client_open(appName.toStringz, JackOptions.JackNoStartServer, null);
+        if(!_client) {
+            throw new AudioError("jack_client_open failed");
         }
-        catch(JackError e) {
-            throw new AudioError(e.msg);
+
+        immutable(char*) mixPort1Name = "StereoMix1";
+        immutable(char*) mixPort2Name = "StereoMix2";
+        _mixPort1 = jack_port_register(_client,
+                                       mixPort1Name,
+                                       JACK_DEFAULT_AUDIO_TYPE,
+                                       JackPortFlags.JackPortIsOutput,
+                                       0);
+        _mixPort2 = jack_port_register(_client,
+                                       mixPort2Name,
+                                       JACK_DEFAULT_AUDIO_TYPE,
+                                       JackPortFlags.JackPortIsOutput,
+                                       0);
+        if(!_mixPort1 || !_mixPort2) {
+            throw new AudioError("jack_port_register failed");
         }
+
+        // callback to process a single period of audio data
+        if(jack_set_process_callback(_client, &_jackProcessCallback, null)) {
+            throw new AudioError("jack_set_process_callback failed");
+        }
+
+        // activate the client
+        if(jack_activate(_client)) {
+            throw new AudioError("jack_activate failed");
+        }
+
+        // attempt to connect to physical playback ports
+        const(char)** playbackPorts =
+            jack_get_ports(_client, "", "", JackPortFlags.JackPortIsInput | JackPortFlags.JackPortIsPhysical);
+        if(playbackPorts && playbackPorts[1]) {
+            auto status1 = jack_connect(_client, jack_port_name(_mixPort1), playbackPorts[0]);
+            auto status2 = jack_connect(_client, jack_port_name(_mixPort2), playbackPorts[1]);
+            import core.stdc.errno : EEXIST;
+            if((status1 && status2 != EEXIST) || (status2 && status2 != EEXIST)) {
+                throw new AudioError("jack_connect failed ");
+            }
+        }
+        jack_free(playbackPorts);
     }
 
     override void cleanupMixer() {
-        _closeJack();
+        jack_client_close(_client);
     }
 
 private:
-    void _openJack(string appName) {
-        _client = new JackClient;
-        _client.open(appName, JackOptions.JackNoStartServer, null);
+    extern(C) static int _jackProcessCallback(jack_nframes_t bufNFrames, void* arg) @nogc nothrow {
+        sample_t* mixBuf1 = cast(sample_t*)(jack_port_get_buffer(_instance._mixPort1, bufNFrames));
+        sample_t* mixBuf2 = cast(sample_t*)(jack_port_get_buffer(_instance._mixPort2, bufNFrames));
 
-        JackPort mixOut1 = _client.register_port("Mix1", JACK_DEFAULT_AUDIO_TYPE, JackPortFlags.JackPortIsOutput, 0);
-        JackPort mixOut2 = _client.register_port("Mix2", JACK_DEFAULT_AUDIO_TYPE, JackPortFlags.JackPortIsOutput, 0);
+        _instance.mixStereoNonInterleaved(bufNFrames, mixBuf1, mixBuf2);
 
-        // callback to process a single period of audio data
-        _client.process_callback = delegate int(jack_nframes_t bufNFrames) {
-            float* mixBuf1 = mixOut1.get_audio_buffer(bufNFrames);
-            float* mixBuf2 = mixOut2.get_audio_buffer(bufNFrames);
+        return 0;
+    };
 
-            mixStereoNonInterleaved(bufNFrames, mixBuf1, mixBuf2);
+    __gshared static JackMixer _instance; // there should be only one instance per process
 
-            return 0;
-        };
-
-        _client.activate();
-
-        // attempt to connect to physical playback ports
-        string[] playbackPorts =
-            _client.get_ports("", "", JackPortFlags.JackPortIsInput | JackPortFlags.JackPortIsPhysical);
-        if(playbackPorts.length >= 2) {
-            _client.connect(mixOut1.get_name(), playbackPorts[0]);
-            _client.connect(mixOut2.get_name(), playbackPorts[1]);
-        }
-    }
-
-    void _closeJack() {
-        if(_client) {
-            _client.close();
-        }
-    }
-
-    JackClient _client;
+    jack_client_t* _client;
+    jack_port_t* _mixPort1;
+    jack_port_t* _mixPort2;
 }
 
 }
@@ -754,7 +798,7 @@ public:
 
 protected:
     override void initializeMixer() {
-        if(!coreAudioInit(sampleRate, outputChannels, &_coreAudioCallback)) {
+        if(!coreAudioInit(sampleRate, outputChannels, &_coreAudioProcessCallback)) {
             throw new AudioError(to!string(coreAudioErrorString()));
         }
     }
@@ -764,13 +808,13 @@ protected:
     }
 
 private:
-    extern(C) static void _coreAudioCallback(nframes_t bufNFrames,
-                                             channels_t nChannels,
-                                             sample_t* mixBuffer) {
+    extern(C) static void _coreAudioProcessCallback(nframes_t bufNFrames,
+                                                    channels_t nChannels,
+                                                    sample_t* mixBuffer) @nogc nothrow {
         _instance.mixStereoInterleaved(bufNFrames, nChannels, mixBuffer);
     }
 
-    __gshared static CoreAudioMixer _instance; // there should only be one instance for this process
+    __gshared static CoreAudioMixer _instance; // there should be only one instance per process
 
     nframes_t _sampleRate;
 }
@@ -864,11 +908,11 @@ public:
         _hAdjust.addOnValueChanged(&_onHScrollChanged);
         _hScroll = new Scrollbar(Orientation.HORIZONTAL, _hAdjust);
 
-        _createArrangeMenu();
-        _createEditRegionMenu();
-
         packStart(_canvas, true, true, 0);
         packEnd(_hScroll, false, false, 0);
+
+        _createArrangeMenu();
+        _createEditRegionMenu();
 
         showAll();
     }
@@ -1670,11 +1714,11 @@ private:
         _editRegion.computeOnsets();
         _canvas.redraw();
 
-        _onsetDetectionDialog.destroy();
+        _onsetDetectionDialog.hide();
     }
 
     void onOnsetDetectionCancel(Button button) {
-        _onsetDetectionDialog.destroy();
+        _onsetDetectionDialog.hide();
     }
 
     void onOnsetDetection(MenuItem menuItem) {
@@ -1769,11 +1813,11 @@ private:
         _editRegion.computeOnsets();
         _canvas.redraw();
 
-        _stretchSelectionDialog.destroy();
+        _stretchSelectionDialog.hide();
     }
 
     void onStretchSelectionCancel(Button button) {
-        _stretchSelectionDialog.destroy();
+        _stretchSelectionDialog.hide();
     }
 
     void onStretchSelection(MenuItem menuItem) {
@@ -2549,11 +2593,17 @@ private:
 
                 switch(_mode) {
                     case Mode.arrange:
+                        if(_arrangeMenu is null) {
+                            _createArrangeMenu();
+                        }
                         _arrangeMenu.popup(buttonEvent.button, buttonEvent.time);
                         _arrangeMenu.showAll();
                         break;
 
                     case Mode.editRegion:
+                        if(_editRegionMenu is null) {
+                            _createEditRegionMenu();
+                        }
                         _linkChannelsMenuItem.setSensitive(_editRegion.region.nChannels > 1);
                         _linkChannelsMenuItem.setActive(_editRegion.linkChannels);
 

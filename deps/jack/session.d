@@ -18,11 +18,11 @@
     Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
 */
 
-module jack.c.session;
-public import jack.c.systemdeps;
-public import jack.c.types;
+module jack.session;
+public import jack.systemdeps;
+public import jack.types;
 
-extern (C)
+extern (C) @nogc nothrow
 {
 
 /**

@@ -17,10 +17,10 @@
 *
 */
 
-module jack.c.intclient;
-public import jack.c.types;
+module jack.intclient;
+public import jack.types;
 
-extern(C)
+extern(C) @nogc nothrow
 {
 
 /**

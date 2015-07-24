@@ -18,10 +18,10 @@
 *
 */
 
-module jack.c.statistics;
-public import jack.c.types;
+module jack.statistics;
+public import jack.types;
 
-extern (C)
+extern (C) @nogc nothrow
 {
 
 /**

@@ -18,13 +18,13 @@
 
 */
 
-module jack.c.jack;
-public import jack.c.systemdeps;
-public import jack.c.types;
-public import jack.c.transport;
+module jack.jack;
+public import jack.systemdeps;
+public import jack.types;
+public import jack.transport;
 import core.stdc.config: c_ulong;
 
-extern(C)
+extern(C) @nogc nothrow
 {
 
 /**

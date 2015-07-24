@@ -17,11 +17,11 @@
 
 */
 
-module jack.c.net;
-public import jack.c.systemdeps;
-public import jack.c.types;
+module jack.net;
+public import jack.systemdeps;
+public import jack.types;
 
-extern (C)
+extern (C) @nogc nothrow
 {
 
 enum DEFAULT_MULTICAST_IP = "225.3.19.154";

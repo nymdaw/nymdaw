@@ -17,7 +17,7 @@ Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 
 */
 
-module jack.c.systemdeps;
+module jack.systemdeps;
 public import core.stdc.stdint;
 
 version(Posix) {

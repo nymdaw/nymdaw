@@ -18,10 +18,10 @@
 
 */
 
-module jack.c.transport;
-public import jack.c.types;
+module jack.transport;
+public import jack.types;
 
-extern (C) {
+extern (C) @nogc nothrow {
 
 /**
  * @defgroup TransportControl Transport and Timebase control

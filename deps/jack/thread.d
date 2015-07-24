@@ -17,11 +17,11 @@
 
 */
 
-module jack.c.thread;
-public import jack.c.systemdeps;
-public import jack.c.types;
+module jack.thread;
+public import jack.systemdeps;
+public import jack.types;
 
-extern (C)
+extern (C) @nogc nothrow
 {
 
 /* use 512KB stack per thread - the default is way too high to be feasible

@@ -26,11 +26,11 @@
  *
  */
 
-module jack.c.control;
-public import jack.c.systemdeps;
-public import jack.c.jslist;
+module jack.control;
+public import jack.systemdeps;
+public import jack.jslist;
 
-extern(C)
+extern(C) @nogc nothrow
 {
 
 /** Parameter types, intentionally similar to jack_driver_param_type_t */

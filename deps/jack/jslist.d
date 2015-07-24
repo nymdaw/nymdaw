@@ -22,11 +22,11 @@
 
 */
 
-module jack.c.jslist;
-public import jack.c.systemdeps;
+module jack.jslist;
+public import jack.systemdeps;
 import core.stdc.stdlib;
 
-extern(C)
+extern(C) @nogc nothrow
 {
 
 alias JCompareFunc = int function(void* a, void* b);

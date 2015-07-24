@@ -18,9 +18,9 @@
 
 */
 
-module jack.c.ringbuffer;
+module jack.ringbuffer;
 
-extern (C)
+extern (C) @nogc nothrow
 {
 
 /** @file ringbuffer.h
