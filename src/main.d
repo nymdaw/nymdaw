@@ -1732,14 +1732,14 @@ private:
 
         auto dialogBox = _stretchSelectionDialog.getContentArea();
 
-        dialogBox.packStart(new Label("Stretch ratio"), false, false, 0);
-        _stretchSelectionRatioAdjustment = new Adjustment(1,
-                                                          0.01,
+        dialogBox.packStart(new Label("Stretch factor"), false, false, 0);
+        _stretchSelectionFactorAdjustment = new Adjustment(0,
+                                                          -10,
                                                           10,
                                                           0.1,
                                                           0.5,
                                                           0);
-        auto stretchSelectionRatioScale = new Scale(Orientation.HORIZONTAL, _stretchSelectionRatioAdjustment);
+        auto stretchSelectionRatioScale = new Scale(Orientation.HORIZONTAL, _stretchSelectionFactorAdjustment);
         stretchSelectionRatioScale.setDigits(2);
         dialogBox.packStart(stretchSelectionRatioScale, false, false, 10);
 
@@ -1749,7 +1749,14 @@ private:
     }
 
     void onStretchSelectionOK(Button button) {
-        immutable(double) stretchFactor = _stretchSelectionRatioAdjustment.getValue();
+        auto stretchRatio = _stretchSelectionFactorAdjustment.getValue();
+        if(stretchRatio < 0) {
+            stretchRatio = 1.0 / (-stretchRatio);
+        }
+        else if(stretchRatio == 0) {
+            stretchRatio = 1;
+        }
+
         immutable(channels_t) nChannels = _editRegion.region.nChannels;
         immutable(nframes_t) localStartFrame = _subregionStartFrame - _editRegion.region.offset;
 
@@ -1769,7 +1776,7 @@ private:
             }
         }
 
-        uint selectionOutputLength = cast(uint)(selectionLength * stretchFactor);
+        uint selectionOutputLength = cast(uint)(selectionLength * stretchRatio);
         float[][] selectionOutputChannels = new float[][](nChannels);
         float*[] selectionOutputPtr = new float*[](nChannels);
         for(auto i = 0; i < nChannels; ++i) {
@@ -1781,7 +1788,7 @@ private:
         RubberBandState rState = rubberband_new(_mixer.sampleRate,
                                                 nChannels,
                                                 RubberBandOption.RubberBandOptionProcessOffline,
-                                                stretchFactor,
+                                                stretchRatio,
                                                 1.0);
         rubberband_set_max_process_size(rState, selectionLength);
         rubberband_set_expected_input_duration(rState, selectionLength);
@@ -3131,7 +3138,7 @@ private:
     Adjustment _silenceThresholdAdjustment;
 
     Dialog _stretchSelectionDialog;
-    Adjustment _stretchSelectionRatioAdjustment;
+    Adjustment _stretchSelectionFactorAdjustment;
 
     pixels_t _transportPixelsOffset;
 
