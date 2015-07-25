@@ -688,7 +688,7 @@ version(HAVE_JACK) {
 final class JackMixer : Mixer {
 public:
     this(string appName) {
-        if(!(_instance is null)) {
+        if(_instance !is null) {
             throw new AudioError("Only one JackMixer instance may be constructed per process");
         }
         _instance = this;
@@ -782,7 +782,7 @@ public:
     enum outputChannels = 2; // default to stereo
 
     this(string appName, nframes_t sampleRate = 44100) {
-        if(!(_instance is null)) {
+        if(_instance !is null) {
             throw new AudioError("Only one CoreAudioMixer instance may be constructed per process");
         }
         _instance = this;
@@ -902,13 +902,22 @@ public:
         _samplesPerPixel = defaultSamplesPerPixel;
 
         super(Orientation.VERTICAL, 0);
+        auto hBox = new Box(Orientation.HORIZONTAL, 0);
         _canvas = new Canvas();
+
+        _vAdjust = new Adjustment(0, 0, 0, 0, 0, 0);
+        _configureVScroll();
+        _vAdjust.addOnValueChanged(&_onVScrollChanged);
+        _vScroll = new Scrollbar(Orientation.VERTICAL, _vAdjust);
+
         _hAdjust = new Adjustment(0, 0, 0, 0, 0, 0);
         _configureHScroll();
         _hAdjust.addOnValueChanged(&_onHScrollChanged);
         _hScroll = new Scrollbar(Orientation.HORIZONTAL, _hAdjust);
 
-        packStart(_canvas, true, true, 0);
+        hBox.packStart(_canvas, true, true, 0);
+        hBox.packEnd(_vScroll, false, false, 0);
+        packStart(hBox, true, true, 0);
         packEnd(_hScroll, false, false, 0);
 
         _createArrangeMenu();
@@ -1079,8 +1088,8 @@ public:
                          double alpha) {
             enum degrees = PI / 180.0;
 
-            // save the existing cairo context state
             cr.save();
+
             cr.setOperator(cairo_operator_t.SOURCE);
             cr.setAntialias(cairo_antialias_t.GOOD);
 
@@ -1171,21 +1180,27 @@ public:
                 }
 
                 // fill the region background with a gradient
-                enum gradientScale1 = 0.80;
-                enum gradientScale2 = 0.65;
-                Pattern gradient = Pattern.createLinear(0, yOffset, 0, yOffset + height);
-                gradient.addColorStopRgba(0,
-                                          _regionColor.r * gradientScale1,
-                                          _regionColor.g * gradientScale1,
-                                          _regionColor.b * gradientScale1,
-                                          alpha);
-                gradient.addColorStopRgba(1,
-                                          _regionColor.r - gradientScale2,
-                                          _regionColor.g - gradientScale2,
-                                          _regionColor.b - gradientScale2,
-                                          alpha);
+                if(yOffset != _prevYOffset) {
+                    enum gradientScale1 = 0.80;
+                    enum gradientScale2 = 0.65;
 
-                cr.setSource(gradient);
+                    if(_regionGradient) {
+                        _regionGradient.destroy();
+                    }
+                    _regionGradient = Pattern.createLinear(0, yOffset, 0, yOffset + height);
+                    _regionGradient.addColorStopRgba(0,
+                                                     _regionColor.r * gradientScale1,
+                                                     _regionColor.g * gradientScale1,
+                                                     _regionColor.b * gradientScale1,
+                                                     alpha);
+                    _regionGradient.addColorStopRgba(1,
+                                                     _regionColor.r - gradientScale2,
+                                                     _regionColor.g - gradientScale2,
+                                                     _regionColor.b - gradientScale2,
+                                                     alpha);
+                }
+                _prevYOffset = yOffset;
+                cr.setSource(_regionGradient);
                 cr.fillPreserve();
 
                 // if this region is in edit mode or selected, highlight the borders and region header
@@ -1446,9 +1461,9 @@ public:
                                 if(onset + regionOffset >= viewOffset &&
                                    onset + regionOffset < viewOffset + viewWidthSamples) {
                                     cr.moveTo(xOffset + onset / samplesPerPixel - pixelsOffset,
-                                              yOffset + (channelIndex * channelHeight));
+                                              yOffset + cast(pixels_t)((channelIndex * channelHeight)));
                                     cr.lineTo(xOffset + onset / samplesPerPixel - pixelsOffset,
-                                              yOffset + ((channelIndex + 1) * channelHeight));
+                                              yOffset + cast(pixels_t)(((channelIndex + 1) * channelHeight)));
                                 }
                             }
                         }
@@ -1468,7 +1483,6 @@ public:
                 }
             }
 
-            // restore the cairo context state
             cr.restore();
         }
 
@@ -1476,6 +1490,9 @@ public:
         nframes_t[] _onsetsLinked; // indexed as [onset]
 
         Color* _regionColor;
+
+        Pattern _regionGradient;
+        pixels_t _prevYOffset;
     }
 
     class TrackView {
@@ -1488,6 +1505,7 @@ public:
             this.outer._regionViews ~= regionView;
 
             _configureHScroll();
+            _configureVScroll();
         }
         void addRegion(Region region) {
             addRegion(region, _mixer.sampleRate);
@@ -1497,20 +1515,22 @@ public:
             foreach(regionView; _regionViews) {
                 Region r = regionView.region;
                 if(_action == Action.moveRegion && regionView.selected) {
-                    regionView.drawRegionMoving(cr, yOffset, _heightPixels);
+                    regionView.drawRegionMoving(cr, yOffset, heightPixels);
                 }
                 else {
-                    regionView.drawRegion(cr, yOffset, _heightPixels);
+                    regionView.drawRegion(cr, yOffset, heightPixels);
                 }
             }
         }
 
-        @property pixels_t heightPixels() const { return _heightPixels; }
+        @property pixels_t heightPixels() const {
+            return cast(pixels_t)(max(_baseHeightPixels * _verticalScaleFactor, RegionView.headerHeight));
+        }
 
     private:
         this(Track track, pixels_t heightPixels) {
             _track = track;
-            _heightPixels = heightPixels;
+            _baseHeightPixels = heightPixels;
             _trackColor = _newTrackColor();
         }
 
@@ -1535,7 +1555,7 @@ public:
         }
 
         Track _track;
-        pixels_t _heightPixels;
+        pixels_t _baseHeightPixels;
         RegionView[] _regionViews;
         Color _trackColor;
     }
@@ -1582,6 +1602,10 @@ private:
         }
     }
 
+    enum _verticalZoomFactor = 1.2f;
+    enum _verticalZoomFactorMax = _verticalZoomFactor * 3;
+    enum _verticalZoomFactorMin = _verticalZoomFactor / 10;
+
     @property nframes_t _viewMinSamples() { return 0; }
     @property nframes_t _viewMaxSamples() { return _mixer.lastFrame + viewWidthSamples; }
 
@@ -1594,6 +1618,23 @@ private:
                            viewWidthSamples);
     }
 
+    void _configureVScroll() {
+        // add some padding to the bottom of the visible canvas
+        pixels_t totalHeightPixels = _canvas.firstTrackYOffset + (defaultTrackHeightPixels / 2);
+
+        // determine the total height of all tracks in pixels
+        foreach(track; _trackViews) {
+            totalHeightPixels += track.heightPixels;
+        }
+
+        _vAdjust.configure(_verticalPixelsOffset,
+                           0,
+                           totalHeightPixels,
+                           totalHeightPixels / 20,
+                           totalHeightPixels / 10,
+                           _canvas.viewHeightPixels);
+    }
+
     void _onHScrollChanged(Adjustment adjustment) {
         if(_centeredView) {
             _centeredView = false;
@@ -1604,6 +1645,11 @@ private:
             _setAction(Action.none);
         }
         _viewOffset = cast(typeof(_viewOffset))(adjustment.getValue());
+        _canvas.redraw();
+    }
+
+    void _onVScrollChanged(Adjustment adjustment) {
+        _verticalPixelsOffset = cast(pixels_t)(_vAdjust.getValue());
         _canvas.redraw();
     }
 
@@ -1862,6 +1908,17 @@ private:
         _configureHScroll();
     }
 
+    void _zoomInVertical() {
+        _verticalScaleFactor = max(_verticalScaleFactor / _verticalZoomFactor, _verticalZoomFactorMin);
+        _canvas.redraw();
+        _configureVScroll();
+    }
+    void _zoomOutVertical() {
+        _verticalScaleFactor = min(_verticalScaleFactor * _verticalZoomFactor, _verticalZoomFactorMax);
+        _canvas.redraw();
+        _configureVScroll();
+    }
+
     void _setCursor() {
         static Cursor cursorMoving;
         static Cursor cursorMovingOnset;
@@ -1978,15 +2035,11 @@ private:
             addOnKeyPress(&onKeyPress);
         }
 
-        @property pixels_t viewWidthPixels() {
-            GtkAllocation size;
-            getAllocation(size);
-            return cast(pixels_t)(size.width);
+        @property pixels_t viewWidthPixels() const {
+            return _viewWidthPixels;
         }
-        @property pixels_t viewHeightPixels() {
-            GtkAllocation size;
-            getAllocation(size);
-            return cast(pixels_t)(size.height);
+        @property pixels_t viewHeightPixels() const {
+            return _viewHeightPixels;
         }
 
         @property pixels_t markerYOffset() {
@@ -2014,8 +2067,9 @@ private:
             cr.setSourceRgb(0.0, 0.0, 0.0);
             cr.paint();
 
-            drawTimestrip(cr);
+            drawBackground(cr);
             drawTracks(cr);
+            drawTimestrip(cr);
             drawMarkers(cr);
             drawTransport(cr);
             drawSelectBox(cr);
@@ -2023,21 +2077,51 @@ private:
             return true;
         }
 
+        void drawBackground(ref Scoped!Context cr) {
+            cr.save();
+
+            // draw a black background
+            cr.rectangle(0, 0, viewWidthPixels, timestripHeightPixels);
+            cr.setSourceRgb(0.0, 0.0, 0.0);
+            cr.fill();
+
+            nframes_t secondsDistanceSamples = _mixer.sampleRate;
+            nframes_t tickDistanceSamples = cast(nframes_t)(secondsDistanceSamples * _timestripScaleFactor);
+            pixels_t tickDistancePixels = tickDistanceSamples / samplesPerPixel;
+
+            // draw all currently visible arrange ticks
+            auto firstMarkerOffset = (viewOffset + tickDistanceSamples) % tickDistanceSamples;
+            for(auto i = viewOffset - firstMarkerOffset;
+                i < viewOffset + viewWidthSamples + tickDistanceSamples; i += tickDistanceSamples) {
+                pixels_t xOffset =
+                    cast(pixels_t)(((i >= viewOffset) ?
+                                    cast(long)(i - viewOffset) : -cast(long)(viewOffset - i)) / samplesPerPixel);
+                // draw primary arrange ticks
+                cr.moveTo(xOffset, markerYOffset);
+                cr.lineTo(xOffset, viewHeightPixels);
+                cr.setSourceRgb(0.2, 0.2, 0.2);
+                cr.stroke();
+
+                // draw secondary arrange ticks
+                cr.moveTo(xOffset + tickDistancePixels / 2, markerYOffset);
+                cr.lineTo(xOffset + tickDistancePixels / 2, viewHeightPixels);
+                cr.moveTo(xOffset + tickDistancePixels / 4, markerYOffset);
+                cr.lineTo(xOffset + tickDistancePixels / 4, viewHeightPixels);
+                cr.moveTo(xOffset + (tickDistancePixels / 4) * 3, markerYOffset);
+                cr.lineTo(xOffset + (tickDistancePixels / 4) * 3, viewHeightPixels);
+                cr.setSourceRgb(0.1, 0.1, 0.1);
+                cr.stroke();
+            }
+
+            cr.restore();            
+        }
+
         void drawTimestrip(ref Scoped!Context cr) {
             enum primaryTickHeightFactor = 0.5;
             enum secondaryTickHeightFactor = 0.35;
             enum tertiaryTickHeightFactor = 0.2;
 
-            // save the existing cairo context state
             cr.save();
-
-            // draw the timestrip background
-            cr.rectangle(0, 0, viewWidthPixels, timestripHeightPixels);
-            Pattern gradient = Pattern.createLinear(0, 0, 0, timestripHeightPixels);
-            gradient.addColorStopRgb(0, 0.2, 0.2, 0.2);
-            gradient.addColorStopRgb(1, 0.0, 0.0, 0.0);
-            cr.setSource(gradient);
-            cr.fill();
 
             if(!_timestripMarkerLayout) {
                 PgFontDescription desc;
@@ -2074,7 +2158,7 @@ private:
                 _timestripScaleFactor = 2;
             }
             else if(secondsDistancePixels > 15) {
-                _timestripScaleFactor = 5.0;
+                _timestripScaleFactor = 5;
             }
             else if(secondsDistancePixels > 10) {
                 _timestripScaleFactor = 10;
@@ -2106,16 +2190,6 @@ private:
             secondsSpecTwoDigitsString.put('.');
             secondsSpecTwoDigitsString.put(decDigitsFormat);
             auto secondsSpecTwoDigits = singleSpec(secondsSpecTwoDigitsString.data);
-
-            void setTimestripTickColor() {
-                cr.setSourceRgb(1.0, 1.0, 1.0);
-            }
-            void setPrimaryArrangeTickColor() {
-                cr.setSourceRgb(0.2, 0.2, 0.2);
-            }
-            void setSecondaryArrangeTickColor() {
-                cr.setSourceRgb(0.1, 0.1, 0.1);
-            }
 
             // draw all currently visible time ticks and their time labels
             auto firstMarkerOffset = (viewOffset + tickDistanceSamples) % tickDistanceSamples;
@@ -2162,37 +2236,20 @@ private:
                     timeMarkerXOffset = xOffset - widthPixels / 2;
                 }
 
-                setTimestripTickColor();
+                cr.setSourceRgb(1.0, 1.0, 1.0);
                 cr.stroke();
 
                 _timestripMarkerLayout.setText(timeString.data);
                 cr.moveTo(timeMarkerXOffset, timestripHeightPixels * 0.5);
                 PgCairo.updateLayout(cr, _timestripMarkerLayout);
                 PgCairo.showLayout(cr, _timestripMarkerLayout);
-
-                // draw primary arrange ticks
-                cr.moveTo(xOffset, markerYOffset);
-                cr.lineTo(xOffset, viewHeightPixels);
-                setPrimaryArrangeTickColor();
-                cr.stroke();
-
-                // draw secondary arrange ticks
-                cr.moveTo(xOffset + tickDistancePixels / 2, markerYOffset);
-                cr.lineTo(xOffset + tickDistancePixels / 2, viewHeightPixels);
-                cr.moveTo(xOffset + tickDistancePixels / 4, markerYOffset);
-                cr.lineTo(xOffset + tickDistancePixels / 4, viewHeightPixels);
-                cr.moveTo(xOffset + (tickDistancePixels / 4) * 3, markerYOffset);
-                cr.lineTo(xOffset + (tickDistancePixels / 4) * 3, viewHeightPixels);
-                setSecondaryArrangeTickColor();
-                cr.stroke();
             }
 
-            // restore the cairo context state
             cr.restore();
         }
 
         void drawTracks(ref Scoped!Context cr) {
-            pixels_t yOffset = firstTrackYOffset;
+            pixels_t yOffset = firstTrackYOffset - _verticalPixelsOffset;
             foreach(t; _trackViews) {
                 t.draw(cr, yOffset);
                 yOffset += t.heightPixels;
@@ -2203,7 +2260,6 @@ private:
             enum transportHeadWidth = 16;
             enum transportHeadHeight = 10;
 
-            // save the existing cairo context state
             cr.save();
 
             if(_action == Action.moveTransport) {
@@ -2234,13 +2290,11 @@ private:
             cr.closePath();
             cr.fill();
 
-            // restore the cairo context state
             cr.restore();
         }
 
         void drawSelectBox(ref Scoped!Context cr) {
             if(_action == Action.selectBox) {
-                // save the existing cairo context state
                 cr.save();
 
                 cr.setOperator(cairo_operator_t.OVER);
@@ -2253,11 +2307,9 @@ private:
                 cr.setSourceRgb(0.0, 1.0, 0.0);
                 cr.stroke();
 
-                // restore the cairo context state
                 cr.restore();
             }
             else if(_mode == Mode.editRegion && (_subregionSelected || _action == Action.selectSubregion)) {
-                // save the existing cairo context state
                 cr.save();
 
                 cr.setOperator(cairo_operator_t.OVER);
@@ -2270,7 +2322,6 @@ private:
                 cr.setSourceRgba(0.0, 1.0, 0.0, 0.5);
                 cr.fill();
 
-                // restore the cairo context state
                 cr.restore();
             }
         }
@@ -2278,7 +2329,6 @@ private:
         void drawMarkers(ref Scoped!Context cr) {
             enum taperFactor = 0.75;
 
-            // save the existing cairo context state
             cr.save();
 
             if(!_markerLabelLayout) {
@@ -2338,7 +2388,6 @@ private:
                 cr.stroke();
             }
 
-            // restore the cairo context state
             cr.restore();
         }
 
@@ -2356,7 +2405,13 @@ private:
         }
 
         void onSizeAllocate(GtkAllocation* allocation, Widget widget) {
+            GtkAllocation size;
+            getAllocation(size);
+            _viewWidthPixels = cast(pixels_t)(size.width);
+            _viewHeightPixels = cast(pixels_t)(size.height);
+
             _configureHScroll();
+            _configureVScroll();
         }
 
         void onSelectSubregion() {
@@ -2840,46 +2895,66 @@ private:
                 event.getScrollDirection(direction);
                 switch(direction) {
                     case ScrollDirection.LEFT:
-                        if(_hAdjust.getStepIncrement() <= viewOffset) {
-                            _viewOffset -= _hAdjust.getStepIncrement();
+                        if(controlPressed) {
+                            _zoomOut();
                         }
                         else {
-                            _viewOffset = _viewMinSamples;
+                            if(_hAdjust.getStepIncrement() <= viewOffset) {
+                                _viewOffset -= _hAdjust.getStepIncrement();
+                            }
+                            else {
+                                _viewOffset = _viewMinSamples;
+                            }
+                            _hAdjust.setValue(viewOffset);
+                            if(_action == Action.centerView ||
+                               _action == Action.centerViewStart ||
+                               _action == Action.centerViewEnd) {
+                                _setAction(Action.none);
+                            }
+                            redraw();
                         }
-                        _hAdjust.setValue(viewOffset);
-                        if(_action == Action.centerView ||
-                           _action == Action.centerViewStart ||
-                           _action == Action.centerViewEnd) {
-                            _setAction(Action.none);
-                        }
-                        redraw();
                         break;
 
                     case ScrollDirection.RIGHT:
-                        if(_hAdjust.getStepIncrement() + viewOffset <= _mixer.lastFrame) {
-                            _viewOffset += _hAdjust.getStepIncrement();
+                        if(controlPressed) {
+                            _zoomIn();
                         }
                         else {
-                            _viewOffset = _mixer.lastFrame;
+                            if(_hAdjust.getStepIncrement() + viewOffset <= _mixer.lastFrame) {
+                                _viewOffset += _hAdjust.getStepIncrement();
+                            }
+                            else {
+                                _viewOffset = _mixer.lastFrame;
+                            }
+                            _hAdjust.setValue(viewOffset);
+                            if(_action == Action.centerView ||
+                               _action == Action.centerViewStart ||
+                               _action == Action.centerViewEnd) {
+                                _setAction(Action.none);
+                            }
+                            redraw();
                         }
-                        _hAdjust.setValue(viewOffset);
-                        if(_action == Action.centerView ||
-                           _action == Action.centerViewStart ||
-                           _action == Action.centerViewEnd) {
-                            _setAction(Action.none);
-                        }
-                        redraw();
                         break;
 
                     case ScrollDirection.UP:
                         if(controlPressed) {
-                            _zoomIn();
+                            _zoomOutVertical();
+                        }
+                        else {
+                            _vAdjust.setValue(_vAdjust.getValue() - _vAdjust.getStepIncrement());
+                            _verticalPixelsOffset = cast(pixels_t)(_vAdjust.getValue());
+                            redraw();
                         }
                         break;
 
                     case ScrollDirection.DOWN:
                         if(controlPressed) {
-                            _zoomOut();
+                            _zoomInVertical();
+                        }
+                        else {
+                            _vAdjust.setValue(_vAdjust.getValue() + _vAdjust.getStepIncrement());
+                            _verticalPixelsOffset = cast(pixels_t)(_vAdjust.getValue());
+                            redraw();
                         }
                         break;
 
@@ -2953,6 +3028,18 @@ private:
                         break;
 
                     case GdkKeysyms.GDK_Return:
+                        // move the transport to the last marker
+                        Marker* lastMarker;
+                        foreach(ref marker; _markers) {
+                            if(!lastMarker ||
+                               (marker.offset > lastMarker.offset && marker.offset < _mixer.transportOffset)) {
+                                lastMarker = &marker;
+                            }
+                        }
+                        _mixer.transportOffset = lastMarker ? lastMarker.offset : 0;
+                        redraw();
+                        break;
+
                     case GdkKeysyms.GDK_Aring:
                         // move the transport and view to the beginning of the project
                         _mixer.transportOffset = 0;
@@ -2986,7 +3073,7 @@ private:
                     case GdkKeysyms.GDK_a:
                         if(controlPressed) {
                             // move the transport to the minimum offset of all selected regions
-                            if(!(_earliestSelectedRegion is null)) {
+                            if(_earliestSelectedRegion !is null) {
                                 _mixer.transportOffset = _earliestSelectedRegion.region.offset;
                                 redraw();
                             }
@@ -3070,7 +3157,7 @@ private:
                         }
                         _centeredView = true;
                         redraw();
-                        _configureHScroll();
+                        _hAdjust.setValue(viewOffset);
                         break;
 
                     case GdkKeysyms.GDK_m:
@@ -3123,7 +3210,9 @@ private:
 
     Canvas _canvas;
     Adjustment _hAdjust;
+    Adjustment _vAdjust;
     Scrollbar _hScroll;
+    Scrollbar _vScroll;
     Timeout _refreshTimeout;
 
     Menu _arrangeMenu;
@@ -3140,7 +3229,11 @@ private:
     Dialog _stretchSelectionDialog;
     Adjustment _stretchSelectionFactorAdjustment;
 
+    pixels_t _viewWidthPixels;
+    pixels_t _viewHeightPixels;
     pixels_t _transportPixelsOffset;
+    pixels_t _verticalPixelsOffset;
+    float _verticalScaleFactor = 1;
 
     Mode _mode;
     Action _action;
@@ -3195,9 +3288,16 @@ void main(string[] args) {
     assert(availableAudioDrivers.length > 0);
     string audioDriver;
 
-    auto opts = getopt(args,
-                       "driver|d", "Available audio drivers: " ~ reduce!((string x, y) => x ~ ", " ~ y)
-                       (availableAudioDrivers[0], availableAudioDrivers[1 .. $]), &audioDriver);
+    GetoptResult opts;
+    try {
+        opts = getopt(args,
+                      "driver|d", "Available audio drivers: " ~ reduce!((string x, y) => x ~ ", " ~ y)
+                      (availableAudioDrivers[0], availableAudioDrivers[1 .. $]), &audioDriver);
+    }
+    catch(Exception e) {
+        writeln("Error: " ~ e.msg);
+        return;
+    }
 
     if(opts.helpWanted) {
         defaultGetoptPrinter(appName ~ " command line options:", opts.options);
