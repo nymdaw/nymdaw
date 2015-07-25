@@ -1668,24 +1668,32 @@ private:
                                                        FileChooserAction.OPEN,
                                                        null,
                                                        null);
+            _importFileChooser.setSelectMultiple(true);
         }
 
-        _importFileChooser.setSelectMultiple(true);
-        _importFileChooser.run();
-
-        ListSG fileList = _importFileChooser.getUris();
-        for(auto i = 0; i < fileList.length(); ++i) {
-            string hostname;
-            string fileName = URI.filenameFromUri(Str.toString(cast(char*)(fileList.nthData(i))), hostname);
-            try {
-                ArrangeView.TrackView newTrack = createTrackView();
-                newTrack.addRegion(Region.fromFile(fileName), _mixer.sampleRate);
+        auto response = _importFileChooser.run();
+        if(response == ResponseType.OK) {
+            ListSG fileList = _importFileChooser.getUris();
+            for(auto i = 0; i < fileList.length(); ++i) {
+                string hostname;
+                string fileName = URI.filenameFromUri(Str.toString(cast(char*)(fileList.nthData(i))), hostname);
+                try {
+                    ArrangeView.TrackView newTrack = createTrackView();
+                    newTrack.addRegion(Region.fromFile(fileName), _mixer.sampleRate);
+                }
+                catch(FileError e) {
+                    ErrorDialog.display(_parentWindow, e.msg);
+                }
             }
-            catch(FileError e) {
-                ErrorDialog.display(_parentWindow, e.msg);
-            }
+            _importFileChooser.hide();
         }
-        _importFileChooser.hide();
+        else if(response == ResponseType.CANCEL) {
+            _importFileChooser.hide();
+        }
+        else {
+            _importFileChooser.destroy();
+            _importFileChooser = null;
+        }
     }
 
     void _createEditRegionMenu() {
@@ -1696,7 +1704,7 @@ private:
         _stretchSelectionMenuItem = new MenuItem(&onStretchSelection, "Stretch Selection...");
         _editRegionMenu.append(_stretchSelectionMenuItem);
 
-        _editRegionMenu.append(new MenuItem(&onNormalize, "Normalize"));
+        _editRegionMenu.append(new MenuItem(&onNormalize, "Normalize..."));
 
         _linkChannelsMenuItem = new CheckMenuItem("Link Channels");
         _linkChannelsMenuItem.setDrawAsRadio(true);
@@ -1760,11 +1768,11 @@ private:
         _editRegion.computeOnsets();
         _canvas.redraw();
 
-        _onsetDetectionDialog.hide();
+        _onsetDetectionDialog.destroy();
     }
 
     void onOnsetDetectionCancel(Button button) {
-        _onsetDetectionDialog.hide();
+        _onsetDetectionDialog.destroy();
     }
 
     void onOnsetDetection(MenuItem menuItem) {
@@ -1866,22 +1874,49 @@ private:
         _editRegion.computeOnsets();
         _canvas.redraw();
 
-        _stretchSelectionDialog.hide();
+        _stretchSelectionDialog.destroy();
     }
 
     void onStretchSelectionCancel(Button button) {
-        _stretchSelectionDialog.hide();
+        _stretchSelectionDialog.destroy();
     }
 
     void onStretchSelection(MenuItem menuItem) {
         _createStretchSelectionDialog();
     }
 
-    void onNormalize(MenuItem menuItem) {
-        // TODO implement a dialog here
-        _editRegion.region.normalize();
+    void _createNormalizeDialog() {
+        _normalizeDialog = new Dialog();
+        _normalizeDialog.setDefaultSize(250, 100);
+        _normalizeDialog.setTransientFor(_parentWindow);
+
+        auto dialogBox = _normalizeDialog.getContentArea();
+
+        dialogBox.packStart(new Label("Normalize gain (dbFS)"), false, false, 0);
+        _normalizeGainAdjustment = new Adjustment(-0.1, -20, 0, 0.01, 0.5, 0);
+        auto normalizeGainScale = new Scale(Orientation.HORIZONTAL, _normalizeGainAdjustment);
+        normalizeGainScale.setDigits(3);
+        dialogBox.packStart(normalizeGainScale, false, false, 10);
+
+        dialogBox.packEnd(_createOKCancelButtons(&onNormalizeOK, &onNormalizeCancel), false, false, 10);
+
+        _normalizeDialog.showAll();
+    }
+
+    void onNormalizeOK(Button button) {
+        _editRegion.region.normalize(cast(sample_t)(_normalizeGainAdjustment.getValue()));
         _editRegion.region.reanalyze();
         _canvas.redraw();
+
+        _normalizeDialog.destroy();
+    }
+
+    void onNormalizeCancel(Button button) {
+        _normalizeDialog.destroy();
+    }
+
+    void onNormalize(MenuItem menuItem) {
+        _createNormalizeDialog();
     }
 
     void onLinkChannels(CheckMenuItem linkChannels) {
@@ -3228,6 +3263,9 @@ private:
 
     Dialog _stretchSelectionDialog;
     Adjustment _stretchSelectionFactorAdjustment;
+
+    Dialog _normalizeDialog;
+    Adjustment _normalizeGainAdjustment;
 
     pixels_t _viewWidthPixels;
     pixels_t _viewHeightPixels;
