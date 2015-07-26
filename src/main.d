@@ -12,8 +12,13 @@ import std.format;
 import std.random;
 import std.container;
 import std.uni;
+import std.concurrency;
+import std.parallelism;
+import std.typecons;
+import std.traits;
 
 import core.memory;
+import core.time;
 
 version(HAVE_JACK) {
     import jack.jack;
@@ -42,6 +47,7 @@ import gtk.Button;
 import gtk.Scale;
 import gtk.FileChooserDialog;
 import gtk.MessageDialog;
+import gtk.ProgressBar;
 
 import gtkc.gtktypes;
 
@@ -50,6 +56,7 @@ import gdk.Display;
 import gdk.Event;
 import gdk.Keymap;
 import gdk.Keysyms;
+import gdk.Screen;
 
 import glib.Timeout;
 import glib.ListSG;
@@ -90,18 +97,31 @@ alias pixels_t = int;
 
 class Region {
 public:
-    this(nframes_t sampleRate, channels_t nChannels, sample_t[] audioBuffer, string name = "") {
-        _sampleRate = sampleRate;
-        _nChannels = nChannels;
-        _audioBuffer = audioBuffer;
-        _nframes = cast(nframes_t)(audioBuffer.length / nChannels);
-        _name = name;
+    struct LoadState {
+        enum Stage : int {
+            read,
+            resample,
+            computeOverview,
+            complete
+        }
+        alias Stage this;
 
-        _initCache();
+        alias Callback = void delegate(Stage stage, double stageFraction);
+
+        enum nStages = (EnumMembers!Stage).length - 1;
+        enum stepsPerStage = 20;
+
+        this(Stage stage, double stageFraction) {
+            this.stage = stage;
+            completionFraction = (stage == complete) ? 1.0 : (stage + stageFraction) / nStages;
+        }
+
+        Stage stage;
+        double completionFraction;
     }
 
     // create a region from a file, leaving the sample rate unaltered
-    static Region fromFile(string fileName) {
+    static Region fromFile(string fileName, nframes_t sampleRate, LoadState.Callback loadCallback = null) {
         SNDFILE* infile;
         SF_INFO sfinfo;
 
@@ -118,56 +138,76 @@ public:
         sample_t[] audioBuffer = new sample_t[](cast(size_t)(sfinfo.frames * sfinfo.channels));
 
         // read the file into the audio buffer
-        sf_count_t readcount;
-        static if(is(sample_t == float)) {
-            readcount = sf_read_float(infile, audioBuffer.ptr, cast(sf_count_t)(audioBuffer.length));
-        }
-        else if(is(sample_t == double)) {
-            readcount = sf_read_double(infile, audioBuffer.ptr, cast(sf_count_t)(audioBuffer.length));
-        }
-        else {
-            static assert(0);
-        }
+        sf_count_t readTotal;
+        sf_count_t readCount;
+        do {
+            sf_count_t readRequest = cast(sf_count_t)(audioBuffer.length >= LoadState.stepsPerStage ?
+                                                      audioBuffer.length / LoadState.stepsPerStage :
+                                                      audioBuffer.length);
+            readRequest -= readRequest % sfinfo.channels;
 
-        // throw exception if file failed to read
-        if(!readcount) {
-            throw new FileError("Could not read file: " ~ fileName);
+            static if(is(sample_t == float)) {
+                readCount = sf_read_float(infile, audioBuffer.ptr + readTotal, readRequest);
+            }
+            else if(is(sample_t == double)) {
+                readCount = sf_read_double(infile, audioBuffer.ptr + readTotal, readRequest);
+            }
+            else {
+                static assert(0);
+            }
+
+            readTotal += readCount;
+            if(loadCallback) {
+                loadCallback(LoadState.read, cast(double)(readTotal) / cast(double)(audioBuffer.length));
+            }
         }
+        while(readCount && readTotal < audioBuffer.length);
 
-        return new Region(cast(nframes_t)(sfinfo.samplerate),
-                          cast(channels_t)(sfinfo.channels),
-                          audioBuffer,
-                          baseName(stripExtension(fileName)));
-    }
+        // construct the region
+        auto newRegion = new Region(cast(nframes_t)(sfinfo.samplerate),
+                                    cast(channels_t)(sfinfo.channels),
+                                    audioBuffer,
+                                    baseName(stripExtension(fileName)));
 
-    // create a region from a file, converting to the given sample rate if necessary
-    static Region fromFile(string fileName, nframes_t sampleRate) {
-        Region region = fromFile(fileName);
-        region.convertSampleRate(sampleRate);
-        return region;
+        // resample, if necessary
+        newRegion.convertSampleRate(sampleRate, loadCallback);
+        newRegion.computeOverview(loadCallback);
+        if(loadCallback) {
+            loadCallback(LoadState.complete, 1.0);
+        }
+        return newRegion;
     }
 
     // reanalyze the entire audio data for this region, in the case of edits
-    void reanalyze() {
-        _initCache(); 
-    }
+    void computeOverview(LoadState.Callback loadCallback = null) {
+        if(loadCallback) {
+            loadCallback(LoadState.computeOverview, 0);
+        }
 
-    // normalize region to the given maximum gain, in dBFS
-    void normalize(sample_t maxGain = -0.1) {
-        sample_t minSample, maxSample;
-        _minMax(minSample, maxSample);
-        maxSample = max(abs(minSample), abs(maxSample));
+        // initialize the cache
+        _waveformCacheList = null;
+        for(auto c = 0; c < _nChannels; ++c) {
+            WaveformCache[] channelCache;
+            channelCache ~= new WaveformCache(_cacheBinSizes[0], c);
+            foreach(binSize; _cacheBinSizes[1 .. $]) {
+                channelCache ~= new WaveformCache(binSize, channelCache[$ - 1]);
+            }
+            _waveformCacheList ~= channelCache;
+        }
 
-        sample_t sampleFactor =  pow(10, (maxGain > 0 ? 0 : maxGain) / 20) / maxSample;
-        foreach(ref s; _audioBuffer) {
-            s *= sampleFactor;
+        if(loadCallback) {
+            loadCallback(LoadState.computeOverview, 1);
         }
     }
 
-    void convertSampleRate(nframes_t newSampleRate, bool normalize = true) {
+    void convertSampleRate(nframes_t newSampleRate, LoadState.Callback loadCallback = null) {
         if(newSampleRate != _sampleRate && newSampleRate > 0) {
+            if(loadCallback) {
+                loadCallback(LoadState.resample, 0);
+            }
+
             // constant indicating the algorithm to use for sample rate conversion
-            enum converter = SRC_SINC_MEDIUM_QUALITY;
+            enum converter = SRC_SINC_BEST_QUALITY;
 
             // allocate audio buffers for input/output
             float[] dataIn = new float[](_audioBuffer.length);
@@ -207,7 +247,7 @@ public:
             }
             dataOut.length = cast(size_t)(srcData.output_frames_gen);
 
-            // convert the float buffer back to sample_t if necessary
+            // convert the float buffer back to sample_t, if necessary
             static if(is(sample_t == double)) {
                 _audioBuffer.length = dataOut.length;
                 foreach(i, sample; dataOut) {
@@ -215,9 +255,8 @@ public:
                 }
             }
 
-            // normalize, if requested
-            if(normalize) {
-                this.normalize();
+            if(loadCallback) {
+                loadCallback(LoadState.resample, 1);
             }
         }
     }
@@ -241,6 +280,18 @@ public:
     // returns an array of frames at which an onset occurs, with frames given locally for this region
     nframes_t[] getOnsetsSingleChannel(ref const(OnsetParams) params, channels_t channelIndex) const {
         return _getOnsets(params, false, channelIndex);
+    }
+
+    // normalize region to the given maximum gain, in dBFS
+    void normalize(sample_t maxGain = -0.1) {
+        sample_t minSample, maxSample;
+        _minMax(minSample, maxSample);
+        maxSample = max(abs(minSample), abs(maxSample));
+
+        sample_t sampleFactor =  pow(10, (maxGain > 0 ? 0 : maxGain) / 20) / maxSample;
+        foreach(ref s; _audioBuffer) {
+            s *= sampleFactor;
+        }
     }
 
     class WaveformCache {
@@ -361,6 +412,18 @@ public:
     @property string name(string newName) { return (_name = newName); }
 
 private:
+    // this constructor only initializes data members; it does not construct the overview
+    this(nframes_t sampleRate,
+         channels_t nChannels,
+         sample_t[] audioBuffer,
+         string name) {
+        _sampleRate = sampleRate;
+        _nChannels = nChannels;
+        _audioBuffer = audioBuffer;
+        _nframes = cast(nframes_t)(audioBuffer.length / nChannels);
+        _name = name;
+    }
+
     static sample_t _min(const(sample_t[]) sourceData) {
         sample_t minSample = 1;
         foreach(s; sourceData) {
@@ -404,19 +467,6 @@ private:
                         out sample_t minSample,
                         out sample_t maxSample) const {
         _minMaxChannel(channelIndex, _nChannels, minSample, maxSample, _audioBuffer);
-    }
-
-    void _initCache() {
-        _waveformCacheList = null;
-
-        for(auto c = 0; c < _nChannels; ++c) {
-            WaveformCache[] channelCache;
-            channelCache ~= new WaveformCache(_cacheBinSizes[0], c);
-            foreach(binSize; _cacheBinSizes[1 .. $]) {
-                channelCache ~= new WaveformCache(binSize, channelCache[$ - 1]);
-            }
-            _waveformCacheList ~= channelCache;
-        }
     }
 
     nframes_t[] _getOnsets(ref const(OnsetParams) params, bool linkChannels, channels_t channelIndex = 0) const {
@@ -732,7 +782,7 @@ protected:
 
         // attempt to connect to physical playback ports
         const(char)** playbackPorts =
-            jack_get_ports(_client, "", "", JackPortFlags.JackPortIsInput | JackPortFlags.JackPortIsPhysical);
+            jack_get_ports(_client, null, null, JackPortFlags.JackPortIsInput | JackPortFlags.JackPortIsPhysical);
         if(playbackPorts && playbackPorts[1]) {
             auto status1 = jack_connect(_client, jack_port_name(_mixPort1), playbackPorts[0]);
             auto status2 = jack_connect(_client, jack_port_name(_mixPort2), playbackPorts[1]);
@@ -945,16 +995,29 @@ public:
             _drawRegion(cr, yOffset, heightPixels, selectedOffset, 0.5);
         }
 
-        void computeOnsets() {
-            // compute onsets for each channel
+        void computeOnsetsIndependentChannels() {
+            // compute onsets independently for each channel
             _onsets = new nframes_t[][](region.nChannels);
             for(channels_t c = 0; c < region.nChannels; ++c) {
                 _onsets[c] = region.getOnsetsSingleChannel(onsetParams, c);
             }
+        }
 
+        void computeOnsetsLinkedChannels() {
             // compute onsets for summed channels
             if(region.nChannels > 1) {
                 _onsetsLinked = region.getOnsetsLinkedChannels(onsetParams);
+            }
+        }
+
+        void computeOnsets() {
+            if(linkChannels) {
+                computeOnsetsLinkedChannels();
+                _onsets = null;
+            }
+            else {
+                computeOnsetsIndependentChannels();
+                _onsetsLinked = null;
             }
         }
 
@@ -1071,14 +1134,34 @@ public:
         nframes_t subregionStartFrame;
         nframes_t subregionEndFrame;
 
-        bool editMode;
-        bool linkChannels;
+        @property bool editMode() const { return _editMode; }
+        @property bool editMode(bool enable) {
+            if(enable) {
+                if(linkChannels && _onsetsLinked is null) {
+                    computeOnsetsLinkedChannels();
+                }
+                else if(_onsets is null) {
+                    computeOnsetsIndependentChannels();
+                }
+            }
+            return (_editMode = enable);
+        }
+
+        @property bool linkChannels() const { return _linkChannels; }
+        @property bool linkChannels(bool enable) {
+            if(enable && _onsetsLinked is null) {
+                computeOnsetsLinkedChannels();
+            }
+            else if(_onsets is null) {
+                computeOnsetsIndependentChannels();
+            }
+            return (_linkChannels = enable);
+        }
 
     private:
         this(Region region, Color* color) {
             this.region = region;
             _regionColor = color;
-            computeOnsets();
         }
 
         void _drawRegion(ref Scoped!Context cr,
@@ -1486,6 +1569,9 @@ public:
             cr.restore();
         }
 
+        bool _editMode;
+        bool _linkChannels;
+
         nframes_t[][] _onsets; // indexed as [channel][onset]
         nframes_t[] _onsetsLinked; // indexed as [onset]
 
@@ -1661,6 +1747,11 @@ private:
         _arrangeMenu.attachToWidget(this, null);
     }
 
+    alias RegionTask = Tuple!(string, typeof(task(&Region.fromFile,
+                                                  string.init,
+                                                  nframes_t.init,
+                                                  Region.LoadState.Callback.init)));
+
     void onImportFile(MenuItem menuItem) {
         if(_importFileChooser is null) {
             _importFileChooser = new FileChooserDialog("Import Audio file",
@@ -1671,19 +1762,13 @@ private:
             _importFileChooser.setSelectMultiple(true);
         }
 
+        auto fileNames = appender!(string[])();
         auto response = _importFileChooser.run();
         if(response == ResponseType.OK) {
             ListSG fileList = _importFileChooser.getUris();
             for(auto i = 0; i < fileList.length(); ++i) {
                 string hostname;
-                string fileName = URI.filenameFromUri(Str.toString(cast(char*)(fileList.nthData(i))), hostname);
-                try {
-                    ArrangeView.TrackView newTrack = createTrackView();
-                    newTrack.addRegion(Region.fromFile(fileName), _mixer.sampleRate);
-                }
-                catch(FileError e) {
-                    ErrorDialog.display(_parentWindow, e.msg);
-                }
+                fileNames.put(URI.filenameFromUri(Str.toString(cast(char*)(fileList.nthData(i))), hostname));
             }
             _importFileChooser.hide();
         }
@@ -1694,6 +1779,117 @@ private:
             _importFileChooser.destroy();
             _importFileChooser = null;
         }
+
+        Tid callbackTid = thisTid;
+        void loadCallback(Region.LoadState.Stage stage, double stageFraction) {
+            send(callbackTid, Region.LoadState(stage, stageFraction));
+        }
+
+        auto regionTaskList = appender!(RegionTask[]);
+        foreach(fileName; fileNames.data) {
+            try {
+                regionTaskList.put(RegionTask(baseName(fileName), task(&Region.fromFile,
+                                                                       fileName,
+                                                                       _mixer.sampleRate,
+                                                                       &loadCallback)));
+            }
+            catch(FileError e) {
+                ErrorDialog.display(_parentWindow, e.msg);
+            }
+        }
+
+        if(regionTaskList.data.length > 0) {
+            _createImportProgressDialog(regionTaskList.data);
+            scope(exit) {
+                _importProgressTimeout.destroy();
+                _importProgressDialog.destroy();
+            }
+            _importProgressDialog.run();
+        }
+    }
+
+    void _createImportProgressDialog(RegionTask[] regionTaskList) {
+        _importProgressDialog = new Dialog();
+        _importProgressDialog.setDefaultSize(350, 75);
+        _importProgressDialog.setTransientFor(_parentWindow);
+
+        auto dialogBox = _importProgressDialog.getContentArea();
+        _importProgressBar = new ProgressBar();
+        _importProgressBar.setFraction(0);
+        dialogBox.packStart(_importProgressBar, false, false, 20);
+
+        _importProgressLabel = new Label(string.init);
+        dialogBox.packStart(_importProgressLabel, false, false, 10);
+
+        void onProgressCancel(Button button) {
+            _importProgressDialog.response(ResponseType.CANCEL);
+        }
+
+        dialogBox.packEnd(_createCancelButton(&onProgressCancel), false, false, 10);
+
+        if(regionTaskList.length > 0) {
+            setMaxMailboxSize(thisTid, Region.LoadState.nStages * Region.LoadState.stepsPerStage, OnCrowding.block);
+
+            size_t regionTaskIndex = 0;
+            RegionTask regionTask = regionTaskList[regionTaskIndex];
+
+            void beginRegionTask(RegionTask regionTask) {
+                _importProgressDialog.setTitle(regionTask[0]);
+                regionTask[1].executeInNewThread();
+            }
+            beginRegionTask(regionTask);
+
+            bool onProgressRefresh() {
+                enum messageTimeout = 10.msecs;
+
+                bool regionFinished;
+                receiveTimeout(messageTimeout,
+                               (Region.LoadState loadState) {
+                                   _importProgressBar.setFraction(loadState.completionFraction);
+                                   final switch(loadState.stage) {
+                                       string labelText;
+                                       case Region.LoadState.read:
+                                           _importProgressLabel.setText("Reading " ~
+                                                                        regionTask[0] ~ "...");
+                                           break;
+
+                                       case Region.LoadState.resample:
+                                           _importProgressLabel.setText("Resampling " ~
+                                                                        regionTask[0] ~ "...");
+                                           break;
+
+                                       case Region.LoadState.computeOverview:
+                                           _importProgressLabel.setText("Computing overview for " ~
+                                                                        regionTask[0] ~ "...");
+                                           break;
+
+                                       case Region.LoadState.complete:
+                                           regionFinished = true;
+                                           break;
+                                   }
+                               });
+                if(regionFinished) {
+                    // create a new track with the constructed region
+                    auto newTrack = createTrackView();
+                    newTrack.addRegion(regionTask[1].yieldForce);
+
+                    // begin constructing a region for the next requested file
+                    ++regionTaskIndex;
+                    if(regionTaskIndex < regionTaskList.length) {
+                        regionTask = regionTaskList[regionTaskIndex];
+                        beginRegionTask(regionTask);
+                    }
+                    else {
+                        _importProgressDialog.response(ResponseType.ACCEPT);
+                    }
+                }
+
+                return true;
+            }
+            _importProgressTimeout = new Timeout(cast(uint)(1.0 / refreshRate * 1000), &onProgressRefresh, false);
+        }
+
+        _importProgressDialog.showAll();
     }
 
     void _createEditRegionMenu() {
@@ -1712,6 +1908,15 @@ private:
         _editRegionMenu.append(_linkChannelsMenuItem);
 
         _editRegionMenu.attachToWidget(this, null);
+    }
+
+    static ButtonBox _createCancelButton(void delegate(Button) onCancel) {
+        auto buttonBox = new ButtonBox(Orientation.HORIZONTAL);
+        buttonBox.setLayout(ButtonBoxStyle.END);
+        buttonBox.setBorderWidth(5);
+        buttonBox.setSpacing(7);
+        buttonBox.add(new Button("Cancel", onCancel));
+        return buttonBox;
     }
 
     static ButtonBox _createOKCancelButtons(void delegate(Button) onOK, void delegate(Button) onCancel) {
@@ -1757,22 +1962,22 @@ private:
         box2.packStart(silenceThresholdScale, false, false, 0);
         dialogBox.packStart(box2, false, false, 10);
 
+        void onOnsetDetectionOK(Button button) {
+            _editRegion.onsetParams.onsetThreshold = _onsetThresholdAdjustment.getValue();
+            _editRegion.onsetParams.silenceThreshold = _silenceThresholdAdjustment.getValue();
+            _editRegion.computeOnsets();
+            _canvas.redraw();
+
+            _onsetDetectionDialog.destroy();
+        }
+
+        void onOnsetDetectionCancel(Button button) {
+            _onsetDetectionDialog.destroy();
+        }
+
         dialogBox.packEnd(_createOKCancelButtons(&onOnsetDetectionOK, &onOnsetDetectionCancel), false, false, 10);
 
         _onsetDetectionDialog.showAll();
-    }
-
-    void onOnsetDetectionOK(Button button) {
-        _editRegion.onsetParams.onsetThreshold = _onsetThresholdAdjustment.getValue();
-        _editRegion.onsetParams.silenceThreshold = _silenceThresholdAdjustment.getValue();
-        _editRegion.computeOnsets();
-        _canvas.redraw();
-
-        _onsetDetectionDialog.destroy();
-    }
-
-    void onOnsetDetectionCancel(Button button) {
-        _onsetDetectionDialog.destroy();
     }
 
     void onOnsetDetection(MenuItem menuItem) {
@@ -1788,97 +1993,101 @@ private:
 
         dialogBox.packStart(new Label("Stretch factor"), false, false, 0);
         _stretchSelectionFactorAdjustment = new Adjustment(0,
-                                                          -10,
-                                                          10,
-                                                          0.1,
-                                                          0.5,
-                                                          0);
+                                                           -10,
+                                                           10,
+                                                           0.1,
+                                                           0.5,
+                                                           0);
         auto stretchSelectionRatioScale = new Scale(Orientation.HORIZONTAL, _stretchSelectionFactorAdjustment);
         stretchSelectionRatioScale.setDigits(2);
         dialogBox.packStart(stretchSelectionRatioScale, false, false, 10);
 
-        dialogBox.packEnd(_createOKCancelButtons(&onStretchSelectionOK, &onStretchSelectionCancel), false, false, 10);
+        void onStretchSelectionOK(Button button) {
+            auto stretchRatio = _stretchSelectionFactorAdjustment.getValue();
+            if(stretchRatio < 0) {
+                stretchRatio = 1.0 / (-stretchRatio);
+            }
+            else if(stretchRatio == 0) {
+                stretchRatio = 1;
+            }
+
+            immutable(channels_t) nChannels = _editRegion.region.nChannels;
+            immutable(nframes_t) localStartFrame = _subregionStartFrame - _editRegion.region.offset;
+
+            uint selectionLength = cast(uint)(_subregionEndFrame - _subregionStartFrame);
+            float[][] selectionChannels = new float[][](nChannels);
+            float*[] selectionPtr = new float*[](nChannels);
+            for(auto i = 0; i < nChannels; ++i) {
+                float[] selection = new float[](selectionLength);
+                selectionChannels[i] = selection;
+                selectionPtr[i] = selection.ptr;
+            }
+
+            foreach(channels_t channelIndex, channel; selectionChannels) {
+                foreach(i, ref sample; channel) {
+                    sample = _editRegion.region._audioBuffer
+                        [(localStartFrame + i) * _editRegion.region.nChannels + channelIndex];
+                }
+            }
+
+            uint selectionOutputLength = cast(uint)(selectionLength * stretchRatio);
+            float[][] selectionOutputChannels = new float[][](nChannels);
+            float*[] selectionOutputPtr = new float*[](nChannels);
+            for(auto i = 0; i < nChannels; ++i) {
+                float[] selectionOutput = new float[](selectionOutputLength);
+                selectionOutputChannels[i] = selectionOutput;
+                selectionOutputPtr[i] = selectionOutput.ptr;
+            }
+
+            RubberBandState rState = rubberband_new(_mixer.sampleRate,
+                                                    nChannels,
+                                                    RubberBandOption.RubberBandOptionProcessOffline,
+                                                    stretchRatio,
+                                                    1.0);
+            rubberband_set_max_process_size(rState, selectionLength);
+            rubberband_set_expected_input_duration(rState, selectionLength);
+            rubberband_study(rState, selectionPtr.ptr, selectionLength, 1);
+            rubberband_process(rState, selectionPtr.ptr, selectionLength, 1);
+            while(rubberband_available(rState) < selectionOutputLength) {}
+            rubberband_retrieve(rState, selectionOutputPtr.ptr, selectionOutputLength);
+            rubberband_delete(rState);
+
+            nframes_t newSubregionEndFrame = _subregionStartFrame + selectionOutputLength;
+            long sizeDelta =
+                (cast(long)(selectionOutputLength) - cast(long)(selectionLength)) * cast(long)(nChannels);
+            sample_t[] oldAudioBuffer = _editRegion.region._audioBuffer;
+            sample_t[] newAudioBuffer = new sample_t[](oldAudioBuffer.length + sizeDelta);
+            newAudioBuffer[0 .. localStartFrame * nChannels] =
+                oldAudioBuffer[0 .. localStartFrame * nChannels];
+            foreach(channels_t channelIndex, channel; selectionOutputChannels) {
+                foreach(i, sample; channel) {
+                    newAudioBuffer[(localStartFrame + i) * nChannels + channelIndex] = sample;
+                }
+            }
+            newAudioBuffer[(newSubregionEndFrame - _editRegion.region.offset) * nChannels .. $] =
+                oldAudioBuffer[(_subregionEndFrame - _editRegion.region.offset) * nChannels .. $];
+            _editRegion.region._audioBuffer = newAudioBuffer;
+            _editRegion.region._nframes = cast(nframes_t)(newAudioBuffer.length / nChannels);
+
+            _subregionEndFrame = newSubregionEndFrame;
+            _editRegion.region.computeOverview();
+            _mixer.resizeIfNecessary(_editRegion.region.offset + _editRegion.region.nframes);
+            _editRegion.computeOnsets();
+            _canvas.redraw();
+
+            _stretchSelectionDialog.destroy();
+        }
+
+        void onStretchSelectionCancel(Button button) {
+            _stretchSelectionDialog.destroy();
+        }
+
+        dialogBox.packEnd(_createOKCancelButtons(&onStretchSelectionOK, &onStretchSelectionCancel),
+                          false,
+                          false,
+                          10);
 
         _stretchSelectionDialog.showAll();
-    }
-
-    void onStretchSelectionOK(Button button) {
-        auto stretchRatio = _stretchSelectionFactorAdjustment.getValue();
-        if(stretchRatio < 0) {
-            stretchRatio = 1.0 / (-stretchRatio);
-        }
-        else if(stretchRatio == 0) {
-            stretchRatio = 1;
-        }
-
-        immutable(channels_t) nChannels = _editRegion.region.nChannels;
-        immutable(nframes_t) localStartFrame = _subregionStartFrame - _editRegion.region.offset;
-
-        uint selectionLength = cast(uint)(_subregionEndFrame - _subregionStartFrame);
-        float[][] selectionChannels = new float[][](nChannels);
-        float*[] selectionPtr = new float*[](nChannels);
-        for(auto i = 0; i < nChannels; ++i) {
-            float[] selection = new float[](selectionLength);
-            selectionChannels[i] = selection;
-            selectionPtr[i] = selection.ptr;
-        }
-
-        foreach(channels_t channelIndex, channel; selectionChannels) {
-            foreach(i, ref sample; channel) {
-                sample = _editRegion.region._audioBuffer
-                    [(localStartFrame + i) * _editRegion.region.nChannels + channelIndex];
-            }
-        }
-
-        uint selectionOutputLength = cast(uint)(selectionLength * stretchRatio);
-        float[][] selectionOutputChannels = new float[][](nChannels);
-        float*[] selectionOutputPtr = new float*[](nChannels);
-        for(auto i = 0; i < nChannels; ++i) {
-            float[] selectionOutput = new float[](selectionOutputLength);
-            selectionOutputChannels[i] = selectionOutput;
-            selectionOutputPtr[i] = selectionOutput.ptr;
-        }
-
-        RubberBandState rState = rubberband_new(_mixer.sampleRate,
-                                                nChannels,
-                                                RubberBandOption.RubberBandOptionProcessOffline,
-                                                stretchRatio,
-                                                1.0);
-        rubberband_set_max_process_size(rState, selectionLength);
-        rubberband_set_expected_input_duration(rState, selectionLength);
-        rubberband_study(rState, selectionPtr.ptr, selectionLength, 1);
-        rubberband_process(rState, selectionPtr.ptr, selectionLength, 1);
-        while(rubberband_available(rState) < selectionOutputLength) {}
-        rubberband_retrieve(rState, selectionOutputPtr.ptr, selectionOutputLength);
-        rubberband_delete(rState);
-
-        nframes_t newSubregionEndFrame = _subregionStartFrame + selectionOutputLength;
-        long sizeDelta = (cast(long)(selectionOutputLength) - cast(long)(selectionLength)) * cast(long)(nChannels);
-        sample_t[] oldAudioBuffer = _editRegion.region._audioBuffer;
-        sample_t[] newAudioBuffer = new sample_t[](oldAudioBuffer.length + sizeDelta);
-        newAudioBuffer[0 .. localStartFrame * nChannels] =
-            oldAudioBuffer[0 .. localStartFrame * nChannels];
-        foreach(channels_t channelIndex, channel; selectionOutputChannels) {
-            foreach(i, sample; channel) {
-                newAudioBuffer[(localStartFrame + i) * nChannels + channelIndex] = sample;
-            }
-        }
-        newAudioBuffer[(newSubregionEndFrame - _editRegion.region.offset) * nChannels .. $] =
-            oldAudioBuffer[(_subregionEndFrame - _editRegion.region.offset) * nChannels .. $];
-        _editRegion.region._audioBuffer = newAudioBuffer;
-        _editRegion.region._nframes = cast(nframes_t)(newAudioBuffer.length / nChannels);
-
-        _subregionEndFrame = newSubregionEndFrame;
-        _editRegion.region.reanalyze();
-        _mixer.resizeIfNecessary(_editRegion.region.offset + _editRegion.region.nframes);
-        _editRegion.computeOnsets();
-        _canvas.redraw();
-
-        _stretchSelectionDialog.destroy();
-    }
-
-    void onStretchSelectionCancel(Button button) {
-        _stretchSelectionDialog.destroy();
     }
 
     void onStretchSelection(MenuItem menuItem) {
@@ -1898,21 +2107,21 @@ private:
         normalizeGainScale.setDigits(3);
         dialogBox.packStart(normalizeGainScale, false, false, 10);
 
+        void onNormalizeOK(Button button) {
+            _editRegion.region.normalize(cast(sample_t)(_normalizeGainAdjustment.getValue()));
+            _editRegion.region.computeOverview();
+            _canvas.redraw();
+
+            _normalizeDialog.destroy();
+        }
+
+        void onNormalizeCancel(Button button) {
+            _normalizeDialog.destroy();
+        }
+
         dialogBox.packEnd(_createOKCancelButtons(&onNormalizeOK, &onNormalizeCancel), false, false, 10);
 
         _normalizeDialog.showAll();
-    }
-
-    void onNormalizeOK(Button button) {
-        _editRegion.region.normalize(cast(sample_t)(_normalizeGainAdjustment.getValue()));
-        _editRegion.region.reanalyze();
-        _canvas.redraw();
-
-        _normalizeDialog.destroy();
-    }
-
-    void onNormalizeCancel(Button button) {
-        _normalizeDialog.destroy();
     }
 
     void onNormalize(MenuItem menuItem) {
@@ -2115,11 +2324,6 @@ private:
         void drawBackground(ref Scoped!Context cr) {
             cr.save();
 
-            // draw a black background
-            cr.rectangle(0, 0, viewWidthPixels, timestripHeightPixels);
-            cr.setSourceRgb(0.0, 0.0, 0.0);
-            cr.fill();
-
             nframes_t secondsDistanceSamples = _mixer.sampleRate;
             nframes_t tickDistanceSamples = cast(nframes_t)(secondsDistanceSamples * _timestripScaleFactor);
             pixels_t tickDistancePixels = tickDistanceSamples / samplesPerPixel;
@@ -2157,6 +2361,11 @@ private:
             enum tertiaryTickHeightFactor = 0.2;
 
             cr.save();
+
+            // draw a black background for the timestrip
+            cr.rectangle(0, 0, viewWidthPixels, timestripHeightPixels);
+            cr.setSourceRgb(0.0, 0.0, 0.0);
+            cr.fill();
 
             if(!_timestripMarkerLayout) {
                 PgFontDescription desc;
@@ -2902,7 +3111,7 @@ private:
                             }
                         }
 
-                        _editRegion.region.reanalyze();
+                        _editRegion.region.computeOverview();
                         redraw();
 
                         _setAction(Action.none);
@@ -3253,6 +3462,11 @@ private:
     Menu _arrangeMenu;
     FileChooserDialog _importFileChooser;
 
+    Dialog _importProgressDialog;
+    Timeout _importProgressTimeout;
+    ProgressBar _importProgressBar;
+    Label _importProgressLabel;
+
     Menu _editRegionMenu;
     MenuItem _stretchSelectionMenuItem;
     CheckMenuItem _linkChannelsMenuItem;
@@ -3375,8 +3589,9 @@ void main(string[] args) {
 
         try {
             for(auto i = 1; i < args.length; ++i) {
-                ArrangeView.TrackView newTrack = arrangeView.createTrackView();
-                newTrack.addRegion(Region.fromFile(args[i]), mixer.sampleRate);
+                // TODO add these back in
+                //ArrangeView.TrackView newTrack = arrangeView.createTrackView();
+                //newTrack.addRegion(Region.fromFile(args[i]), mixer.sampleRate);
             }
         }
         catch(FileError e) {
