@@ -77,12 +77,6 @@ class AudioError: Exception {
     }
 }
 
-class FileError: Exception {
-    this(string msg) {
-        super(msg);
-    }
-}
-
 version(HAVE_JACK) {
     alias nframes_t = jack_nframes_t;
     alias sample_t = jack_default_audio_sample_t;
@@ -125,10 +119,15 @@ public:
         SNDFILE* infile;
         SF_INFO sfinfo;
 
+        if(loadCallback) {
+            loadCallback(LoadState.read, 0);
+        }
+
         // attempt to open the given file
         infile = sf_open(fileName.toStringz(), SFM_READ, &sfinfo);
         if(!infile) {
-            throw new FileError("Could not open file: " ~ fileName);
+            loadCallback(LoadState.complete, 0);
+            return null;
         }
 
         // close the file when leaving this scope
@@ -157,6 +156,7 @@ public:
             }
 
             readTotal += readCount;
+
             if(loadCallback) {
                 loadCallback(LoadState.read, cast(double)(readTotal) / cast(double)(audioBuffer.length));
             }
@@ -1658,6 +1658,34 @@ public:
         return trackView;
     }
 
+    alias RegionLoadTask = Tuple!(string, typeof(task(&Region.fromFile,
+                                                      string.init,
+                                                      nframes_t.init,
+                                                      Region.LoadState.Callback.init)));
+    void loadRegionsFromFiles(const(string[]) fileNames) {
+        Tid callbackTid = thisTid;
+        void loadCallback(Region.LoadState.Stage stage, double stageFraction) {
+            send(callbackTid, Region.LoadState(stage, stageFraction));
+        }
+
+        auto regionTaskList = appender!(RegionLoadTask[]);
+        foreach(fileName; fileNames) {
+            regionTaskList.put(RegionLoadTask(baseName(fileName), task(&Region.fromFile,
+                                                                       fileName,
+                                                                       _mixer.sampleRate,
+                                                                       &loadCallback)));
+        }
+
+        if(regionTaskList.data.length > 0) {
+            _createImportProgressDialog(regionTaskList.data);
+            scope(exit) {
+                _importProgressTimeout.destroy();
+                _importProgressDialog.destroy();
+            }
+            _importProgressDialog.run();
+        }
+    }
+
     @property nframes_t samplesPerPixel() const { return _samplesPerPixel; }
     @property nframes_t viewOffset() const { return _viewOffset; }
     @property nframes_t viewWidthSamples() { return _canvas.viewWidthPixels * _samplesPerPixel; }
@@ -1747,11 +1775,6 @@ private:
         _arrangeMenu.attachToWidget(this, null);
     }
 
-    alias RegionTask = Tuple!(string, typeof(task(&Region.fromFile,
-                                                  string.init,
-                                                  nframes_t.init,
-                                                  Region.LoadState.Callback.init)));
-
     void onImportFile(MenuItem menuItem) {
         if(_importFileChooser is null) {
             _importFileChooser = new FileChooserDialog("Import Audio file",
@@ -1780,35 +1803,10 @@ private:
             _importFileChooser = null;
         }
 
-        Tid callbackTid = thisTid;
-        void loadCallback(Region.LoadState.Stage stage, double stageFraction) {
-            send(callbackTid, Region.LoadState(stage, stageFraction));
-        }
-
-        auto regionTaskList = appender!(RegionTask[]);
-        foreach(fileName; fileNames.data) {
-            try {
-                regionTaskList.put(RegionTask(baseName(fileName), task(&Region.fromFile,
-                                                                       fileName,
-                                                                       _mixer.sampleRate,
-                                                                       &loadCallback)));
-            }
-            catch(FileError e) {
-                ErrorDialog.display(_parentWindow, e.msg);
-            }
-        }
-
-        if(regionTaskList.data.length > 0) {
-            _createImportProgressDialog(regionTaskList.data);
-            scope(exit) {
-                _importProgressTimeout.destroy();
-                _importProgressDialog.destroy();
-            }
-            _importProgressDialog.run();
-        }
+        loadRegionsFromFiles(fileNames.data);
     }
 
-    void _createImportProgressDialog(RegionTask[] regionTaskList) {
+    void _createImportProgressDialog(RegionLoadTask[] regionTaskList) {
         _importProgressDialog = new Dialog();
         _importProgressDialog.setDefaultSize(350, 75);
         _importProgressDialog.setTransientFor(_parentWindow);
@@ -1831,13 +1829,13 @@ private:
             setMaxMailboxSize(thisTid, Region.LoadState.nStages * Region.LoadState.stepsPerStage, OnCrowding.block);
 
             size_t regionTaskIndex = 0;
-            RegionTask regionTask = regionTaskList[regionTaskIndex];
+            RegionLoadTask regionTask = regionTaskList[regionTaskIndex];
 
-            void beginRegionTask(RegionTask regionTask) {
+            void beginRegionLoadTask(RegionLoadTask regionTask) {
                 _importProgressDialog.setTitle(regionTask[0]);
                 regionTask[1].executeInNewThread();
             }
-            beginRegionTask(regionTask);
+            beginRegionLoadTask(regionTask);
 
             bool onProgressRefresh() {
                 enum messageTimeout = 10.msecs;
@@ -1870,14 +1868,20 @@ private:
                                });
                 if(regionFinished) {
                     // create a new track with the constructed region
-                    auto newTrack = createTrackView();
-                    newTrack.addRegion(regionTask[1].yieldForce);
+                    auto newRegion = regionTask[1].yieldForce;
+                    if(newRegion is null) {
+                        ErrorDialog.display(_parentWindow, "Could not load file " ~ regionTask[0]);
+                    }
+                    else {
+                        auto newTrack = createTrackView();
+                        newTrack.addRegion(regionTask[1].yieldForce);
+                    }
 
                     // begin constructing a region for the next requested file
                     ++regionTaskIndex;
                     if(regionTaskIndex < regionTaskList.length) {
                         regionTask = regionTaskList[regionTaskIndex];
-                        beginRegionTask(regionTask);
+                        beginRegionLoadTask(regionTask);
                     }
                     else {
                         _importProgressDialog.response(ResponseType.ACCEPT);
@@ -3586,20 +3590,9 @@ void main(string[] args) {
 
         ArrangeView arrangeView = new ArrangeView(appName, mainWindow, mixer);
         mainWindow.add(arrangeView);
-
-        try {
-            for(auto i = 1; i < args.length; ++i) {
-                // TODO add these back in
-                //ArrangeView.TrackView newTrack = arrangeView.createTrackView();
-                //newTrack.addRegion(Region.fromFile(args[i]), mixer.sampleRate);
-            }
-        }
-        catch(FileError e) {
-            ErrorDialog.display(mainWindow, e.msg);
-            return;
-        }
-
         mainWindow.showAll();
+
+        arrangeView.loadRegionsFromFiles(args[1 .. $]);
         Main.run();
     }
     catch(AudioError e) {
