@@ -93,13 +93,13 @@ class Region {
 public:
     struct ProgressState(Stages...) {
     public:
-        mixin("enum Stage : int { " ~ _enumStr(Stages) ~ " complete }");
+        mixin("enum Stage : int { " ~ _enumString(Stages) ~ " complete }");
         alias Stage this;
+        enum nStages = (EnumMembers!Stage).length - 1;
+        enum stepsPerStage = 20;
 
         alias Callback = void delegate(Stage stage, double stageFraction);
 
-        enum nStages = (EnumMembers!Stage).length - 1;
-        enum stepsPerStage = 20;
         this(Stage stage, double stageFraction) {
             this.stage = stage;
             completionFraction = (stage == complete) ? 1.0 : (stage + stageFraction) / nStages;
@@ -109,7 +109,7 @@ public:
         double completionFraction;
 
     private:
-        static auto _enumStr(T...)(T t) {
+        static string _enumString(T...)(T t) {
             string result;
             foreach(i; t) {
                 result ~= i ~ ", ";
@@ -119,21 +119,21 @@ public:
     }
 
     alias LoadState = ProgressState!("read", "resample", "computeOverview");
-    alias ComputeOnsetState = ProgressState!("computeOnsets");
+    alias ComputeOnsetsState = ProgressState!("computeOnsets");
 
     // create a region from a file, leaving the sample rate unaltered
-    static Region fromFile(string fileName, nframes_t sampleRate, LoadState.Callback loadCallback = null) {
+    static Region fromFile(string fileName, nframes_t sampleRate, LoadState.Callback progressCallback = null) {
         SNDFILE* infile;
         SF_INFO sfinfo;
 
-        if(loadCallback) {
-            loadCallback(LoadState.read, 0);
+        if(progressCallback) {
+            progressCallback(LoadState.read, 0);
         }
 
         // attempt to open the given file
         infile = sf_open(fileName.toStringz(), SFM_READ, &sfinfo);
         if(!infile) {
-            loadCallback(LoadState.complete, 0);
+            progressCallback(LoadState.complete, 0);
             return null;
         }
 
@@ -164,8 +164,8 @@ public:
 
             readTotal += readCount;
 
-            if(loadCallback) {
-                loadCallback(LoadState.read, cast(double)(readTotal) / cast(double)(audioBuffer.length));
+            if(progressCallback) {
+                progressCallback(LoadState.read, cast(double)(readTotal) / cast(double)(audioBuffer.length));
             }
         }
         while(readCount && readTotal < audioBuffer.length);
@@ -177,18 +177,18 @@ public:
                                     baseName(stripExtension(fileName)));
 
         // resample, if necessary
-        newRegion.convertSampleRate(sampleRate, loadCallback);
-        newRegion.computeOverview(loadCallback);
-        if(loadCallback) {
-            loadCallback(LoadState.complete, 1.0);
+        newRegion.convertSampleRate(sampleRate, progressCallback);
+        newRegion.computeOverview(progressCallback);
+        if(progressCallback) {
+            progressCallback(LoadState.complete, 1.0);
         }
         return newRegion;
     }
 
     // reanalyze the entire audio data for this region, in the case of edits
-    void computeOverview(LoadState.Callback loadCallback = null) {
-        if(loadCallback) {
-            loadCallback(LoadState.computeOverview, 0);
+    void computeOverview(LoadState.Callback progressCallback = null) {
+        if(progressCallback) {
+            progressCallback(LoadState.computeOverview, 0);
         }
 
         // initialize the cache
@@ -202,15 +202,15 @@ public:
             _waveformCacheList ~= channelCache;
         }
 
-        if(loadCallback) {
-            loadCallback(LoadState.computeOverview, 1);
+        if(progressCallback) {
+            progressCallback(LoadState.computeOverview, 1);
         }
     }
 
-    void convertSampleRate(nframes_t newSampleRate, LoadState.Callback loadCallback = null) {
+    void convertSampleRate(nframes_t newSampleRate, LoadState.Callback progressCallback = null) {
         if(newSampleRate != _sampleRate && newSampleRate > 0) {
-            if(loadCallback) {
-                loadCallback(LoadState.resample, 0);
+            if(progressCallback) {
+                progressCallback(LoadState.resample, 0);
             }
 
             // constant indicating the algorithm to use for sample rate conversion
@@ -262,8 +262,8 @@ public:
                 }
             }
 
-            if(loadCallback) {
-                loadCallback(LoadState.resample, 1);
+            if(progressCallback) {
+                progressCallback(LoadState.resample, 1);
             }
         }
     }
@@ -280,13 +280,16 @@ public:
 
     // returns an array of frames at which an onset occurs, with frames given locally for this region
     // all channels are summed before computing onsets
-    nframes_t[] getOnsetsLinkedChannels(ref const(OnsetParams) params) const {
-        return _getOnsets(params, true);
+    nframes_t[] getOnsetsLinkedChannels(ref const(OnsetParams) params,
+                                        ComputeOnsetsState.Callback progressCallback = null) const {
+        return _getOnsets(params, true, 0, progressCallback);
     }
 
     // returns an array of frames at which an onset occurs, with frames given locally for this region
-    nframes_t[] getOnsetsSingleChannel(ref const(OnsetParams) params, channels_t channelIndex) const {
-        return _getOnsets(params, false, channelIndex);
+    nframes_t[] getOnsetsSingleChannel(ref const(OnsetParams) params,
+                                       channels_t channelIndex,
+                                       ComputeOnsetsState.Callback progressCallback = null) const {
+        return _getOnsets(params, false, channelIndex, progressCallback);
     }
 
     // normalize region to the given maximum gain, in dBFS
@@ -476,7 +479,15 @@ private:
         _minMaxChannel(channelIndex, _nChannels, minSample, maxSample, _audioBuffer);
     }
 
-    nframes_t[] _getOnsets(ref const(OnsetParams) params, bool linkChannels, channels_t channelIndex = 0) const {
+    // channelIndex is ignored when linkChannels == true
+    nframes_t[] _getOnsets(ref const(OnsetParams) params,
+                           bool linkChannels,
+                           channels_t channelIndex,
+                           ComputeOnsetsState.Callback progressCallback = null) const {
+        immutable(nframes_t) framesPerProgressStep =
+            (nframes / ComputeOnsetsState.stepsPerStage) * (linkChannels ? 1 : nChannels);
+        nframes_t progressStep;
+
         immutable(uint) windowSize = 512;
         immutable(uint) hopSize = 256;
         string onsetMethod = "default";
@@ -525,6 +536,19 @@ private:
                 auto lastOnset = aubio_onset_get_last(o);
                 if(lastOnset != 0) {
                     app.put(lastOnset);
+                }
+            }
+
+            if((samplesRead > progressStep) && progressCallback) {
+                progressStep = samplesRead + framesPerProgressStep;
+                if(linkChannels) {
+                    progressCallback(ComputeOnsetsState.computeOnsets,
+                                     cast(double)(samplesRead) / cast(double)(nframes));
+                }
+                else {
+                    progressCallback(ComputeOnsetsState.computeOnsets,
+                                     cast(double)(samplesRead + nframes * channelIndex) /
+                                     cast(double)(nframes * nChannels));
                 }
             }
         }
@@ -830,9 +854,8 @@ private extern(C) @nogc nothrow {
     char* coreAudioErrorString();
     bool coreAudioInit(nframes_t sampleRate, channels_t nChannels, AudioCallback callback);
     void coreAudioCleanup();
+    alias AudioCallback = void function(nframes_t, channels_t, sample_t*);
 }
-
-private extern(C) alias AudioCallback = void function(nframes_t, channels_t, sample_t*);
 
 final class CoreAudioMixer : Mixer {
 public:
@@ -1003,18 +1026,43 @@ public:
         }
 
         void computeOnsetsIndependentChannels() {
-            // compute onsets independently for each channel
-            _onsets = new nframes_t[][](region.nChannels);
-            for(channels_t c = 0; c < region.nChannels; ++c) {
-                _onsets[c] = region.getOnsetsSingleChannel(onsetParams, c);
-            }
+            _displayComputeOnsetsProgressDialog(
+                region.name,
+                delegate void(Region.ComputeOnsetsState.Callback progressCallback) {
+                    if(progressCallback) {
+                        progressCallback(Region.ComputeOnsetsState.computeOnsets, 0);
+                    }
+
+                    // compute onsets independently for each channel
+                    _onsets = new nframes_t[][](region.nChannels);
+                    for(channels_t channelIndex = 0; channelIndex < region.nChannels; ++channelIndex) {
+                        _onsets[channelIndex] =
+                            region.getOnsetsSingleChannel(onsetParams, channelIndex, progressCallback);
+                    }
+
+                    if(progressCallback) {
+                        progressCallback(Region.ComputeOnsetsState.complete, 1);
+                    }
+                });
         }
 
         void computeOnsetsLinkedChannels() {
-            // compute onsets for summed channels
-            if(region.nChannels > 1) {
-                _onsetsLinked = region.getOnsetsLinkedChannels(onsetParams);
-            }
+            _displayComputeOnsetsProgressDialog(
+                region.name,
+                delegate void(Region.ComputeOnsetsState.Callback progressCallback) {
+                    if(progressCallback) {
+                        progressCallback(Region.ComputeOnsetsState.computeOnsets, 0);
+                    }
+            
+                    // compute onsets for summed channels
+                    if(region.nChannels > 1) {
+                        _onsetsLinked = region.getOnsetsLinkedChannels(onsetParams, progressCallback);
+                    }
+
+                    if(progressCallback) {
+                        progressCallback(Region.ComputeOnsetsState.complete, 1);
+                    }
+                });
         }
 
         void computeOnsets() {
@@ -1665,13 +1713,14 @@ public:
         return trackView;
     }
 
+    enum progressMessageTimeout = 10.msecs;
     alias RegionLoadTask = Tuple!(string, typeof(task(&Region.fromFile,
                                                       string.init,
                                                       nframes_t.init,
                                                       Region.LoadState.Callback.init)));
     void loadRegionsFromFiles(const(string[]) fileNames) {
         Tid callbackTid = thisTid;
-        void loadCallback(Region.LoadState.Stage stage, double stageFraction) {
+        void progressCallback(Region.LoadState.Stage stage, double stageFraction) {
             send(callbackTid, Region.LoadState(stage, stageFraction));
         }
 
@@ -1680,7 +1729,7 @@ public:
             regionTaskList.put(RegionLoadTask(baseName(fileName), task(&Region.fromFile,
                                                                        fileName,
                                                                        _mixer.sampleRate,
-                                                                       &loadCallback)));
+                                                                       &progressCallback)));
         }
 
         if(regionTaskList.data.length > 0) {
@@ -1808,7 +1857,7 @@ private:
         loadRegionsFromFiles(fileNames.data);
     }
 
-    Tuple!(Dialog, ProgressBar, Label) _createProgressDialog() {
+    Tuple!(Dialog, ProgressBar, Label) _createProgressDialog(bool cancelButton = true) {
         auto progressDialog = new Dialog();
         progressDialog.setDefaultSize(350, 75);
         progressDialog.setTransientFor(_parentWindow);
@@ -1821,11 +1870,12 @@ private:
         auto progressLabel = new Label(string.init);
         dialogBox.packStart(progressLabel, false, false, 10);
 
-        void onProgressCancel(Button button) {
-            progressDialog.response(ResponseType.CANCEL);
+        if(cancelButton) {
+            void onProgressCancel(Button button) {
+                progressDialog.response(ResponseType.CANCEL);
+            }
+            dialogBox.packEnd(_createCancelButton(&onProgressCancel), false, false, 10);
         }
-
-        dialogBox.packEnd(_createCancelButton(&onProgressCancel), false, false, 10);
 
         return tuple(progressDialog, progressBar, progressLabel);
     }
@@ -1848,11 +1898,10 @@ private:
             }
             beginRegionLoadTask(regionTask);
 
+            Timeout progressTimeout;
             bool onProgressRefresh() {
-                enum messageTimeout = 10.msecs;
-
                 bool regionFinished;
-                receiveTimeout(messageTimeout,
+                receiveTimeout(progressMessageTimeout,
                                (Region.LoadState loadState) {
                                    progressBar.setFraction(loadState.completionFraction);
                                    final switch(loadState.stage) {
@@ -1892,24 +1941,71 @@ private:
                         beginRegionLoadTask(regionTask);
                     }
                     else {
-                        progressDialog.response(ResponseType.ACCEPT);
+                        if(progressDialog.getWidgetStruct() !is null) {
+                            progressDialog.response(ResponseType.ACCEPT);
+                        }
+                        progressTimeout.destroy();
+                        _canvas.redraw();
                     }
                 }
 
                 return true;
             }
-            auto progressTimeout = new Timeout(cast(uint)(1.0 / refreshRate * 1000), &onProgressRefresh, false);
+            progressTimeout = new Timeout(cast(uint)(1.0 / refreshRate * 1000), &onProgressRefresh, false);
 
             progressDialog.showAll();        
             progressDialog.run();
-            progressTimeout.destroy();
         }
 
-        progressDialog.destroy();
+        if(progressDialog.getWidgetStruct() !is null) {
+            progressDialog.destroy();
+        }
     }
 
-    void displayComputeOnsetProgressDialog() {
-        
+    alias ComputeOnsetsDelegate = void delegate(Region.ComputeOnsetsState.Callback progressCallback);
+    void _displayComputeOnsetsProgressDialog(string regionName, ComputeOnsetsDelegate computeOnsetDelegate) {
+        auto progressDialogTuple = _createProgressDialog(false);
+        auto progressDialog = progressDialogTuple[0];
+        auto progressBar = progressDialogTuple[1];
+        auto progressLabel = progressDialogTuple[2];
+
+        progressDialog.setTitle(regionName);
+        progressLabel.setText("Computing onsets for " ~ regionName ~ "...");
+
+        Tid callbackTid = thisTid;
+        void progressCallback(Region.ComputeOnsetsState.Stage stage, double stageFraction) {
+            send(callbackTid, Region.ComputeOnsetsState(stage, stageFraction));
+        }
+        setMaxMailboxSize(thisTid,
+                          Region.ComputeOnsetsState.nStages * Region.ComputeOnsetsState.stepsPerStage,
+                          OnCrowding.block);
+        auto computeOnsetTask = task(computeOnsetDelegate, &progressCallback);
+        computeOnsetTask.executeInNewThread();
+
+        Timeout progressTimeout;
+        bool onProgressRefresh() {
+            bool onsetsFinished;
+            receiveTimeout(progressMessageTimeout,
+                           (Region.ComputeOnsetsState computeOnsetState) {
+                               progressBar.setFraction(computeOnsetState.completionFraction);
+                               if(computeOnsetState.stage == Region.ComputeOnsetsState.complete) {
+                                   computeOnsetTask.yieldForce;
+                                   if(progressDialog.getWidgetStruct() !is null) {
+                                       progressDialog.response(ResponseType.ACCEPT);
+                                   }
+                                   progressTimeout.destroy();
+                                   _canvas.redraw();
+                               }
+                           });
+            return true;
+        }
+        progressTimeout = new Timeout(cast(uint)(1.0 / refreshRate * 1000), &onProgressRefresh, false);
+
+        progressDialog.showAll();        
+        progressDialog.run();
+        if(progressDialog.getWidgetStruct() !is null) {
+            progressDialog.destroy();
+        }
     }
 
     void _createEditRegionMenu() {
@@ -1985,10 +2081,10 @@ private:
         void onOnsetDetectionOK(Button button) {
             _editRegion.onsetParams.onsetThreshold = _onsetThresholdAdjustment.getValue();
             _editRegion.onsetParams.silenceThreshold = _silenceThresholdAdjustment.getValue();
+            _onsetDetectionDialog.destroy();
+
             _editRegion.computeOnsets();
             _canvas.redraw();
-
-            _onsetDetectionDialog.destroy();
         }
 
         void onOnsetDetectionCancel(Button button) {
@@ -3588,12 +3684,18 @@ void main(string[] args) {
 
             default:
                 version(OSX) {
-                    mixer = new CoreAudioMixer(appName);
+                    version(HAVE_COREAUDIO) {
+                        mixer = new CoreAudioMixer(appName);
+                    }
+                    else {
+                        mixer = new JackMixer(appName);
+                    }
                 }
                 else {
                     mixer = new JackMixer(appName);
                 }
         }
+        assert(mixer !is null);
 
         Main.init(args);
         AppMainWindow mainWindow = new AppMainWindow(appName, mixer);
