@@ -981,29 +981,114 @@ public:
         _mixer = mixer;
         _samplesPerPixel = defaultSamplesPerPixel;
 
-        super(Orientation.VERTICAL, 0);
-        auto hBox = new Box(Orientation.HORIZONTAL, 0);
         _canvas = new Canvas();
+        _hScroll = new ArrangeHScroll();
+        _vScroll = new ArrangeVScroll();
 
-        _vAdjust = new Adjustment(0, 0, 0, 0, 0, 0);
-        _configureVScroll();
-        _vAdjust.addOnValueChanged(&_onVScrollChanged);
-        _vScroll = new Scrollbar(Orientation.VERTICAL, _vAdjust);
+        super(Orientation.HORIZONTAL, 0);
+        auto vBox = new Box(Orientation.VERTICAL, 0);
+        vBox.packStart(_canvas, true, true, 0);
+        vBox.packEnd(_hScroll, false, false, 0);
+        packStart(vBox, true, true, 0);
+        packEnd(_vScroll, false, false, 0);
 
-        _hAdjust = new Adjustment(0, 0, 0, 0, 0, 0);
-        _configureHScroll();
-        _hAdjust.addOnValueChanged(&_onHScrollChanged);
-        _hScroll = new Scrollbar(Orientation.HORIZONTAL, _hAdjust);
-
-        hBox.packStart(_canvas, true, true, 0);
-        hBox.packEnd(_vScroll, false, false, 0);
-        packStart(hBox, true, true, 0);
-        packEnd(_hScroll, false, false, 0);
+        showAll();
 
         _createArrangeMenu();
         _createEditRegionMenu();
+    }
 
-        showAll();
+    final class ArrangeHScroll : Scrollbar {
+    public:
+        this() {
+            _hAdjust = new Adjustment(0, 0, 0, 0, 0, 0);
+            reconfigure();
+            _hAdjust.addOnValueChanged(&onHScrollChanged);
+            super(Orientation.HORIZONTAL, _hAdjust);
+        }
+
+        void onHScrollChanged(Adjustment adjustment) {
+            if(_centeredView) {
+                _centeredView = false;
+            }
+            else if(_action == Action.centerView ||
+                    _action == Action.centerViewStart ||
+                    _action == Action.centerViewEnd) {
+                _setAction(Action.none);
+            }
+            _viewOffset = cast(nframes_t)(adjustment.getValue());
+            _canvas.redraw();
+        }
+
+        void reconfigure() {
+            if(viewMaxSamples > 0) {
+                _hAdjust.configure(_viewOffset, // scroll bar position
+                                   viewMinSamples, // min position
+                                   viewMaxSamples, // max position
+                                   stepSamples,
+                                   stepSamples * 5,
+                                   viewWidthSamples); // scroll bar size
+            }
+        }
+        void update() {
+            _hAdjust.setValue(_viewOffset);
+        }
+
+        @property nframes_t stepSamples() {
+            enum stepDivisor = 20;
+
+            return cast(nframes_t)(viewWidthSamples / stepDivisor);
+        }
+
+    private:
+        Adjustment _hAdjust;
+    }
+
+    final class ArrangeVScroll : Scrollbar {
+    public:
+        this() {
+            _vAdjust = new Adjustment(0, 0, 0, 0, 0, 0);
+            reconfigure();
+            _vAdjust.addOnValueChanged(&onVScrollChanged);
+            super(Orientation.VERTICAL, _vAdjust);
+        }
+
+        void onVScrollChanged(Adjustment adjustment) {
+            _verticalPixelsOffset = cast(pixels_t)(_vAdjust.getValue());
+            _canvas.redraw();
+        }
+
+        void reconfigure() {
+            // add some padding to the bottom of the visible canvas
+            pixels_t totalHeightPixels = _canvas.firstTrackYOffset + (defaultTrackHeightPixels / 2);
+
+            // determine the total height of all tracks in pixels
+            foreach(track; _trackViews) {
+                totalHeightPixels += track.heightPixels;
+            }
+
+            _vAdjust.configure(_verticalPixelsOffset,
+                               0,
+                               totalHeightPixels,
+                               totalHeightPixels / 20,
+                               totalHeightPixels / 10,
+                               _canvas.viewHeightPixels);
+        }
+
+        @property void pixelsOffset(pixels_t newValue) {
+            _vAdjust.setValue(cast(pixels_t)(newValue));
+        }
+
+        @property pixels_t pixelsOffset() {
+            return cast(pixels_t)(_vAdjust.getValue());
+        }
+
+        @property pixels_t stepIncrement() {
+            return cast(pixels_t)(_vAdjust.getStepIncrement());
+        }
+
+    private:
+        Adjustment _vAdjust;
     }
 
     class RegionView {
@@ -1645,8 +1730,8 @@ public:
             _regionViews ~= regionView;
             this.outer._regionViews ~= regionView;
 
-            _configureHScroll();
-            _configureVScroll();
+            _hScroll.reconfigure();
+            _vScroll.reconfigure();
         }
         void addRegion(Region region) {
             addRegion(region, _mixer.sampleRate);
@@ -1741,6 +1826,9 @@ public:
     @property nframes_t viewOffset() const { return _viewOffset; }
     @property nframes_t viewWidthSamples() { return _canvas.viewWidthPixels * _samplesPerPixel; }
 
+    @property nframes_t viewMinSamples() { return 0; }
+    @property nframes_t viewMaxSamples() { return _mixer.lastFrame + viewWidthSamples; }
+
 private:
     enum _zoomStep = 10;
     @property size_t _zoomMultiplier() const {
@@ -1770,53 +1858,6 @@ private:
     enum _verticalZoomFactor = 1.2f;
     enum _verticalZoomFactorMax = _verticalZoomFactor * 3;
     enum _verticalZoomFactorMin = _verticalZoomFactor / 10;
-
-    @property nframes_t _viewMinSamples() { return 0; }
-    @property nframes_t _viewMaxSamples() { return _mixer.lastFrame + viewWidthSamples; }
-
-    void _configureHScroll() {
-        _hAdjust.configure(_viewOffset,
-                           _viewMinSamples,
-                           _viewMaxSamples,
-                           _samplesPerPixel * 50,
-                           _samplesPerPixel * 100,
-                           viewWidthSamples);
-    }
-
-    void _configureVScroll() {
-        // add some padding to the bottom of the visible canvas
-        pixels_t totalHeightPixels = _canvas.firstTrackYOffset + (defaultTrackHeightPixels / 2);
-
-        // determine the total height of all tracks in pixels
-        foreach(track; _trackViews) {
-            totalHeightPixels += track.heightPixels;
-        }
-
-        _vAdjust.configure(_verticalPixelsOffset,
-                           0,
-                           totalHeightPixels,
-                           totalHeightPixels / 20,
-                           totalHeightPixels / 10,
-                           _canvas.viewHeightPixels);
-    }
-
-    void _onHScrollChanged(Adjustment adjustment) {
-        if(_centeredView) {
-            _centeredView = false;
-        }
-        else if(_action == Action.centerView ||
-           _action == Action.centerViewStart ||
-           _action == Action.centerViewEnd) {
-            _setAction(Action.none);
-        }
-        _viewOffset = cast(typeof(_viewOffset))(adjustment.getValue());
-        _canvas.redraw();
-    }
-
-    void _onVScrollChanged(Adjustment adjustment) {
-        _verticalPixelsOffset = cast(pixels_t)(_vAdjust.getValue());
-        _canvas.redraw();
-    }
 
     void _createArrangeMenu() {
         _arrangeMenu = new Menu();
@@ -2256,7 +2297,7 @@ private:
             _samplesPerPixel = max(_samplesPerPixel - step, 10);
         }
         _canvas.redraw();
-        _configureHScroll();
+        _hScroll.reconfigure();
     }
     void _zoomOut() {
         auto zoomCount = _zoomMultiplier;
@@ -2265,18 +2306,18 @@ private:
             _samplesPerPixel += step;
         }
         _canvas.redraw();
-        _configureHScroll();
+        _hScroll.reconfigure();
     }
 
     void _zoomInVertical() {
         _verticalScaleFactor = max(_verticalScaleFactor / _verticalZoomFactor, _verticalZoomFactorMin);
         _canvas.redraw();
-        _configureVScroll();
+        _vScroll.reconfigure();
     }
     void _zoomOutVertical() {
         _verticalScaleFactor = min(_verticalScaleFactor * _verticalZoomFactor, _verticalZoomFactorMax);
         _canvas.redraw();
-        _configureVScroll();
+        _vScroll.reconfigure();
     }
 
     void _setCursor() {
@@ -2429,8 +2470,8 @@ private:
 
             drawBackground(cr);
             drawTracks(cr);
-            drawTimestrip(cr);
             drawMarkers(cr);
+            drawTimestrip(cr);
             drawTransport(cr);
             drawSelectBox(cr);
 
@@ -2476,10 +2517,12 @@ private:
             enum secondaryTickHeightFactor = 0.35;
             enum tertiaryTickHeightFactor = 0.2;
 
+            enum timestripBackgroundPadding = 2;
+
             cr.save();
 
             // draw a black background for the timestrip
-            cr.rectangle(0, 0, viewWidthPixels, timestripHeightPixels);
+            cr.rectangle(0, 0, viewWidthPixels, timestripHeightPixels - timestripBackgroundPadding);
             cr.setSourceRgb(0.0, 0.0, 0.0);
             cr.fill();
 
@@ -2702,18 +2745,18 @@ private:
             cr.setAntialias(cairo_antialias_t.NONE);
             cr.setLineWidth(1.0);
 
-            // draw the visible markers
-            pixels_t yOffset = markerYOffset + markerHeightPixels;
+            // draw the visible user-defined markers
+            pixels_t yOffset = markerYOffset - _verticalPixelsOffset;
             foreach(ref marker; _markers) {
                 if(marker.offset >= viewOffset && marker.offset < viewOffset + viewWidthSamples) {
                     pixels_t xOffset = (marker.offset - viewOffset) / samplesPerPixel;
 
                     cr.setAntialias(cairo_antialias_t.GOOD);
-                    cr.moveTo(xOffset, yOffset);
-                    cr.lineTo(xOffset - markerHeadWidthPixels / 2, markerYOffset + markerHeightPixels * taperFactor);
-                    cr.lineTo(xOffset - markerHeadWidthPixels / 2, markerYOffset);
-                    cr.lineTo(xOffset + markerHeadWidthPixels / 2, markerYOffset);
-                    cr.lineTo(xOffset + markerHeadWidthPixels / 2, markerYOffset + markerHeightPixels * taperFactor);
+                    cr.moveTo(xOffset, yOffset + markerHeightPixels);
+                    cr.lineTo(xOffset - markerHeadWidthPixels / 2, yOffset + markerHeightPixels * taperFactor);
+                    cr.lineTo(xOffset - markerHeadWidthPixels / 2, yOffset);
+                    cr.lineTo(xOffset + markerHeadWidthPixels / 2, yOffset);
+                    cr.lineTo(xOffset + markerHeadWidthPixels / 2, yOffset + markerHeightPixels * taperFactor);
                     cr.closePath();
                     cr.setSourceRgb(1.0, 0.90, 0.0);
                     cr.fillPreserve();
@@ -2721,7 +2764,7 @@ private:
                     cr.stroke();
 
                     cr.setAntialias(cairo_antialias_t.NONE);
-                    cr.moveTo(xOffset, yOffset);
+                    cr.moveTo(xOffset, yOffset + markerHeightPixels);
                     cr.lineTo(xOffset, viewHeightPixels);
                     cr.stroke();
 
@@ -2729,7 +2772,7 @@ private:
                     _markerLabelLayout.setText(marker.name);
                     int widthPixels, heightPixels;
                     _markerLabelLayout.getPixelSize(widthPixels, heightPixels);
-                    cr.moveTo(xOffset - widthPixels / 2, markerYOffset);
+                    cr.moveTo(xOffset - widthPixels / 2, yOffset);
                     PgCairo.updateLayout(cr, _markerLabelLayout);
                     PgCairo.showLayout(cr, _markerLabelLayout);
                 }
@@ -2770,8 +2813,8 @@ private:
             _viewWidthPixels = cast(pixels_t)(size.width);
             _viewHeightPixels = cast(pixels_t)(size.height);
 
-            _configureHScroll();
-            _configureVScroll();
+            _hScroll.reconfigure();
+            _vScroll.reconfigure();
         }
 
         void onSelectSubregion() {
@@ -3259,13 +3302,13 @@ private:
                             _zoomOut();
                         }
                         else {
-                            if(_hAdjust.getStepIncrement() <= viewOffset) {
-                                _viewOffset -= _hAdjust.getStepIncrement();
+                            if(_hScroll.stepSamples <= viewOffset) {
+                                _viewOffset -= _hScroll.stepSamples;
                             }
                             else {
-                                _viewOffset = _viewMinSamples;
+                                _viewOffset = viewMinSamples;
                             }
-                            _hAdjust.setValue(viewOffset);
+                            _hScroll.update();
                             if(_action == Action.centerView ||
                                _action == Action.centerViewStart ||
                                _action == Action.centerViewEnd) {
@@ -3280,13 +3323,13 @@ private:
                             _zoomIn();
                         }
                         else {
-                            if(_hAdjust.getStepIncrement() + viewOffset <= _mixer.lastFrame) {
-                                _viewOffset += _hAdjust.getStepIncrement();
+                            if(_hScroll.stepSamples + viewOffset <= _mixer.lastFrame) {
+                                _viewOffset += _hScroll.stepSamples;
                             }
                             else {
                                 _viewOffset = _mixer.lastFrame;
                             }
-                            _hAdjust.setValue(viewOffset);
+                            _hScroll.update();
                             if(_action == Action.centerView ||
                                _action == Action.centerViewStart ||
                                _action == Action.centerViewEnd) {
@@ -3301,8 +3344,8 @@ private:
                             _zoomOutVertical();
                         }
                         else {
-                            _vAdjust.setValue(_vAdjust.getValue() - _vAdjust.getStepIncrement());
-                            _verticalPixelsOffset = cast(pixels_t)(_vAdjust.getValue());
+                            _vScroll.pixelsOffset = _vScroll.pixelsOffset - _vScroll.stepIncrement;
+                            _verticalPixelsOffset = _vScroll.pixelsOffset;
                             redraw();
                         }
                         break;
@@ -3312,8 +3355,8 @@ private:
                             _zoomInVertical();
                         }
                         else {
-                            _vAdjust.setValue(_vAdjust.getValue() + _vAdjust.getStepIncrement());
-                            _verticalPixelsOffset = cast(pixels_t)(_vAdjust.getValue());
+                            _vScroll.pixelsOffset = _vScroll.pixelsOffset + _vScroll.stepIncrement;
+                            _verticalPixelsOffset = cast(pixels_t)(_vScroll.pixelsOffset);
                             redraw();
                         }
                         break;
@@ -3403,15 +3446,15 @@ private:
                     case GdkKeysyms.GDK_Aring:
                         // move the transport and view to the beginning of the project
                         _mixer.transportOffset = 0;
-                        _viewOffset = _viewMinSamples;
+                        _viewOffset = viewMinSamples;
                         redraw();
                         break;
 
                     case GdkKeysyms.GDK_acute:
                         // move the transport to end of the project and center the view on the transport
                         _mixer.transportOffset = _mixer.lastFrame;
-                        if(_viewMaxSamples >= (viewWidthSamples / 2) * 3) {
-                            _viewOffset = _viewMaxSamples - (viewWidthSamples / 2) * 3;
+                        if(viewMaxSamples >= (viewWidthSamples / 2) * 3) {
+                            _viewOffset = viewMaxSamples - (viewWidthSamples / 2) * 3;
                         }
                         redraw();
                         break;
@@ -3499,16 +3542,16 @@ private:
                                 _viewOffset = _mixer.transportOffset - viewWidthSamples;
                             }
                             else {
-                                _viewOffset = _viewMinSamples;
+                                _viewOffset = viewMinSamples;
                             }
                             _setAction(Action.centerView);
                         }
                         else {
                             if(_mixer.transportOffset < viewWidthSamples / 2) {
-                                _viewOffset = _viewMinSamples;
+                                _viewOffset = viewMinSamples;
                             }
-                            else if(_mixer.transportOffset > _viewMaxSamples - viewWidthSamples / 2) {
-                                _viewOffset = _viewMaxSamples;
+                            else if(_mixer.transportOffset > viewMaxSamples - viewWidthSamples / 2) {
+                                _viewOffset = viewMaxSamples;
                             }
                             else {
                                 _viewOffset = _mixer.transportOffset - viewWidthSamples / 2;
@@ -3517,7 +3560,7 @@ private:
                         }
                         _centeredView = true;
                         redraw();
-                        _hAdjust.setValue(viewOffset);
+                        _hScroll.update();
                         break;
 
                     case GdkKeysyms.GDK_m:
@@ -3569,10 +3612,8 @@ private:
     nframes_t _viewOffset;
 
     Canvas _canvas;
-    Adjustment _hAdjust;
-    Adjustment _vAdjust;
-    Scrollbar _hScroll;
-    Scrollbar _vScroll;
+    ArrangeHScroll _hScroll;
+    ArrangeVScroll _vScroll;
     Timeout _refreshTimeout;
 
     Menu _arrangeMenu;
