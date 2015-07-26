@@ -91,20 +91,15 @@ alias pixels_t = int;
 
 class Region {
 public:
-    struct LoadState {
-        enum Stage : int {
-            read,
-            resample,
-            computeOverview,
-            complete
-        }
+    struct ProgressState(Stages...) {
+    public:
+        mixin("enum Stage : int { " ~ _enumStr(Stages) ~ " complete }");
         alias Stage this;
 
         alias Callback = void delegate(Stage stage, double stageFraction);
 
         enum nStages = (EnumMembers!Stage).length - 1;
         enum stepsPerStage = 20;
-
         this(Stage stage, double stageFraction) {
             this.stage = stage;
             completionFraction = (stage == complete) ? 1.0 : (stage + stageFraction) / nStages;
@@ -112,7 +107,19 @@ public:
 
         Stage stage;
         double completionFraction;
+
+    private:
+        static auto _enumStr(T...)(T t) {
+            string result;
+            foreach(i; t) {
+                result ~= i ~ ", ";
+            }
+            return result;
+        }
     }
+
+    alias LoadState = ProgressState!("read", "resample", "computeOverview");
+    alias ComputeOnsetState = ProgressState!("computeOnsets");
 
     // create a region from a file, leaving the sample rate unaltered
     static Region fromFile(string fileName, nframes_t sampleRate, LoadState.Callback loadCallback = null) {
@@ -1677,12 +1684,7 @@ public:
         }
 
         if(regionTaskList.data.length > 0) {
-            _createImportProgressDialog(regionTaskList.data);
-            scope(exit) {
-                _importProgressTimeout.destroy();
-                _importProgressDialog.destroy();
-            }
-            _importProgressDialog.run();
+            _displayImportProgressDialog(regionTaskList.data);
         }
     }
 
@@ -1806,24 +1808,33 @@ private:
         loadRegionsFromFiles(fileNames.data);
     }
 
-    void _createImportProgressDialog(RegionLoadTask[] regionTaskList) {
-        _importProgressDialog = new Dialog();
-        _importProgressDialog.setDefaultSize(350, 75);
-        _importProgressDialog.setTransientFor(_parentWindow);
+    Tuple!(Dialog, ProgressBar, Label) _createProgressDialog() {
+        auto progressDialog = new Dialog();
+        progressDialog.setDefaultSize(350, 75);
+        progressDialog.setTransientFor(_parentWindow);
 
-        auto dialogBox = _importProgressDialog.getContentArea();
-        _importProgressBar = new ProgressBar();
-        _importProgressBar.setFraction(0);
-        dialogBox.packStart(_importProgressBar, false, false, 20);
+        auto dialogBox = progressDialog.getContentArea();
+        auto progressBar = new ProgressBar();
+        progressBar.setFraction(0);
+        dialogBox.packStart(progressBar, false, false, 20);
 
-        _importProgressLabel = new Label(string.init);
-        dialogBox.packStart(_importProgressLabel, false, false, 10);
+        auto progressLabel = new Label(string.init);
+        dialogBox.packStart(progressLabel, false, false, 10);
 
         void onProgressCancel(Button button) {
-            _importProgressDialog.response(ResponseType.CANCEL);
+            progressDialog.response(ResponseType.CANCEL);
         }
 
         dialogBox.packEnd(_createCancelButton(&onProgressCancel), false, false, 10);
+
+        return tuple(progressDialog, progressBar, progressLabel);
+    }
+
+    void _displayImportProgressDialog(RegionLoadTask[] regionTaskList) {
+        auto progressDialogTuple = _createProgressDialog();
+        auto progressDialog = progressDialogTuple[0];
+        auto progressBar = progressDialogTuple[1];
+        auto progressLabel = progressDialogTuple[2];
 
         if(regionTaskList.length > 0) {
             setMaxMailboxSize(thisTid, Region.LoadState.nStages * Region.LoadState.stepsPerStage, OnCrowding.block);
@@ -1832,7 +1843,7 @@ private:
             RegionLoadTask regionTask = regionTaskList[regionTaskIndex];
 
             void beginRegionLoadTask(RegionLoadTask regionTask) {
-                _importProgressDialog.setTitle(regionTask[0]);
+                progressDialog.setTitle(regionTask[0]);
                 regionTask[1].executeInNewThread();
             }
             beginRegionLoadTask(regionTask);
@@ -1843,22 +1854,19 @@ private:
                 bool regionFinished;
                 receiveTimeout(messageTimeout,
                                (Region.LoadState loadState) {
-                                   _importProgressBar.setFraction(loadState.completionFraction);
+                                   progressBar.setFraction(loadState.completionFraction);
                                    final switch(loadState.stage) {
                                        string labelText;
                                        case Region.LoadState.read:
-                                           _importProgressLabel.setText("Reading " ~
-                                                                        regionTask[0] ~ "...");
+                                           progressLabel.setText("Reading " ~ regionTask[0] ~ "...");
                                            break;
 
                                        case Region.LoadState.resample:
-                                           _importProgressLabel.setText("Resampling " ~
-                                                                        regionTask[0] ~ "...");
+                                           progressLabel.setText("Resampling " ~ regionTask[0] ~ "...");
                                            break;
 
                                        case Region.LoadState.computeOverview:
-                                           _importProgressLabel.setText("Computing overview for " ~
-                                                                        regionTask[0] ~ "...");
+                                           progressLabel.setText("Computing overview for " ~ regionTask[0] ~ "...");
                                            break;
 
                                        case Region.LoadState.complete:
@@ -1884,16 +1892,24 @@ private:
                         beginRegionLoadTask(regionTask);
                     }
                     else {
-                        _importProgressDialog.response(ResponseType.ACCEPT);
+                        progressDialog.response(ResponseType.ACCEPT);
                     }
                 }
 
                 return true;
             }
-            _importProgressTimeout = new Timeout(cast(uint)(1.0 / refreshRate * 1000), &onProgressRefresh, false);
+            auto progressTimeout = new Timeout(cast(uint)(1.0 / refreshRate * 1000), &onProgressRefresh, false);
+
+            progressDialog.showAll();        
+            progressDialog.run();
+            progressTimeout.destroy();
         }
 
-        _importProgressDialog.showAll();
+        progressDialog.destroy();
+    }
+
+    void displayComputeOnsetProgressDialog() {
+        
     }
 
     void _createEditRegionMenu() {
@@ -3465,11 +3481,6 @@ private:
 
     Menu _arrangeMenu;
     FileChooserDialog _importFileChooser;
-
-    Dialog _importProgressDialog;
-    Timeout _importProgressTimeout;
-    ProgressBar _importProgressBar;
-    Label _importProgressLabel;
 
     Menu _editRegionMenu;
     MenuItem _stretchSelectionMenuItem;
