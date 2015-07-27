@@ -86,8 +86,59 @@ else {
     alias sample_t = float;
 }
 alias channels_t = uint;
+alias ResizeDelegate = bool delegate(nframes_t);
 
 alias pixels_t = int;
+
+struct ScopedArray(T) if (is(T t == U[], U)) {
+public:
+    alias ArrayType = T;
+    ArrayType data;
+    alias data this;
+
+    this(ArrayType rhs) {
+        data = rhs;
+    }
+
+    void opAssign(ArrayType rhs) {
+        _destroyData();
+        data = rhs;
+    }
+
+    ~this() {
+        _destroyData();
+    }
+
+private:
+     template rank(T) {
+        static if(is(T t == U[], U)) {
+            enum size_t rank = 1 + rank!U;
+        }
+        else {
+            enum size_t rank = 0;
+        }
+    }
+
+    template destroySubArrays(string S, T) {
+        enum element = "element" ~ to!string(rank!T);
+
+        static if(rank!T > 1 && is(T t == U[], U)) {
+            enum rec = destroySubArrays!(element, U);
+        }
+        else {
+            enum rec = "";
+        }
+
+        enum destroySubArrays = "foreach(" ~ element ~ "; " ~ S ~ ") {" ~ rec ~ element ~ ".destroy(); }";
+    }
+
+    void _destroyData() {
+        static if(rank!ArrayType > 1) {
+            mixin(destroySubArrays!("data", ArrayType));
+        }
+        data.destroy();
+    }
+}
 
 class Region {
 public:
@@ -217,8 +268,8 @@ public:
             enum converter = SRC_SINC_BEST_QUALITY;
 
             // allocate audio buffers for input/output
-            float[] dataIn = new float[](_audioBuffer.length);
-            float[] dataOut;
+            ScopedArray!(float[]) dataIn = new float[](_audioBuffer.length);
+            ScopedArray!(float[]) dataOut;
 
             // libsamplerate requires floats
             static if(is(sample_t == float)) {
@@ -290,6 +341,188 @@ public:
                                        channels_t channelIndex,
                                        ComputeOnsetsState.Callback progressCallback = null) const {
         return _getOnsets(params, false, channelIndex, progressCallback);
+    }
+
+    // stretches the subregion between the given global indices according to stretchRatio
+    // note that this function does not recompute the overview
+    void stretchSubregion(nframes_t globalStartFrame, ref nframes_t globalEndFrame, double stretchRatio) {
+        immutable(channels_t) nChannels = this.nChannels;
+        immutable(nframes_t) localStartFrame = globalStartFrame - offset;
+
+        uint subregionLength = cast(uint)(globalEndFrame - globalStartFrame);
+        ScopedArray!(float[][]) subregionChannels = new float[][](nChannels);
+        ScopedArray!(float*[]) subregionPtr = new float*[](nChannels);
+        for(auto i = 0; i < nChannels; ++i) {
+            float[] subregion = new float[](subregionLength);
+            subregionChannels[i] = subregion;
+            subregionPtr[i] = subregion.ptr;
+        }
+
+        foreach(channels_t channelIndex, channel; subregionChannels) {
+            foreach(i, ref sample; channel) {
+                sample = _audioBuffer[(localStartFrame + i) * this.nChannels + channelIndex];
+            }
+        }
+
+        uint subregionOutputLength = cast(uint)(subregionLength * stretchRatio);
+        ScopedArray!(float[][]) subregionOutputChannels = new float[][](nChannels);
+        ScopedArray!(float*[]) subregionOutputPtr = new float*[](nChannels);
+        for(auto i = 0; i < nChannels; ++i) {
+            float[] subregionOutput = new float[](subregionOutputLength);
+            subregionOutputChannels[i] = subregionOutput;
+            subregionOutputPtr[i] = subregionOutput.ptr;
+        }
+
+        RubberBandState rState = rubberband_new(sampleRate,
+                                                nChannels,
+                                                RubberBandOption.RubberBandOptionProcessOffline,
+                                                stretchRatio,
+                                                1.0);
+        rubberband_set_max_process_size(rState, subregionLength);
+        rubberband_set_expected_input_duration(rState, subregionLength);
+        rubberband_study(rState, subregionPtr.ptr, subregionLength, 1);
+        rubberband_process(rState, subregionPtr.ptr, subregionLength, 1);
+        while(rubberband_available(rState) < subregionOutputLength) {}
+        rubberband_retrieve(rState, subregionOutputPtr.ptr, subregionOutputLength);
+        rubberband_delete(rState);
+
+        nframes_t newSubregionEndFrame = globalStartFrame + subregionOutputLength;
+        long sizeDelta =
+            (cast(long)(subregionOutputLength) - cast(long)(subregionLength)) * cast(long)(nChannels);
+        sample_t[] oldAudioBuffer = _audioBuffer;
+        sample_t[] newAudioBuffer = new sample_t[](oldAudioBuffer.length + sizeDelta);
+        newAudioBuffer[0 .. localStartFrame * nChannels] = oldAudioBuffer[0 .. localStartFrame * nChannels];
+        foreach(channels_t channelIndex, channel; subregionOutputChannels) {
+            foreach(i, sample; channel) {
+                newAudioBuffer[(localStartFrame + i) * this.nChannels + channelIndex] = sample;
+            }
+        }
+        newAudioBuffer[(newSubregionEndFrame - offset) * nChannels .. $] =
+            oldAudioBuffer[(globalEndFrame - offset) * nChannels .. $];
+        _audioBuffer = newAudioBuffer;
+        oldAudioBuffer.destroy();
+        _nframes = cast(nframes_t)(newAudioBuffer.length / nChannels);
+
+        globalEndFrame = newSubregionEndFrame;
+        if(resizeDelegate !is null) {
+            resizeDelegate(offset + nframes);
+        }
+    }
+
+    // stretch the audio such that the frame at globalSrcFrame becomes the frame at globalDestFrame
+    // if linkChannels is true, perform the stretch for all channels simultaneously, ignoring channelIndex
+    void stretchThreePoint(nframes_t globalStartFrame,
+                           nframes_t globalSrcFrame,
+                           nframes_t globalDestFrame,
+                           nframes_t globalEndFrame,
+                           bool linkChannels,
+                           channels_t singleChannelIndex = 0) {
+        immutable(channels_t) nChannels = linkChannels ? this.nChannels : 1;
+
+        immutable(double) firstScaleFactor = (globalSrcFrame > globalStartFrame) ?
+            (cast(double)(globalDestFrame - globalStartFrame) /
+             cast(double)(globalSrcFrame - globalStartFrame)) : 0;
+        immutable(double) secondScaleFactor = (globalEndFrame > globalSrcFrame) ?
+            (cast(double)(globalEndFrame - globalDestFrame) /
+             cast(double)(globalEndFrame - globalSrcFrame)) : 0;
+
+        uint firstHalfLength = cast(uint)(globalSrcFrame - globalStartFrame);
+        uint secondHalfLength = cast(uint)(globalEndFrame - globalSrcFrame);
+        ScopedArray!(float[][]) firstHalfChannels = new float[][](nChannels);
+        ScopedArray!(float[][]) secondHalfChannels = new float[][](nChannels);
+        ScopedArray!(float*[]) firstHalfPtr = new float*[](nChannels);
+        ScopedArray!(float*[]) secondHalfPtr = new float*[](nChannels);
+        for(auto i = 0; i < nChannels; ++i) {
+            float[] firstHalf = new float[](firstHalfLength);
+            float[] secondHalf = new float[](secondHalfLength);
+            firstHalfChannels[i] = firstHalf;
+            secondHalfChannels[i] = secondHalf;
+            firstHalfPtr[i] = firstHalf.ptr;
+            secondHalfPtr[i] = secondHalf.ptr;
+        }
+
+        if(linkChannels) {
+            foreach(channels_t channelIndex, channel; firstHalfChannels) {
+                foreach(i, ref sample; channel) {
+                    sample = _audioBuffer[(globalStartFrame + i) * this.nChannels + channelIndex];
+                }
+            }
+            foreach(channels_t channelIndex, channel; secondHalfChannels) {
+                foreach(i, ref sample; channel) {
+                    sample = _audioBuffer[(globalSrcFrame + i) * this.nChannels + channelIndex];
+                }
+            }
+        }
+        else {
+            foreach(i, ref sample; firstHalfChannels[0]) {
+                sample = _audioBuffer[(globalStartFrame + i) * this.nChannels + singleChannelIndex];
+            }
+            foreach(i, ref sample; secondHalfChannels[0]) {
+                sample = _audioBuffer[(globalSrcFrame + i) * this.nChannels + singleChannelIndex];
+            }
+        }
+
+        uint firstHalfOutputLength = cast(uint)(firstHalfLength * firstScaleFactor);
+        uint secondHalfOutputLength = cast(uint)(secondHalfLength * secondScaleFactor);
+        ScopedArray!(float[][]) firstHalfOutputChannels = new float[][](nChannels);
+        ScopedArray!(float[][]) secondHalfOutputChannels = new float[][](nChannels);
+        ScopedArray!(float*[]) firstHalfOutputPtr = new float*[](nChannels);
+        ScopedArray!(float*[]) secondHalfOutputPtr = new float*[](nChannels);
+        for(auto i = 0; i < nChannels; ++i) {
+            float[] firstHalfOutput = new float[](firstHalfOutputLength);
+            float[] secondHalfOutput = new float[](secondHalfOutputLength);
+            firstHalfOutputChannels[i] = firstHalfOutput;
+            secondHalfOutputChannels[i] = secondHalfOutput;
+            firstHalfOutputPtr[i] = firstHalfOutput.ptr;
+            secondHalfOutputPtr[i] = secondHalfOutput.ptr;
+        }
+
+        RubberBandState rState = rubberband_new(sampleRate,
+                                                nChannels,
+                                                RubberBandOption.RubberBandOptionProcessOffline,
+                                                firstScaleFactor,
+                                                1.0);
+        rubberband_set_max_process_size(rState, firstHalfLength);
+        rubberband_set_expected_input_duration(rState, firstHalfLength);
+        rubberband_study(rState, firstHalfPtr.ptr, firstHalfLength, 1);
+        rubberband_process(rState, firstHalfPtr.ptr, firstHalfLength, 1);
+        while(rubberband_available(rState) < firstHalfOutputLength) {}
+        rubberband_retrieve(rState, firstHalfOutputPtr.ptr, firstHalfOutputLength);
+        rubberband_delete(rState);
+
+        rState = rubberband_new(sampleRate,
+                                nChannels,
+                                RubberBandOption.RubberBandOptionProcessOffline,
+                                secondScaleFactor,
+                                1.0);
+        rubberband_set_max_process_size(rState, secondHalfLength);
+        rubberband_set_expected_input_duration(rState, secondHalfLength);
+        rubberband_study(rState, secondHalfPtr.ptr, secondHalfLength, 1);
+        rubberband_process(rState, secondHalfPtr.ptr, secondHalfLength, 1);
+        while(rubberband_available(rState) < secondHalfOutputLength) {}
+        rubberband_retrieve(rState, secondHalfOutputPtr.ptr, secondHalfOutputLength);
+        rubberband_delete(rState);
+
+        if(linkChannels) {
+            foreach(channels_t channelIndex, channel; firstHalfOutputChannels) {
+                foreach(i, sample; channel) {
+                    setSampleLocal(channelIndex, cast(nframes_t)(globalStartFrame + i), sample);
+                }
+            }
+            foreach(channels_t channelIndex, channel; secondHalfOutputChannels) {
+                foreach(i, sample; channel) {
+                    setSampleLocal(channelIndex, cast(nframes_t)(globalDestFrame + i), sample);
+                }
+            }
+        }
+        else {
+            foreach(i, sample; firstHalfOutputChannels[0]) {
+                setSampleLocal(singleChannelIndex, cast(nframes_t)(globalStartFrame + i), sample);
+            }
+            foreach(i, sample; secondHalfOutputChannels[0]) {
+                setSampleLocal(singleChannelIndex, cast(nframes_t)(globalDestFrame + i), sample);
+            }
+        }
     }
 
     // normalize region to the given maximum gain, in dBFS
@@ -420,6 +653,9 @@ public:
 
     @property string name() const { return _name; }
     @property string name(string newName) { return (_name = newName); }
+
+package:
+    ResizeDelegate resizeDelegate;
 
 private:
     // this constructor only initializes data members; it does not construct the overview
@@ -579,17 +815,16 @@ private:
 class Track {
 public:
     void addRegion(Region region) {
+        region.resizeDelegate = resizeDelegate;
         _regions ~= region;
-        _resizeIfNecessary(region.offset + region.nframes);
+        if(resizeDelegate !is null) {
+            resizeDelegate(region.offset + region.nframes);
+        }
     }
 
     const(Region[]) regions() const { return _regions; }
 
 package:
-    this(bool delegate(nframes_t) resizeIfNecessary) {
-        _resizeIfNecessary = resizeIfNecessary;
-    }
-
     void mixStereoInterleaved(nframes_t offset,
                               nframes_t bufNFrames,
                               channels_t nChannels,
@@ -622,9 +857,10 @@ package:
         }
     }
 
+    ResizeDelegate resizeDelegate;
+
 private:
     Region[] _regions;
-    bool delegate(nframes_t) _resizeIfNecessary;
 }
 
 abstract class Mixer {
@@ -640,7 +876,8 @@ public:
     }
 
     final Track createTrack() {
-        Track track = new Track(&resizeIfNecessary);
+        Track track = new Track();
+        track.resizeDelegate = &resizeIfNecessary;
         _tracks ~= track;
         return track;
     }
@@ -993,9 +1230,6 @@ public:
         packEnd(_vScroll, false, false, 0);
 
         showAll();
-
-        _createArrangeMenu();
-        _createEditRegionMenu();
     }
 
     final class ArrangeHScroll : Scrollbar {
@@ -1119,6 +1353,9 @@ public:
                     }
 
                     // compute onsets independently for each channel
+                    if(_onsets !is null) {
+                        _onsets.destroy();
+                    }
                     _onsets = new nframes_t[][](region.nChannels);
                     for(channels_t channelIndex = 0; channelIndex < region.nChannels; ++channelIndex) {
                         _onsets[channelIndex] =
@@ -1153,11 +1390,9 @@ public:
         void computeOnsets() {
             if(linkChannels) {
                 computeOnsetsLinkedChannels();
-                _onsets = null;
             }
             else {
                 computeOnsetsIndependentChannels();
-                _onsetsLinked = null;
             }
         }
 
@@ -1289,10 +1524,10 @@ public:
 
         @property bool linkChannels() const { return _linkChannels; }
         @property bool linkChannels(bool enable) {
-            if(enable && _onsetsLinked is null) {
+            if(enable) {
                 computeOnsetsLinkedChannels();
             }
-            else if(_onsets is null) {
+            else {
                 computeOnsetsIndependentChannels();
             }
             return (_linkChannels = enable);
@@ -2167,72 +2402,13 @@ private:
             else if(stretchRatio == 0) {
                 stretchRatio = 1;
             }
+            _stretchSelectionDialog.destroy();
 
-            immutable(channels_t) nChannels = _editRegion.region.nChannels;
-            immutable(nframes_t) localStartFrame = _subregionStartFrame - _editRegion.region.offset;
+            _editRegion.region.stretchSubregion(_subregionStartFrame, _subregionEndFrame, stretchRatio);
 
-            uint selectionLength = cast(uint)(_subregionEndFrame - _subregionStartFrame);
-            float[][] selectionChannels = new float[][](nChannels);
-            float*[] selectionPtr = new float*[](nChannels);
-            for(auto i = 0; i < nChannels; ++i) {
-                float[] selection = new float[](selectionLength);
-                selectionChannels[i] = selection;
-                selectionPtr[i] = selection.ptr;
-            }
-
-            foreach(channels_t channelIndex, channel; selectionChannels) {
-                foreach(i, ref sample; channel) {
-                    sample = _editRegion.region._audioBuffer
-                        [(localStartFrame + i) * _editRegion.region.nChannels + channelIndex];
-                }
-            }
-
-            uint selectionOutputLength = cast(uint)(selectionLength * stretchRatio);
-            float[][] selectionOutputChannels = new float[][](nChannels);
-            float*[] selectionOutputPtr = new float*[](nChannels);
-            for(auto i = 0; i < nChannels; ++i) {
-                float[] selectionOutput = new float[](selectionOutputLength);
-                selectionOutputChannels[i] = selectionOutput;
-                selectionOutputPtr[i] = selectionOutput.ptr;
-            }
-
-            RubberBandState rState = rubberband_new(_mixer.sampleRate,
-                                                    nChannels,
-                                                    RubberBandOption.RubberBandOptionProcessOffline,
-                                                    stretchRatio,
-                                                    1.0);
-            rubberband_set_max_process_size(rState, selectionLength);
-            rubberband_set_expected_input_duration(rState, selectionLength);
-            rubberband_study(rState, selectionPtr.ptr, selectionLength, 1);
-            rubberband_process(rState, selectionPtr.ptr, selectionLength, 1);
-            while(rubberband_available(rState) < selectionOutputLength) {}
-            rubberband_retrieve(rState, selectionOutputPtr.ptr, selectionOutputLength);
-            rubberband_delete(rState);
-
-            nframes_t newSubregionEndFrame = _subregionStartFrame + selectionOutputLength;
-            long sizeDelta =
-                (cast(long)(selectionOutputLength) - cast(long)(selectionLength)) * cast(long)(nChannels);
-            sample_t[] oldAudioBuffer = _editRegion.region._audioBuffer;
-            sample_t[] newAudioBuffer = new sample_t[](oldAudioBuffer.length + sizeDelta);
-            newAudioBuffer[0 .. localStartFrame * nChannels] =
-                oldAudioBuffer[0 .. localStartFrame * nChannels];
-            foreach(channels_t channelIndex, channel; selectionOutputChannels) {
-                foreach(i, sample; channel) {
-                    newAudioBuffer[(localStartFrame + i) * nChannels + channelIndex] = sample;
-                }
-            }
-            newAudioBuffer[(newSubregionEndFrame - _editRegion.region.offset) * nChannels .. $] =
-                oldAudioBuffer[(_subregionEndFrame - _editRegion.region.offset) * nChannels .. $];
-            _editRegion.region._audioBuffer = newAudioBuffer;
-            _editRegion.region._nframes = cast(nframes_t)(newAudioBuffer.length / nChannels);
-
-            _subregionEndFrame = newSubregionEndFrame;
             _editRegion.region.computeOverview();
-            _mixer.resizeIfNecessary(_editRegion.region.offset + _editRegion.region.nframes);
             _editRegion.computeOnsets();
             _canvas.redraw();
-
-            _stretchSelectionDialog.destroy();
         }
 
         void onStretchSelectionCancel(Button button) {
@@ -2265,11 +2441,11 @@ private:
         dialogBox.packStart(normalizeGainScale, false, false, 10);
 
         void onNormalizeOK(Button button) {
+            _normalizeDialog.destroy();
+
             _editRegion.region.normalize(cast(sample_t)(_normalizeGainAdjustment.getValue()));
             _editRegion.region.computeOverview();
             _canvas.redraw();
-
-            _normalizeDialog.destroy();
         }
 
         void onNormalizeCancel(Button button) {
@@ -3139,140 +3315,20 @@ private:
 
                     // stretch the audio inside a region
                     case Action.moveOnset:
-                        immutable(channels_t) singleChannelIndex = _moveOnsetChannel;
-                        immutable(channels_t) nChannels =
-                            _editRegion.linkChannels ? _editRegion.region.nChannels : 1;
-
                         immutable(nframes_t) onsetFrameStart =
-                            _editRegion.getPrevOnset(_moveOnsetIndex, singleChannelIndex);
+                            _editRegion.getPrevOnset(_moveOnsetIndex, _moveOnsetChannel);
                         immutable(nframes_t) onsetFrameEnd =
-                            _editRegion.getNextOnset(_moveOnsetIndex, singleChannelIndex);
+                            _editRegion.getNextOnset(_moveOnsetIndex, _moveOnsetChannel);
 
-                        immutable(double) firstScaleFactor = (_moveOnsetFrameSrc > onsetFrameStart) ?
-                            (cast(double)(_moveOnsetFrameDest - onsetFrameStart) /
-                             cast(double)(_moveOnsetFrameSrc - onsetFrameStart)) : 0;
-                        immutable(double) secondScaleFactor = (onsetFrameEnd > _moveOnsetFrameSrc) ?
-                            (cast(double)(onsetFrameEnd - _moveOnsetFrameDest) /
-                             cast(double)(onsetFrameEnd - _moveOnsetFrameSrc)) : 0;
-
-                        immutable(nframes_t) stretchStart =
-                            _editRegion.getPrevOnset(_moveOnsetIndex, singleChannelIndex);
-                        immutable(nframes_t) stretchEnd =
-                            _editRegion.getNextOnset(_moveOnsetIndex, singleChannelIndex);
-
-                        uint firstHalfLength = cast(uint)(_moveOnsetFrameSrc - onsetFrameStart);
-                        uint secondHalfLength = cast(uint)(onsetFrameEnd - _moveOnsetFrameSrc);
-                        float[][] firstHalfChannels = new float[][](nChannels);
-                        float[][] secondHalfChannels = new float[][](nChannels);
-                        float*[] firstHalfPtr = new float*[](nChannels);
-                        float*[] secondHalfPtr = new float*[](nChannels);
-                        for(auto i = 0; i < nChannels; ++i) {
-                            float[] firstHalf = new float[](firstHalfLength);
-                            float[] secondHalf = new float[](secondHalfLength);
-                            firstHalfChannels[i] = firstHalf;
-                            secondHalfChannels[i] = secondHalf;
-                            firstHalfPtr[i] = firstHalf.ptr;
-                            secondHalfPtr[i] = secondHalf.ptr;
-                        }
-
-                        if(_editRegion.linkChannels) {
-                            foreach(channels_t channelIndex, channel; firstHalfChannels) {
-                                foreach(i, ref sample; channel) {
-                                    sample = _editRegion.region._audioBuffer
-                                        [(onsetFrameStart + i) * _editRegion.region.nChannels + channelIndex];
-                                }
-                            }
-                            foreach(channels_t channelIndex, channel; secondHalfChannels) {
-                                foreach(i, ref sample; channel) {
-                                    sample = _editRegion.region._audioBuffer
-                                        [(_moveOnsetFrameSrc + i) * _editRegion.region.nChannels + channelIndex];
-                                }
-                            }
-                        }
-                        else {
-                            foreach(i, ref sample; firstHalfChannels[0]) {
-                                sample = _editRegion.region._audioBuffer
-                                    [(onsetFrameStart + i) * _editRegion.region.nChannels + singleChannelIndex];
-                            }
-                            foreach(i, ref sample; secondHalfChannels[0]) {
-                                sample = _editRegion.region._audioBuffer
-                                    [(_moveOnsetFrameSrc + i) * _editRegion.region.nChannels + singleChannelIndex];
-                            }
-                        }
-
-                        uint firstHalfOutputLength = cast(uint)(firstHalfLength * firstScaleFactor);
-                        uint secondHalfOutputLength = cast(uint)(secondHalfLength * secondScaleFactor);
-                        float[][] firstHalfOutputChannels = new float[][](nChannels);
-                        float[][] secondHalfOutputChannels = new float[][](nChannels);
-                        float*[] firstHalfOutputPtr = new float*[](nChannels);
-                        float*[] secondHalfOutputPtr = new float*[](nChannels);
-                        for(auto i = 0; i < nChannels; ++i) {
-                            float[] firstHalfOutput = new float[](firstHalfOutputLength);
-                            float[] secondHalfOutput = new float[](secondHalfOutputLength);
-                            firstHalfOutputChannels[i] = firstHalfOutput;
-                            secondHalfOutputChannels[i] = secondHalfOutput;
-                            firstHalfOutputPtr[i] = firstHalfOutput.ptr;
-                            secondHalfOutputPtr[i] = secondHalfOutput.ptr;
-                        }
-
-                        RubberBandState rState = rubberband_new(_mixer.sampleRate,
-                                                                nChannels,
-                                                                RubberBandOption.RubberBandOptionProcessOffline,
-                                                                firstScaleFactor,
-                                                                1.0);
-                        rubberband_set_max_process_size(rState, firstHalfLength);
-                        rubberband_set_expected_input_duration(rState, firstHalfLength);
-                        rubberband_study(rState, firstHalfPtr.ptr, firstHalfLength, 1);
-                        rubberband_process(rState, firstHalfPtr.ptr, firstHalfLength, 1);
-                        while(rubberband_available(rState) < firstHalfOutputLength) {}
-                        rubberband_retrieve(rState, firstHalfOutputPtr.ptr, firstHalfOutputLength);
-                        rubberband_delete(rState);
-
-                        rState = rubberband_new(_mixer.sampleRate,
-                                                nChannels,
-                                                RubberBandOption.RubberBandOptionProcessOffline,
-                                                secondScaleFactor,
-                                                1.0);
-                        rubberband_set_max_process_size(rState, secondHalfLength);
-                        rubberband_set_expected_input_duration(rState, secondHalfLength);
-                        rubberband_study(rState, secondHalfPtr.ptr, secondHalfLength, 1);
-                        rubberband_process(rState, secondHalfPtr.ptr, secondHalfLength, 1);
-                        while(rubberband_available(rState) < secondHalfOutputLength) {}
-                        rubberband_retrieve(rState, secondHalfOutputPtr.ptr, secondHalfOutputLength);
-                        rubberband_delete(rState);
-
-                        if(_editRegion.linkChannels) {
-                            foreach(channels_t channelIndex, channel; firstHalfOutputChannels) {
-                                foreach(i, sample; channel) {
-                                    _editRegion.region.setSampleLocal(channelIndex,
-                                                                      cast(nframes_t)(onsetFrameStart + i),
-                                                                      sample);
-                                }
-                            }
-                            foreach(channels_t channelIndex, channel; secondHalfOutputChannels) {
-                                foreach(i, sample; channel) {
-                                    _editRegion.region.setSampleLocal(channelIndex,
-                                                                      cast(nframes_t)(_moveOnsetFrameDest + i),
-                                                                      sample);
-                                }
-                            }
-                        }
-                        else {
-                            foreach(i, sample; firstHalfOutputChannels[0]) {
-                                _editRegion.region.setSampleLocal(singleChannelIndex,
-                                                                  cast(nframes_t)(onsetFrameStart + i),
-                                                                  sample);
-                            }
-                            foreach(i, sample; secondHalfOutputChannels[0]) {
-                                _editRegion.region.setSampleLocal(singleChannelIndex,
-                                                                  cast(nframes_t)(_moveOnsetFrameDest + i),
-                                                                  sample);
-                            }
-                        }
-
+                        _editRegion.region.stretchThreePoint(onsetFrameStart,
+                                                             _moveOnsetFrameSrc,
+                                                             _moveOnsetFrameDest,
+                                                             onsetFrameEnd,
+                                                             _editRegion.linkChannels,
+                                                             _moveOnsetChannel);
                         _editRegion.region.computeOverview();
-                        redraw();
 
+                        redraw();
                         _setAction(Action.none);
                         break;
 
