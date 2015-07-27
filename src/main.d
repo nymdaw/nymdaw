@@ -48,6 +48,7 @@ import gtk.Scale;
 import gtk.FileChooserDialog;
 import gtk.MessageDialog;
 import gtk.ProgressBar;
+import gtk.RadioButton;
 
 import gtkc.gtktypes;
 
@@ -525,16 +526,23 @@ public:
         }
     }
 
-    // normalize region to the given maximum gain, in dBFS
-    void normalize(sample_t maxGain = -0.1) {
+    // normalize subregion from startFrame to endFrame to the given maximum gain, in dBFS
+    void normalize(nframes_t localStartFrame, nframes_t localEndFrame, sample_t maxGain = 0.1) {
+        auto audioSlice = _audioBuffer[localStartFrame * nChannels .. localEndFrame * nChannels];
+
         sample_t minSample, maxSample;
-        _minMax(minSample, maxSample);
+        _minMax(minSample, maxSample, audioSlice);
         maxSample = max(abs(minSample), abs(maxSample));
 
         sample_t sampleFactor =  pow(10, (maxGain > 0 ? 0 : maxGain) / 20) / maxSample;
-        foreach(ref s; _audioBuffer) {
+        foreach(ref s; audioSlice) {
             s *= sampleFactor;
         }
+    }
+
+    // normalize region to the given maximum gain, in dBFS
+    void normalize(sample_t maxGain = -0.1) {
+        normalize(0, nframes, maxGain);
     }
 
     class WaveformCache {
@@ -2434,6 +2442,21 @@ private:
 
         auto dialogBox = _normalizeDialog.getContentArea();
 
+        _normalizeEntireRegion = new RadioButton(cast(ListSG)(null), "Entire Region");
+        _normalizeSelectionOnly = new RadioButton(_normalizeEntireRegion, "Selection Only");
+        _normalizeSelectionOnly.setSensitive(_subregionSelected);
+        if(_subregionSelected) {
+            _normalizeSelectionOnly.setActive(true);
+        }
+        else {
+            _normalizeEntireRegion.setActive(true);
+        }
+
+        auto hBox = new Box(Orientation.HORIZONTAL, 10);
+        hBox.add(_normalizeEntireRegion);
+        hBox.add(_normalizeSelectionOnly);
+        dialogBox.packStart(hBox, false, false, 10);
+
         dialogBox.packStart(new Label("Normalize gain (dbFS)"), false, false, 0);
         _normalizeGainAdjustment = new Adjustment(-0.1, -20, 0, 0.01, 0.5, 0);
         auto normalizeGainScale = new Scale(Orientation.HORIZONTAL, _normalizeGainAdjustment);
@@ -2443,7 +2466,15 @@ private:
         void onNormalizeOK(Button button) {
             _normalizeDialog.destroy();
 
-            _editRegion.region.normalize(cast(sample_t)(_normalizeGainAdjustment.getValue()));
+            if(_subregionSelected && _normalizeSelectionOnly.getActive()) {
+                _editRegion.region.normalize(_subregionStartFrame - _editRegion.region.offset,
+                                             _subregionEndFrame - _editRegion.region.offset,
+                                             cast(sample_t)(_normalizeGainAdjustment.getValue()));
+            }
+            else if(_normalizeEntireRegion.getActive()) {
+                _editRegion.region.normalize(cast(sample_t)(_normalizeGainAdjustment.getValue()));
+            }
+
             _editRegion.region.computeOverview();
             _canvas.redraw();
         }
@@ -3272,7 +3303,11 @@ private:
 
                     // select a subregion
                     case Action.selectSubregion:
-                        if(_subregionStartFrame != _subregionEndFrame) {
+                        if(_subregionStartFrame == _subregionEndFrame) {
+                            _subregionSelected = false;
+                            _editRegion.subregionSelected = false;
+                        }
+                        else {
                             _subregionSelected = true;
                             _editRegion.subregionSelected = true;
                             _editRegion.subregionStartFrame = _subregionStartFrame;
@@ -3687,6 +3722,8 @@ private:
     Adjustment _stretchSelectionFactorAdjustment;
 
     Dialog _normalizeDialog;
+    RadioButton _normalizeEntireRegion;
+    RadioButton _normalizeSelectionOnly;
     Adjustment _normalizeGainAdjustment;
 
     pixels_t _viewWidthPixels;
