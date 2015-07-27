@@ -148,7 +148,7 @@ public:
         mixin("enum Stage : int { " ~ _enumString(Stages) ~ " complete }");
         alias Stage this;
         enum nStages = (EnumMembers!Stage).length - 1;
-        enum stepsPerStage = 20;
+        enum stepsPerStage = 5;
 
         alias Callback = void delegate(Stage stage, double stageFraction);
 
@@ -172,6 +172,7 @@ public:
 
     alias LoadState = ProgressState!("read", "resample", "computeOverview");
     alias ComputeOnsetsState = ProgressState!("computeOnsets");
+    alias NormalizeState = ProgressState!("normalize");
 
     // create a region from a file, leaving the sample rate unaltered
     static Region fromFile(string fileName, nframes_t sampleRate, LoadState.Callback progressCallback = null) {
@@ -527,7 +528,14 @@ public:
     }
 
     // normalize subregion from startFrame to endFrame to the given maximum gain, in dBFS
-    void normalize(nframes_t localStartFrame, nframes_t localEndFrame, sample_t maxGain = 0.1) {
+    void normalize(nframes_t localStartFrame,
+                   nframes_t localEndFrame,
+                   sample_t maxGain = 0.1f,
+                   NormalizeState.Callback progressCallback = null) {
+        if(progressCallback !is null) {
+            progressCallback(NormalizeState.normalize, 0);
+        }
+
         auto audioSlice = _audioBuffer[localStartFrame * nChannels .. localEndFrame * nChannels];
 
         sample_t minSample, maxSample;
@@ -535,14 +543,22 @@ public:
         maxSample = max(abs(minSample), abs(maxSample));
 
         sample_t sampleFactor =  pow(10, (maxGain > 0 ? 0 : maxGain) / 20) / maxSample;
-        foreach(ref s; audioSlice) {
+        foreach(i, ref s; audioSlice) {
             s *= sampleFactor;
+
+            if(progressCallback !is null && i % (audioSlice.length / NormalizeState.stepsPerStage) == 0) {
+                progressCallback(NormalizeState.normalize, cast(double)(i) / cast(double)(audioSlice.length));
+            }
+        }
+
+        if(progressCallback !is null) {
+            progressCallback(NormalizeState.complete, 1);
         }
     }
 
     // normalize region to the given maximum gain, in dBFS
-    void normalize(sample_t maxGain = -0.1) {
-        normalize(0, nframes, maxGain);
+    void normalize(sample_t maxGain = -0.1f, NormalizeState.Callback progressCallback = null) {
+        normalize(0, nframes, maxGain, progressCallback);
     }
 
     class WaveformCache {
@@ -1331,6 +1347,216 @@ public:
 
     private:
         Adjustment _vAdjust;
+    }
+
+    abstract class ArrangeDialog {
+    public:
+        this(bool okButton = true) {
+            _dialog = new Dialog();
+            _dialog.setDefaultSize(250, 150);
+            _dialog.setTransientFor(_parentWindow);
+            auto content = _dialog.getContentArea();
+            populate(content);
+
+            if(okButton) {
+                content.packEnd(createOKCancelButtons(&onOK, &onCancel), false, false, 10);
+            }
+            else {
+                content.packEnd(createCancelButton(&onCancel), false, false, 10);
+            }
+            _dialog.showAll();
+        }
+
+        static ButtonBox createCancelButton(void delegate(Button) onCancel) {
+            auto buttonBox = new ButtonBox(Orientation.HORIZONTAL);
+            buttonBox.setLayout(ButtonBoxStyle.END);
+            buttonBox.setBorderWidth(5);
+            buttonBox.setSpacing(7);
+            buttonBox.add(new Button("Cancel", onCancel));
+            return buttonBox;
+        }
+        static ButtonBox createOKCancelButtons(void delegate(Button) onOK, void delegate(Button) onCancel) {
+            auto buttonBox = new ButtonBox(Orientation.HORIZONTAL);
+            buttonBox.setLayout(ButtonBoxStyle.END);
+            buttonBox.setBorderWidth(5);
+            buttonBox.setSpacing(7);
+            buttonBox.add(new Button("OK", onOK));
+            buttonBox.add(new Button("Cancel", onCancel));
+            return buttonBox;
+        }
+
+    protected:
+        final void destroyDialog() {
+            _dialog.destroy();
+        }
+
+        void populate(Box content);
+
+        void onOK(Button button) {
+            destroyDialog();
+        }
+        void onCancel(Button button) {
+            destroyDialog();
+        }
+
+    private:
+
+        Dialog _dialog;
+    }
+
+    final class OnsetDetectionDialog : ArrangeDialog {
+    protected:
+        override void populate(Box content) {
+            _region = _editRegion;
+
+            auto box1 = new Box(Orientation.VERTICAL, 5);
+            box1.packStart(new Label("Onset Threshold"), false, false, 0);
+            _onsetThresholdAdjustment = new Adjustment(_region.onsetParams.onsetThreshold,
+                                                       Region.OnsetParams.onsetThresholdMin,
+                                                       Region.OnsetParams.onsetThresholdMax,
+                                                       0.01,
+                                                       0.1,
+                                                       0);
+            auto onsetThresholdScale = new Scale(Orientation.HORIZONTAL, _onsetThresholdAdjustment);
+            onsetThresholdScale.setDigits(3);
+            box1.packStart(onsetThresholdScale, false, false, 0);
+            content.packStart(box1, false, false, 10);
+
+            auto box2 = new Box(Orientation.VERTICAL, 5);
+            box2.packStart(new Label("Silence Threshold (dbFS)"), false, false, 0);
+            _silenceThresholdAdjustment = new Adjustment(_region.onsetParams.silenceThreshold,
+                                                         Region.OnsetParams.silenceThresholdMin,
+                                                         Region.OnsetParams.silenceThresholdMax,
+                                                         0.1,
+                                                         1,
+                                                         0);
+            auto silenceThresholdScale = new Scale(Orientation.HORIZONTAL, _silenceThresholdAdjustment);
+            silenceThresholdScale.setDigits(3);
+            box2.packStart(silenceThresholdScale, false, false, 0);
+            content.packStart(box2, false, false, 10);
+        }
+
+        override void onOK(Button button) {
+            if(_region !is null) {
+                _region.onsetParams.onsetThreshold = _onsetThresholdAdjustment.getValue();
+                _region.onsetParams.silenceThreshold = _silenceThresholdAdjustment.getValue();
+                destroyDialog();
+
+                _region.computeOnsets();
+                _canvas.redraw();
+            }
+            else {
+                destroyDialog();
+            }
+        }
+
+    private:
+        RegionView _region;
+        Adjustment _onsetThresholdAdjustment;
+        Adjustment _silenceThresholdAdjustment;
+    }
+
+    final class StretchSelectionDialog : ArrangeDialog {
+    protected:
+        override void populate(Box content) {
+            _region = _editRegion;
+
+            content.packStart(new Label("Stretch factor"), false, false, 0);
+            _stretchSelectionFactorAdjustment = new Adjustment(0,
+                                                               -10,
+                                                               10,
+                                                               0.1,
+                                                               0.5,
+                                                               0);
+            auto stretchSelectionRatioScale = new Scale(Orientation.HORIZONTAL, _stretchSelectionFactorAdjustment);
+            stretchSelectionRatioScale.setDigits(2);
+            content.packStart(stretchSelectionRatioScale, false, false, 10);
+        }
+
+        override void onOK(Button button) {
+            if(_region !is null) {
+                auto stretchRatio = _stretchSelectionFactorAdjustment.getValue();
+                if(stretchRatio < 0) {
+                    stretchRatio = 1.0 / (-stretchRatio);
+                }
+                else if(stretchRatio == 0) {
+                    stretchRatio = 1;
+                }
+                destroyDialog();
+
+                _region.region.stretchSubregion(_subregionStartFrame, _subregionEndFrame, stretchRatio);
+
+                _region.region.computeOverview();
+                _region.computeOnsets();
+                _canvas.redraw();
+            }
+            else {
+                destroyDialog();
+            }
+        }
+
+    private:
+        RegionView _region;
+        Adjustment _stretchSelectionFactorAdjustment;
+    }
+
+    final class NormalizeDialog : ArrangeDialog {
+    protected:
+        override void populate(Box content) {
+            _region = _editRegion;
+
+            _normalizeEntireRegion = new RadioButton(cast(ListSG)(null), "Entire Region");
+            _normalizeSelectionOnly = new RadioButton(_normalizeEntireRegion, "Selection Only");
+            _normalizeSelectionOnly.setSensitive(_subregionSelected);
+            if(_subregionSelected) {
+                _normalizeSelectionOnly.setActive(true);
+            }
+            else {
+                _normalizeEntireRegion.setActive(true);
+            }
+
+            auto hBox = new Box(Orientation.HORIZONTAL, 10);
+            hBox.add(_normalizeEntireRegion);
+            hBox.add(_normalizeSelectionOnly);
+            content.packStart(hBox, false, false, 10);
+
+            content.packStart(new Label("Normalize gain (dbFS)"), false, false, 0);
+            _normalizeGainAdjustment = new Adjustment(-0.1, -20, 0, 0.01, 0.5, 0);
+            auto normalizeGainScale = new Scale(Orientation.HORIZONTAL, _normalizeGainAdjustment);
+            normalizeGainScale.setDigits(3);
+            content.packStart(normalizeGainScale, false, false, 10);
+        }
+
+        override void onOK(Button button) {
+            bool selectionOnly = _normalizeSelectionOnly.getActive();
+            bool entireRegion = _normalizeEntireRegion.getActive();
+            destroyDialog();
+
+            if(_region !is null) {
+                _displayNormalizeProgressDialog(
+                    _region.region.name,
+                    delegate void(Region.NormalizeState.Callback progressCallback) {
+                        if(_subregionSelected && selectionOnly) {
+                            _region.region.normalize(_subregionStartFrame - _region.region.offset,
+                                                     _subregionEndFrame - _region.region.offset,
+                                                     cast(sample_t)(_normalizeGainAdjustment.getValue()),
+                                                     progressCallback);
+                        }
+                        else if(entireRegion) {
+                            _region.region.normalize(cast(sample_t)(_normalizeGainAdjustment.getValue()),
+                                                     progressCallback);
+                        }
+
+                        _region.region.computeOverview();
+                    });
+            }
+        }
+
+    private:
+        RegionView _region;
+        RadioButton _normalizeEntireRegion;
+        RadioButton _normalizeSelectionOnly;
+        Adjustment _normalizeGainAdjustment;
     }
 
     class RegionView {
@@ -2158,7 +2384,7 @@ private:
             void onProgressCancel(Button button) {
                 progressDialog.response(ResponseType.CANCEL);
             }
-            dialogBox.packEnd(_createCancelButton(&onProgressCancel), false, false, 10);
+            dialogBox.packEnd(ArrangeDialog.createCancelButton(&onProgressCancel), false, false, 10);
         }
 
         return tuple(progressDialog, progressBar, progressLabel);
@@ -2268,7 +2494,6 @@ private:
 
         Timeout progressTimeout;
         bool onProgressRefresh() {
-            bool onsetsFinished;
             receiveTimeout(progressMessageTimeout,
                            (Region.ComputeOnsetsState computeOnsetState) {
                                progressBar.setFraction(computeOnsetState.completionFraction);
@@ -2292,15 +2517,63 @@ private:
         }
     }
 
+    alias NormalizeDelegate = void delegate(Region.NormalizeState.Callback progressCallback);
+    void _displayNormalizeProgressDialog(string regionName, NormalizeDelegate normalizeDelegate) {
+        auto progressDialogTuple = _createProgressDialog(false);
+        auto progressDialog = progressDialogTuple[0];
+        auto progressBar = progressDialogTuple[1];
+        auto progressLabel = progressDialogTuple[2];
+
+        progressDialog.setTitle(regionName);
+        progressLabel.setText("Normalizing " ~ regionName ~ "...");
+
+        Tid callbackTid = thisTid;
+        void progressCallback(Region.NormalizeState.Stage stage, double stageFraction) {
+            send(callbackTid, Region.NormalizeState(stage, stageFraction));
+        }
+        setMaxMailboxSize(thisTid,
+                          Region.NormalizeState.nStages * Region.NormalizeState.stepsPerStage,
+                          OnCrowding.block);
+        auto normalizeTask = task(normalizeDelegate, &progressCallback);
+        normalizeTask.executeInNewThread();
+
+        Timeout progressTimeout;
+        bool onProgressRefresh() {
+            receiveTimeout(progressMessageTimeout,
+                           (Region.NormalizeState normalizeState) {
+                               progressBar.setFraction(normalizeState.completionFraction);
+                               if(normalizeState.stage == Region.NormalizeState.complete) {
+                                   normalizeTask.yieldForce;
+                                   if(progressDialog.getWidgetStruct() !is null) {
+                                       progressDialog.response(ResponseType.ACCEPT);
+                                   }
+                                   progressTimeout.destroy();
+                                   _canvas.redraw();
+                               }
+                           });
+            return true;
+        }
+        progressTimeout = new Timeout(cast(uint)(1.0 / refreshRate * 1000), &onProgressRefresh, false);
+
+        progressDialog.showAll();        
+        progressDialog.run();
+        if(progressDialog.getWidgetStruct() !is null) {
+            progressDialog.destroy();
+        }
+    }
+
     void _createEditRegionMenu() {
         _editRegionMenu = new Menu();
 
-        _editRegionMenu.append(new MenuItem(&onOnsetDetection, "Onset Detection..."));
+        _editRegionMenu.append(new MenuItem(delegate void(MenuItem) { new OnsetDetectionDialog(); },
+                                            "Onset Detection..."));
 
-        _stretchSelectionMenuItem = new MenuItem(&onStretchSelection, "Stretch Selection...");
+        _stretchSelectionMenuItem = new MenuItem(delegate void(MenuItem) { new StretchSelectionDialog(); },
+                                                 "Stretch Selection...");
         _editRegionMenu.append(_stretchSelectionMenuItem);
 
-        _editRegionMenu.append(new MenuItem(&onNormalize, "Normalize..."));
+        _editRegionMenu.append(new MenuItem(delegate void (MenuItem) { new NormalizeDialog(); },
+                                            "Normalize..."));
 
         _linkChannelsMenuItem = new CheckMenuItem("Link Channels");
         _linkChannelsMenuItem.setDrawAsRadio(true);
@@ -2308,188 +2581,6 @@ private:
         _editRegionMenu.append(_linkChannelsMenuItem);
 
         _editRegionMenu.attachToWidget(this, null);
-    }
-
-    static ButtonBox _createCancelButton(void delegate(Button) onCancel) {
-        auto buttonBox = new ButtonBox(Orientation.HORIZONTAL);
-        buttonBox.setLayout(ButtonBoxStyle.END);
-        buttonBox.setBorderWidth(5);
-        buttonBox.setSpacing(7);
-        buttonBox.add(new Button("Cancel", onCancel));
-        return buttonBox;
-    }
-
-    static ButtonBox _createOKCancelButtons(void delegate(Button) onOK, void delegate(Button) onCancel) {
-        auto buttonBox = new ButtonBox(Orientation.HORIZONTAL);
-        buttonBox.setLayout(ButtonBoxStyle.END);
-        buttonBox.setBorderWidth(5);
-        buttonBox.setSpacing(7);
-        buttonBox.add(new Button("OK", onOK));
-        buttonBox.add(new Button("Cancel", onCancel));
-        return buttonBox;
-    }
-
-    void _createOnsetDetectionDialog() {
-        _onsetDetectionDialog = new Dialog();
-        _onsetDetectionDialog.setDefaultSize(250, 150);
-        _onsetDetectionDialog.setTransientFor(_parentWindow);
-
-        auto dialogBox = _onsetDetectionDialog.getContentArea();
-
-        auto box1 = new Box(Orientation.VERTICAL, 5);
-        box1.packStart(new Label("Onset Threshold"), false, false, 0);
-        _onsetThresholdAdjustment = new Adjustment(_editRegion.onsetParams.onsetThreshold,
-                                                   Region.OnsetParams.onsetThresholdMin,
-                                                   Region.OnsetParams.onsetThresholdMax,
-                                                   0.01,
-                                                   0.1,
-                                                   0);
-        auto onsetThresholdScale = new Scale(Orientation.HORIZONTAL, _onsetThresholdAdjustment);
-        onsetThresholdScale.setDigits(3);
-        box1.packStart(onsetThresholdScale, false, false, 0);
-        dialogBox.packStart(box1, false, false, 10);
-
-        auto box2 = new Box(Orientation.VERTICAL, 5);
-        box2.packStart(new Label("Silence Threshold (dbFS)"), false, false, 0);
-        _silenceThresholdAdjustment = new Adjustment(_editRegion.onsetParams.silenceThreshold,
-                                                     Region.OnsetParams.silenceThresholdMin,
-                                                     Region.OnsetParams.silenceThresholdMax,
-                                                     0.1,
-                                                     1,
-                                                     0);
-        auto silenceThresholdScale = new Scale(Orientation.HORIZONTAL, _silenceThresholdAdjustment);
-        silenceThresholdScale.setDigits(3);
-        box2.packStart(silenceThresholdScale, false, false, 0);
-        dialogBox.packStart(box2, false, false, 10);
-
-        void onOnsetDetectionOK(Button button) {
-            _editRegion.onsetParams.onsetThreshold = _onsetThresholdAdjustment.getValue();
-            _editRegion.onsetParams.silenceThreshold = _silenceThresholdAdjustment.getValue();
-            _onsetDetectionDialog.destroy();
-
-            _editRegion.computeOnsets();
-            _canvas.redraw();
-        }
-
-        void onOnsetDetectionCancel(Button button) {
-            _onsetDetectionDialog.destroy();
-        }
-
-        dialogBox.packEnd(_createOKCancelButtons(&onOnsetDetectionOK, &onOnsetDetectionCancel), false, false, 10);
-
-        _onsetDetectionDialog.showAll();
-    }
-
-    void onOnsetDetection(MenuItem menuItem) {
-        _createOnsetDetectionDialog();
-    }
-
-    void _createStretchSelectionDialog() {
-        _stretchSelectionDialog = new Dialog();
-        _stretchSelectionDialog.setDefaultSize(250, 100);
-        _stretchSelectionDialog.setTransientFor(_parentWindow);
-
-        auto dialogBox = _stretchSelectionDialog.getContentArea();
-
-        dialogBox.packStart(new Label("Stretch factor"), false, false, 0);
-        _stretchSelectionFactorAdjustment = new Adjustment(0,
-                                                           -10,
-                                                           10,
-                                                           0.1,
-                                                           0.5,
-                                                           0);
-        auto stretchSelectionRatioScale = new Scale(Orientation.HORIZONTAL, _stretchSelectionFactorAdjustment);
-        stretchSelectionRatioScale.setDigits(2);
-        dialogBox.packStart(stretchSelectionRatioScale, false, false, 10);
-
-        void onStretchSelectionOK(Button button) {
-            auto stretchRatio = _stretchSelectionFactorAdjustment.getValue();
-            if(stretchRatio < 0) {
-                stretchRatio = 1.0 / (-stretchRatio);
-            }
-            else if(stretchRatio == 0) {
-                stretchRatio = 1;
-            }
-            _stretchSelectionDialog.destroy();
-
-            _editRegion.region.stretchSubregion(_subregionStartFrame, _subregionEndFrame, stretchRatio);
-
-            _editRegion.region.computeOverview();
-            _editRegion.computeOnsets();
-            _canvas.redraw();
-        }
-
-        void onStretchSelectionCancel(Button button) {
-            _stretchSelectionDialog.destroy();
-        }
-
-        dialogBox.packEnd(_createOKCancelButtons(&onStretchSelectionOK, &onStretchSelectionCancel),
-                          false,
-                          false,
-                          10);
-
-        _stretchSelectionDialog.showAll();
-    }
-
-    void onStretchSelection(MenuItem menuItem) {
-        _createStretchSelectionDialog();
-    }
-
-    void _createNormalizeDialog() {
-        _normalizeDialog = new Dialog();
-        _normalizeDialog.setDefaultSize(250, 100);
-        _normalizeDialog.setTransientFor(_parentWindow);
-
-        auto dialogBox = _normalizeDialog.getContentArea();
-
-        _normalizeEntireRegion = new RadioButton(cast(ListSG)(null), "Entire Region");
-        _normalizeSelectionOnly = new RadioButton(_normalizeEntireRegion, "Selection Only");
-        _normalizeSelectionOnly.setSensitive(_subregionSelected);
-        if(_subregionSelected) {
-            _normalizeSelectionOnly.setActive(true);
-        }
-        else {
-            _normalizeEntireRegion.setActive(true);
-        }
-
-        auto hBox = new Box(Orientation.HORIZONTAL, 10);
-        hBox.add(_normalizeEntireRegion);
-        hBox.add(_normalizeSelectionOnly);
-        dialogBox.packStart(hBox, false, false, 10);
-
-        dialogBox.packStart(new Label("Normalize gain (dbFS)"), false, false, 0);
-        _normalizeGainAdjustment = new Adjustment(-0.1, -20, 0, 0.01, 0.5, 0);
-        auto normalizeGainScale = new Scale(Orientation.HORIZONTAL, _normalizeGainAdjustment);
-        normalizeGainScale.setDigits(3);
-        dialogBox.packStart(normalizeGainScale, false, false, 10);
-
-        void onNormalizeOK(Button button) {
-            _normalizeDialog.destroy();
-
-            if(_subregionSelected && _normalizeSelectionOnly.getActive()) {
-                _editRegion.region.normalize(_subregionStartFrame - _editRegion.region.offset,
-                                             _subregionEndFrame - _editRegion.region.offset,
-                                             cast(sample_t)(_normalizeGainAdjustment.getValue()));
-            }
-            else if(_normalizeEntireRegion.getActive()) {
-                _editRegion.region.normalize(cast(sample_t)(_normalizeGainAdjustment.getValue()));
-            }
-
-            _editRegion.region.computeOverview();
-            _canvas.redraw();
-        }
-
-        void onNormalizeCancel(Button button) {
-            _normalizeDialog.destroy();
-        }
-
-        dialogBox.packEnd(_createOKCancelButtons(&onNormalizeOK, &onNormalizeCancel), false, false, 10);
-
-        _normalizeDialog.showAll();
-    }
-
-    void onNormalize(MenuItem menuItem) {
-        _createNormalizeDialog();
     }
 
     void onLinkChannels(CheckMenuItem linkChannels) {
@@ -3713,18 +3804,6 @@ private:
     Menu _editRegionMenu;
     MenuItem _stretchSelectionMenuItem;
     CheckMenuItem _linkChannelsMenuItem;
-
-    Dialog _onsetDetectionDialog;
-    Adjustment _onsetThresholdAdjustment;
-    Adjustment _silenceThresholdAdjustment;
-
-    Dialog _stretchSelectionDialog;
-    Adjustment _stretchSelectionFactorAdjustment;
-
-    Dialog _normalizeDialog;
-    RadioButton _normalizeEntireRegion;
-    RadioButton _normalizeSelectionOnly;
-    Adjustment _normalizeGainAdjustment;
 
     pixels_t _viewWidthPixels;
     pixels_t _viewHeightPixels;
