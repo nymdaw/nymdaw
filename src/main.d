@@ -2299,7 +2299,6 @@ public:
         return trackView;
     }
 
-    enum progressMessageTimeout = 10.msecs; // TODO delete
     void loadRegionsFromFiles(const(string[]) fileNames) {
         auto progressCallback = progressTaskCallback!(Region.LoadState);
         auto regionTaskList = appender!(DefaultProgressTask[]);
@@ -2397,30 +2396,6 @@ private:
         }
 
         loadRegionsFromFiles(fileNames.data);
-    }
-
-    // TODO remove this
-    Tuple!(Dialog, ProgressBar, Label) _createProgressDialog(bool cancelButton = true) {
-        auto progressDialog = new Dialog();
-        progressDialog.setDefaultSize(350, 75);
-        progressDialog.setTransientFor(_parentWindow);
-
-        auto dialogBox = progressDialog.getContentArea();
-        auto progressBar = new ProgressBar();
-        progressBar.setFraction(0);
-        dialogBox.packStart(progressBar, false, false, 20);
-
-        auto progressLabel = new Label(string.init);
-        dialogBox.packStart(progressLabel, false, false, 10);
-
-        if(cancelButton) {
-            void onProgressCancel(Button button) {
-                progressDialog.response(ResponseType.CANCEL);
-            }
-            dialogBox.packEnd(ArrangeDialog.createCancelButton(&onProgressCancel), false, false, 10);
-        }
-
-        return tuple(progressDialog, progressBar, progressLabel);
     }
 
     template ProgressTask(Task)
