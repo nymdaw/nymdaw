@@ -2485,7 +2485,7 @@ private:
             if(taskList.length > 0) {
                 setMaxMailboxSize(thisTid,
                                   Region.LoadState.nStages * Region.LoadState.stepsPerStage,
-                                  OnCrowding.block);
+                                  OnCrowding.ignore);
 
                 size_t currentTaskIndex = 0;
                 ProgressTask currentTask = taskList[currentTaskIndex];
@@ -2514,12 +2514,17 @@ private:
                                          (ProgressState progressState) {
                                              progressBar.setFraction(progressState.completionFraction);
 
-                                             final switch(progressState.stage) {
-                                                 mixin(stageCases());
+                                             if(currentTask.task.done) {
+                                                 currentTaskComplete = true;
+                                             }
+                                             else {
+                                                 final switch(progressState.stage) {
+                                                     mixin(stageCases());
 
-                                                 case ProgressState.complete:
-                                                     currentTaskComplete = true;
-                                                     break;
+                                                     case ProgressState.complete:
+                                                         currentTaskComplete = true;
+                                                         break;
+                                                 }
                                              }
                                          })) {}
                     if(currentTaskComplete) {
