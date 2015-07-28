@@ -16,6 +16,7 @@ import std.concurrency;
 import std.parallelism;
 import std.typecons;
 import std.traits;
+import std.typetuple;
 
 import core.memory;
 import core.time;
@@ -143,11 +144,22 @@ private:
 
 class Region {
 public:
-    struct ProgressState(Stages...) {
+    struct StageDesc {
+        string name;
+        string description;
+    }
+
+    template isStageDesc(alias T) {
+        enum isStageDesc = __traits(isSame, StageDesc, typeof(T));
+    }
+
+    struct ProgressState(Stages...) if(allSatisfy!(isStageDesc, Stages)) {
     public:
         mixin("enum Stage : int { " ~ _enumString(Stages) ~ " complete }");
         alias Stage this;
         enum nStages = (EnumMembers!Stage).length - 1;
+        static immutable(string[nStages]) stageDescriptions = mixin(_createStageDescList(Stages));
+
         enum stepsPerStage = 5;
 
         alias Callback = void delegate(Stage stage, double stageFraction);
@@ -161,18 +173,28 @@ public:
         double completionFraction;
 
     private:
-        static string _enumString(T...)(T t) {
+        static string _enumString(T...)(T stageDescList) {
             string result;
-            foreach(i; t) {
-                result ~= i ~ ", ";
+            foreach(stageDesc; stageDescList) {
+                result ~= stageDesc.name ~ ", ";
             }
+            return result;
+        }
+        static string _createStageDescList(T...)(T stageDescList) {
+            string result = "[ ";
+            foreach(stageDesc; stageDescList) {
+                result ~= "\"" ~ stageDesc.description ~ "\", ";
+            }
+            result ~= " ]";
             return result;
         }
     }
 
-    alias LoadState = ProgressState!("read", "resample", "computeOverview");
-    alias ComputeOnsetsState = ProgressState!("computeOnsets");
-    alias NormalizeState = ProgressState!("normalize");
+    alias LoadState = ProgressState!(StageDesc("read", "Loading file"),
+                                     StageDesc("resample", "Resampling"),
+                                     StageDesc("computeOverview", "Computing overview"));
+    alias ComputeOnsetsState = ProgressState!(StageDesc("computeOnsets", "Computing onsets"));
+    alias NormalizeState = ProgressState!(StageDesc("normalize", "Normalizing"));
 
     // create a region from a file, leaving the sample rate unaltered
     static Region fromFile(string fileName, nframes_t sampleRate, LoadState.Callback progressCallback = null) {
@@ -642,8 +664,7 @@ public:
                     nframes_t sampleOffset) const {
         auto cacheSize = _cacheBinSizes[cacheIndex];
         return _min(_waveformCacheList[channelIndex][cacheIndex].minValues
-                    [min(sampleOffset * (binSize / cacheSize), $ - 1) ..
-                     min((sampleOffset + 1) * (binSize / cacheSize), $)]);
+                    [sampleOffset * (binSize / cacheSize) .. (sampleOffset + 1) * (binSize / cacheSize)]);
     }
     sample_t getMax(channels_t channelIndex,
                     size_t cacheIndex,
@@ -651,8 +672,7 @@ public:
                     nframes_t sampleOffset) const {
         auto cacheSize = _cacheBinSizes[cacheIndex];
         return _max(_waveformCacheList[channelIndex][cacheIndex].maxValues
-                    [min(sampleOffset * (binSize / cacheSize), $ - 1) ..
-                     min((sampleOffset + 1) * (binSize / cacheSize), $)]);
+                    [sampleOffset * (binSize / cacheSize) .. (sampleOffset + 1) * (binSize / cacheSize)]);
     }
 
     // returns the sample value at a given channel and frame, globally indexed
@@ -1533,9 +1553,10 @@ public:
             destroyDialog();
 
             if(_region !is null) {
-                _displayNormalizeProgressDialog(
+                auto progressCallback = progressTaskCallback!(Region.NormalizeState);
+                auto progressTask = progressTask(
                     _region.region.name,
-                    delegate void(Region.NormalizeState.Callback progressCallback) {
+                    delegate void() {
                         if(_subregionSelected && selectionOnly) {
                             _region.region.normalize(_subregionStartFrame - _region.region.offset,
                                                      _subregionEndFrame - _region.region.offset,
@@ -1546,9 +1567,10 @@ public:
                             _region.region.normalize(cast(sample_t)(_normalizeGainAdjustment.getValue()),
                                                      progressCallback);
                         }
-
-                        _region.region.computeOverview();
                     });
+                beginProgressTask!(Region.NormalizeState, DefaultProgressTask)(progressTask);
+                _region.region.computeOverview();
+                _canvas.redraw();
             }
         }
 
@@ -1579,12 +1601,11 @@ public:
         }
 
         void computeOnsetsIndependentChannels() {
-            _displayComputeOnsetsProgressDialog(
+            auto progressCallback = progressTaskCallback!(Region.ComputeOnsetsState);
+            auto progressTask = progressTask(
                 region.name,
-                delegate void(Region.ComputeOnsetsState.Callback progressCallback) {
-                    if(progressCallback) {
-                        progressCallback(Region.ComputeOnsetsState.computeOnsets, 0);
-                    }
+                delegate void() {
+                    progressCallback(Region.ComputeOnsetsState.computeOnsets, 0);
 
                     // compute onsets independently for each channel
                     if(_onsets !is null) {
@@ -1596,29 +1617,28 @@ public:
                             region.getOnsetsSingleChannel(onsetParams, channelIndex, progressCallback);
                     }
 
-                    if(progressCallback) {
-                        progressCallback(Region.ComputeOnsetsState.complete, 1);
-                    }
+                    progressCallback(Region.ComputeOnsetsState.complete, 1);
                 });
+            beginProgressTask!(Region.ComputeOnsetsState, DefaultProgressTask)(progressTask);
+            _canvas.redraw();
         }
 
         void computeOnsetsLinkedChannels() {
-            _displayComputeOnsetsProgressDialog(
+            auto progressCallback = progressTaskCallback!(Region.ComputeOnsetsState);
+            auto progressTask = progressTask(
                 region.name,
-                delegate void(Region.ComputeOnsetsState.Callback progressCallback) {
-                    if(progressCallback) {
-                        progressCallback(Region.ComputeOnsetsState.computeOnsets, 0);
-                    }
+                delegate void() {
+                    progressCallback(Region.ComputeOnsetsState.computeOnsets, 0);
             
                     // compute onsets for summed channels
                     if(region.nChannels > 1) {
                         _onsetsLinked = region.getOnsetsLinkedChannels(onsetParams, progressCallback);
                     }
 
-                    if(progressCallback) {
-                        progressCallback(Region.ComputeOnsetsState.complete, 1);
-                    }
+                    progressCallback(Region.ComputeOnsetsState.complete, 1);
                 });
+            beginProgressTask!(Region.ComputeOnsetsState, DefaultProgressTask)(progressTask);
+            _canvas.redraw();
         }
 
         void computeOnsets() {
@@ -2028,11 +2048,15 @@ public:
                             onsetPixelsEnd - width) : 0;
 
                     cr.newSubPath();
-                    cr.moveTo(xOffset, channelYOffset +
-                              region.getMax(channelIndex,
-                                            cacheIndex,
-                                            samplesPerPixel,
-                                            pixelsOffset + startPixel) * (channelHeight / 2));
+                    try {
+                        cr.moveTo(xOffset, channelYOffset +
+                                  region.getMax(channelIndex,
+                                                cacheIndex,
+                                                samplesPerPixel,
+                                                pixelsOffset + startPixel) * (channelHeight / 2));
+                    }
+                    catch(RangeError) {
+                    }
                     if(moveOnset) {
                         onsetDrawState = OnsetDrawState.init;
                     }
@@ -2075,11 +2099,15 @@ public:
                                     break;
                             }
                         }
-                        cr.lineTo(xOffset + scaledI, channelYOffset -
-                                  clamp(region.getMax(channelIndex,
-                                                      cacheIndex,
-                                                      samplesPerPixel,
-                                                      pixelsOffset + i), 0, 1) * (channelHeight / 2));
+                        try {
+                            cr.lineTo(xOffset + scaledI, channelYOffset -
+                                      clamp(region.getMax(channelIndex,
+                                                          cacheIndex,
+                                                          samplesPerPixel,
+                                                          pixelsOffset + i), 0, 1) * (channelHeight / 2));
+                        }
+                        catch(RangeError) {
+                        }
                     }
                     if(moveOnset) {
                         onsetDrawState = OnsetDrawState.init;
@@ -2124,11 +2152,15 @@ public:
                                     break;
                             }
                         }
-                        cr.lineTo(xOffset + scaledI, channelYOffset -
-                                  clamp(region.getMin(channelIndex,
-                                                      cacheIndex,
-                                                      samplesPerPixel,
-                                                      pixelsOffset + width - i), -1, 0) * (channelHeight / 2));
+                        try {
+                            cr.lineTo(xOffset + scaledI, channelYOffset -
+                                      clamp(region.getMin(channelIndex,
+                                                          cacheIndex,
+                                                          samplesPerPixel,
+                                                          pixelsOffset + width - i), -1, 0) * (channelHeight / 2));
+                        }
+                        catch(RangeError) {
+                        }
                     }
                     cr.closePath();
                     cr.setSourceRgba(1.0, 1.0, 1.0, alpha);
@@ -2267,27 +2299,27 @@ public:
         return trackView;
     }
 
-    enum progressMessageTimeout = 10.msecs;
-    alias RegionLoadTask = Tuple!(string, typeof(task(&Region.fromFile,
-                                                      string.init,
-                                                      nframes_t.init,
-                                                      Region.LoadState.Callback.init)));
+    enum progressMessageTimeout = 10.msecs; // TODO delete
     void loadRegionsFromFiles(const(string[]) fileNames) {
-        Tid callbackTid = thisTid;
-        void progressCallback(Region.LoadState.Stage stage, double stageFraction) {
-            send(callbackTid, Region.LoadState(stage, stageFraction));
-        }
-
-        auto regionTaskList = appender!(RegionLoadTask[]);
+        auto progressCallback = progressTaskCallback!(Region.LoadState);
+        auto regionTaskList = appender!(DefaultProgressTask[]);
         foreach(fileName; fileNames) {
-            regionTaskList.put(RegionLoadTask(baseName(fileName), task(&Region.fromFile,
-                                                                       fileName,
-                                                                       _mixer.sampleRate,
-                                                                       &progressCallback)));
+            auto regionTask = delegate() {
+                Region newRegion = Region.fromFile(fileName, _mixer.sampleRate, progressCallback);
+                if(newRegion is null) {
+                    ErrorDialog.display(_parentWindow, "Could not load file " ~ baseName(fileName));
+                }
+                else {
+                    auto newTrack = createTrackView();
+                    newTrack.addRegion(newRegion);
+                }
+            };
+            regionTaskList.put(progressTask(baseName(fileName), regionTask));
         }
 
         if(regionTaskList.data.length > 0) {
-            _displayImportProgressDialog(regionTaskList.data);
+            beginProgressTask!(Region.LoadState, DefaultProgressTask)(regionTaskList.data);
+            _canvas.redraw();
         }
     }
 
@@ -2367,6 +2399,7 @@ private:
         loadRegionsFromFiles(fileNames.data);
     }
 
+    // TODO remove this
     Tuple!(Dialog, ProgressBar, Label) _createProgressDialog(bool cancelButton = true) {
         auto progressDialog = new Dialog();
         progressDialog.setDefaultSize(350, 75);
@@ -2390,176 +2423,138 @@ private:
         return tuple(progressDialog, progressBar, progressLabel);
     }
 
-    void _displayImportProgressDialog(RegionLoadTask[] regionTaskList) {
-        auto progressDialogTuple = _createProgressDialog();
-        auto progressDialog = progressDialogTuple[0];
-        auto progressBar = progressDialogTuple[1];
-        auto progressLabel = progressDialogTuple[2];
+    template ProgressTask(Task)
+        if(is(Task == void delegate()) ||
+           (isPointer!Task && __traits(isSame, TemplateOf!(PointerTarget!Task), std.parallelism.Task)) ||
+           __traits(isSame, TemplateOf!Task, std.parallelism.Task)) {
+        struct ProgressTask {
+            string name;
 
-        if(regionTaskList.length > 0) {
-            setMaxMailboxSize(thisTid, Region.LoadState.nStages * Region.LoadState.stepsPerStage, OnCrowding.block);
-
-            size_t regionTaskIndex = 0;
-            RegionLoadTask regionTask = regionTaskList[regionTaskIndex];
-
-            void beginRegionLoadTask(RegionLoadTask regionTask) {
-                progressDialog.setTitle(regionTask[0]);
-                regionTask[1].executeInNewThread();
-            }
-            beginRegionLoadTask(regionTask);
-
-            Timeout progressTimeout;
-            bool onProgressRefresh() {
-                bool regionFinished;
-                receiveTimeout(progressMessageTimeout,
-                               (Region.LoadState loadState) {
-                                   progressBar.setFraction(loadState.completionFraction);
-                                   final switch(loadState.stage) {
-                                       string labelText;
-                                       case Region.LoadState.read:
-                                           progressLabel.setText("Reading " ~ regionTask[0] ~ "...");
-                                           break;
-
-                                       case Region.LoadState.resample:
-                                           progressLabel.setText("Resampling " ~ regionTask[0] ~ "...");
-                                           break;
-
-                                       case Region.LoadState.computeOverview:
-                                           progressLabel.setText("Computing overview for " ~ regionTask[0] ~ "...");
-                                           break;
-
-                                       case Region.LoadState.complete:
-                                           regionFinished = true;
-                                           break;
-                                   }
-                               });
-                if(regionFinished) {
-                    // create a new track with the constructed region
-                    auto newRegion = regionTask[1].yieldForce;
-                    if(newRegion is null) {
-                        ErrorDialog.display(_parentWindow, "Could not load file " ~ regionTask[0]);
-                    }
-                    else {
-                        auto newTrack = createTrackView();
-                        newTrack.addRegion(regionTask[1].yieldForce);
-                    }
-
-                    // begin constructing a region for the next requested file
-                    ++regionTaskIndex;
-                    if(regionTaskIndex < regionTaskList.length) {
-                        regionTask = regionTaskList[regionTaskIndex];
-                        beginRegionLoadTask(regionTask);
-                    }
-                    else {
-                        if(progressDialog.getWidgetStruct() !is null) {
-                            progressDialog.response(ResponseType.ACCEPT);
-                        }
-                        progressTimeout.destroy();
-                        _canvas.redraw();
-                    }
+            static if(is(Task == void delegate())) {
+                this(string name, Task task) {
+                    this.name = name;
+                    this.task = std.parallelism.task!Task(task);
                 }
 
-                return true;
+                typeof(std.parallelism.task!Task(delegate void() {})) task;
             }
-            progressTimeout = new Timeout(cast(uint)(1.0 / refreshRate * 1000), &onProgressRefresh, false);
-
-            progressDialog.showAll();        
-            progressDialog.run();
-        }
-
-        if(progressDialog.getWidgetStruct() !is null) {
-            progressDialog.destroy();
+            else {
+                Task task;
+            }
         }
     }
 
-    alias ComputeOnsetsDelegate = void delegate(Region.ComputeOnsetsState.Callback progressCallback);
-    void _displayComputeOnsetsProgressDialog(string regionName, ComputeOnsetsDelegate computeOnsetDelegate) {
-        auto progressDialogTuple = _createProgressDialog(false);
-        auto progressDialog = progressDialogTuple[0];
-        auto progressBar = progressDialogTuple[1];
-        auto progressLabel = progressDialogTuple[2];
+    alias DefaultProgressTask = ProgressTask!(void delegate());
 
-        progressDialog.setTitle(regionName);
-        progressLabel.setText("Computing onsets for " ~ regionName ~ "...");
-
-        Tid callbackTid = thisTid;
-        void progressCallback(Region.ComputeOnsetsState.Stage stage, double stageFraction) {
-            send(callbackTid, Region.ComputeOnsetsState(stage, stageFraction));
-        }
-        setMaxMailboxSize(thisTid,
-                          Region.ComputeOnsetsState.nStages * Region.ComputeOnsetsState.stepsPerStage,
-                          OnCrowding.block);
-        auto computeOnsetTask = task(computeOnsetDelegate, &progressCallback);
-        computeOnsetTask.executeInNewThread();
-
-        Timeout progressTimeout;
-        bool onProgressRefresh() {
-            receiveTimeout(progressMessageTimeout,
-                           (Region.ComputeOnsetsState computeOnsetState) {
-                               progressBar.setFraction(computeOnsetState.completionFraction);
-                               if(computeOnsetState.stage == Region.ComputeOnsetsState.complete) {
-                                   computeOnsetTask.yieldForce;
-                                   if(progressDialog.getWidgetStruct() !is null) {
-                                       progressDialog.response(ResponseType.ACCEPT);
-                                   }
-                                   progressTimeout.destroy();
-                                   _canvas.redraw();
-                               }
-                           });
-            return true;
-        }
-        progressTimeout = new Timeout(cast(uint)(1.0 / refreshRate * 1000), &onProgressRefresh, false);
-
-        progressDialog.showAll();        
-        progressDialog.run();
-        if(progressDialog.getWidgetStruct() !is null) {
-            progressDialog.destroy();
-        }
+    auto progressTask(Task)(string name, Task task) {
+        return ProgressTask!Task(name, task);
     }
 
-    alias NormalizeDelegate = void delegate(Region.NormalizeState.Callback progressCallback);
-    void _displayNormalizeProgressDialog(string regionName, NormalizeDelegate normalizeDelegate) {
-        auto progressDialogTuple = _createProgressDialog(false);
-        auto progressDialog = progressDialogTuple[0];
-        auto progressBar = progressDialogTuple[1];
-        auto progressLabel = progressDialogTuple[2];
-
-        progressDialog.setTitle(regionName);
-        progressLabel.setText("Normalizing " ~ regionName ~ "...");
-
+    auto progressTaskCallback(ProgressState)() if(__traits(isSame, TemplateOf!ProgressState, Region.ProgressState)) {
         Tid callbackTid = thisTid;
-        void progressCallback(Region.NormalizeState.Stage stage, double stageFraction) {
-            send(callbackTid, Region.NormalizeState(stage, stageFraction));
-        }
-        setMaxMailboxSize(thisTid,
-                          Region.NormalizeState.nStages * Region.NormalizeState.stepsPerStage,
-                          OnCrowding.block);
-        auto normalizeTask = task(normalizeDelegate, &progressCallback);
-        normalizeTask.executeInNewThread();
+        return delegate(ProgressState.Stage stage, double stageFraction) {
+            send(callbackTid, ProgressState(stage, stageFraction));
+        };
+    }
 
-        Timeout progressTimeout;
-        bool onProgressRefresh() {
-            receiveTimeout(progressMessageTimeout,
-                           (Region.NormalizeState normalizeState) {
-                               progressBar.setFraction(normalizeState.completionFraction);
-                               if(normalizeState.stage == Region.NormalizeState.complete) {
-                                   normalizeTask.yieldForce;
-                                   if(progressDialog.getWidgetStruct() !is null) {
-                                       progressDialog.response(ResponseType.ACCEPT);
-                                   }
-                                   progressTimeout.destroy();
-                                   _canvas.redraw();
-                               }
-                           });
-            return true;
-        }
-        progressTimeout = new Timeout(cast(uint)(1.0 / refreshRate * 1000), &onProgressRefresh, false);
+    void beginProgressTask(ProgressState, ProgressTask, bool cancelButton = true)(ProgressTask[] taskList)
+        if(__traits(isSame, TemplateOf!ProgressState, Region.ProgressState) &&
+           __traits(isSame, TemplateOf!ProgressTask, this.ProgressTask)) {
+            enum progressRefreshRate = 10; // in Hz
+            enum progressMessageTimeout = 10.msecs;
 
-        progressDialog.showAll();        
-        progressDialog.run();
-        if(progressDialog.getWidgetStruct() !is null) {
-            progressDialog.destroy();
+            auto progressDialog = new Dialog();
+            progressDialog.setDefaultSize(400, 75);
+            progressDialog.setTransientFor(_parentWindow);
+
+            auto dialogBox = progressDialog.getContentArea();
+            auto progressBar = new ProgressBar();
+            progressBar.setFraction(0);
+            dialogBox.packStart(progressBar, false, false, 20);
+
+            auto progressLabel = new Label(string.init);
+            dialogBox.packStart(progressLabel, false, false, 10);
+
+            static if(cancelButton) {
+                void onProgressCancel(Button button) {
+                    progressDialog.response(ResponseType.CANCEL);
+                }
+                dialogBox.packEnd(ArrangeDialog.createCancelButton(&onProgressCancel), false, false, 10);
+            }
+
+            if(taskList.length > 0) {
+                setMaxMailboxSize(thisTid,
+                                  Region.LoadState.nStages * Region.LoadState.stepsPerStage,
+                                  OnCrowding.block);
+
+                size_t currentTaskIndex = 0;
+                ProgressTask currentTask = taskList[currentTaskIndex];
+
+                void beginTask(ProgressTask currentTask) {
+                    progressDialog.setTitle(currentTask.name);
+                    currentTask.task.executeInNewThread();
+                }
+                beginTask(currentTask);
+
+                static string stageCases() {
+                    string result;
+                    foreach(stage; __traits(allMembers, ProgressState.Stage)[0 .. $ - 1]) {
+                        result ~=
+                            "case ProgressState.Stage." ~ cast(string)(stage) ~ ": " ~
+                            "progressLabel.setText(ProgressState.stageDescriptions[ProgressState.Stage." ~
+                            cast(string)(stage) ~ "] ~ \": \" ~ " ~ "currentTask.name); break;\n";
+                    }
+                    return result;
+                }
+
+                Timeout progressTimeout;
+                bool onProgressRefresh() {
+                    bool currentTaskComplete;
+                    while(receiveTimeout(progressMessageTimeout,
+                                         (ProgressState progressState) {
+                                             progressBar.setFraction(progressState.completionFraction);
+
+                                             final switch(progressState.stage) {
+                                                 mixin(stageCases());
+
+                                                 case ProgressState.complete:
+                                                     currentTaskComplete = true;
+                                                     break;
+                                             }
+                                         })) {}
+                    if(currentTaskComplete) {
+                        ++currentTaskIndex;
+                        if(currentTaskIndex < taskList.length) {
+                            currentTask = taskList[currentTaskIndex];
+                            beginTask(currentTask);
+                        }
+                        else {
+                            if(progressDialog.getWidgetStruct() !is null) {
+                                progressDialog.response(ResponseType.ACCEPT);
+                            }
+                            progressTimeout.destroy();
+                        }
+                    }
+
+                    return true;
+                }
+                progressTimeout = new Timeout(cast(uint)(1.0 / progressRefreshRate * 1000),
+                                              &onProgressRefresh,
+                                              false);
+
+                progressDialog.showAll();
+                progressDialog.run();
+            }
+
+            if(progressDialog.getWidgetStruct() !is null) {
+                progressDialog.destroy();
+            }
         }
+
+    void beginProgressTask(ProgressState, ProgressTask, bool cancelButton = true)(ProgressTask task) {
+        ProgressTask[] taskList = new ProgressTask[](1);
+        taskList[0] = task;
+        beginProgressTask!(ProgressState, ProgressTask, cancelButton)(taskList);
     }
 
     void _createEditRegionMenu() {
