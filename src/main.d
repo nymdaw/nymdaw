@@ -2444,7 +2444,6 @@ private:
 
             auto dialogBox = progressDialog.getContentArea();
             auto progressBar = new ProgressBar();
-            progressBar.setFraction(0);
             dialogBox.packStart(progressBar, false, false, 20);
 
             auto progressLabel = new Label(string.init);
@@ -2489,17 +2488,12 @@ private:
                                          (ProgressState progressState) {
                                              progressBar.setFraction(progressState.completionFraction);
 
-                                             if(currentTask.task.done) {
-                                                 currentTaskComplete = true;
-                                             }
-                                             else {
-                                                 final switch(progressState.stage) {
-                                                     mixin(stageCases());
+                                             final switch(progressState.stage) {
+                                                 mixin(stageCases());
 
-                                                     case ProgressState.complete:
-                                                         currentTaskComplete = true;
-                                                         break;
-                                                 }
+                                                 case ProgressState.complete:
+                                                     currentTaskComplete = true;
+                                                     break;
                                              }
                                          })) {}
                     if(currentTaskComplete) {
