@@ -20,6 +20,7 @@ import std.typetuple;
 
 import core.memory;
 import core.time;
+import core.sync.mutex;
 
 version(HAVE_JACK) {
     import jack.jack;
@@ -158,7 +159,7 @@ public:
         mixin("enum Stage : int { " ~ _enumString(Stages) ~ " complete }");
         alias Stage this;
         enum nStages = (EnumMembers!Stage).length - 1;
-        static immutable(string[nStages]) stageDescriptions = mixin(_createStageDescList(Stages));
+        static immutable string[nStages] stageDescriptions = mixin(_createStageDescList(Stages));
 
         enum stepsPerStage = 5;
 
@@ -370,8 +371,8 @@ public:
     // stretches the subregion between the given global indices according to stretchRatio
     // note that this function does not recompute the overview
     void stretchSubregion(nframes_t globalStartFrame, ref nframes_t globalEndFrame, double stretchRatio) {
-        immutable(channels_t) nChannels = this.nChannels;
-        immutable(nframes_t) localStartFrame = globalStartFrame - offset;
+        immutable channels_t nChannels = this.nChannels;
+        immutable nframes_t localStartFrame = globalStartFrame - offset;
 
         uint subregionLength = cast(uint)(globalEndFrame - globalStartFrame);
         ScopedArray!(float[][]) subregionChannels = new float[][](nChannels);
@@ -441,12 +442,12 @@ public:
                            nframes_t globalEndFrame,
                            bool linkChannels,
                            channels_t singleChannelIndex = 0) {
-        immutable(channels_t) nChannels = linkChannels ? this.nChannels : 1;
+        immutable channels_t nChannels = linkChannels ? this.nChannels : 1;
 
-        immutable(double) firstScaleFactor = (globalSrcFrame > globalStartFrame) ?
+        immutable double firstScaleFactor = (globalSrcFrame > globalStartFrame) ?
             (cast(double)(globalDestFrame - globalStartFrame) /
              cast(double)(globalSrcFrame - globalStartFrame)) : 0;
-        immutable(double) secondScaleFactor = (globalEndFrame > globalSrcFrame) ?
+        immutable double secondScaleFactor = (globalEndFrame > globalSrcFrame) ?
             (cast(double)(globalEndFrame - globalDestFrame) /
              cast(double)(globalEndFrame - globalSrcFrame)) : 0;
 
@@ -618,8 +619,8 @@ public:
             _minValues = new sample_t[](cache.minValues.length / binScale);
             _maxValues = new sample_t[](cache.maxValues.length / binScale);
 
-            immutable(size_t) srcCount = min(cache.minValues.length, cache.maxValues.length);
-            immutable(size_t) destCount = srcCount / binScale;
+            immutable size_t srcCount = min(cache.minValues.length, cache.maxValues.length);
+            immutable size_t destCount = srcCount / binScale;
             for(auto i = 0, j = 0; i < srcCount && j < destCount; i += binScale, ++j) {
                 for(auto k = 0; k < binScale; ++k) {
                     _minValues[j] = 1;
@@ -764,12 +765,12 @@ private:
                            bool linkChannels,
                            channels_t channelIndex,
                            ComputeOnsetsState.Callback progressCallback = null) const {
-        immutable(nframes_t) framesPerProgressStep =
+        immutable nframes_t framesPerProgressStep =
             (nframes / ComputeOnsetsState.stepsPerStage) * (linkChannels ? 1 : nChannels);
         nframes_t progressStep;
 
-        immutable(uint) windowSize = 512;
-        immutable(uint) hopSize = 256;
+        immutable uint windowSize = 512;
+        immutable uint hopSize = 256;
         string onsetMethod = "default";
 
         auto onsetThreshold = clamp(params.onsetThreshold,
@@ -841,7 +842,7 @@ private:
         return app.data;
     }
 
-    static immutable(nframes_t[]) _cacheBinSizes = [10, 100];
+    immutable nframes_t[] _cacheBinSizes = [10, 100];
     static assert(_cacheBinSizes.length > 0);
 
     WaveformCache[][] _waveformCacheList; // indexed as [channel][waveform]
@@ -1066,8 +1067,8 @@ protected:
             throw new AudioError("jack_client_open failed");
         }
 
-        immutable(char*) mixPort1Name = "StereoMix1";
-        immutable(char*) mixPort2Name = "StereoMix2";
+        immutable char* mixPort1Name = "StereoMix1";
+        immutable char* mixPort2Name = "StereoMix2";
         _mixPort1 = jack_port_register(_client,
                                        mixPort1Name,
                                        JACK_DEFAULT_AUDIO_TYPE,
@@ -1274,6 +1275,11 @@ public:
         packEnd(_vScroll, false, false, 0);
 
         showAll();
+    }
+
+    shared static this() {
+        _trackMutex = new Mutex;
+        _regionMutex = new Mutex;
     }
 
     final class ArrangeHScroll : Scrollbar {
@@ -1748,8 +1754,8 @@ public:
         }
 
         channels_t mouseOverChannel(pixels_t mouseY) const {
-            immutable(pixels_t) trackHeight = (boundingBox.y1 - boundingBox.y0) - headerHeight;
-            immutable(pixels_t) channelHeight = trackHeight / region.nChannels;
+            immutable pixels_t trackHeight = (boundingBox.y1 - boundingBox.y0) - headerHeight;
+            immutable pixels_t channelHeight = trackHeight / region.nChannels;
             return clamp((mouseY - (boundingBox.y0 + headerHeight)) / channelHeight, 0, region.nChannels - 1);
         }
 
@@ -1810,7 +1816,7 @@ public:
                (regionOffset < viewOffset &&
                 (regionOffset + region.nframes >= viewOffset ||
                  regionOffset + region.nframes <= viewOffset + viewWidthSamples))) {
-                immutable(pixels_t) xOffset =
+                immutable pixels_t xOffset =
                     (viewOffset < regionOffset) ? (regionOffset - viewOffset) / samplesPerPixel : 0;
                 pixels_t height = heightPixels;
 
@@ -2225,11 +2231,13 @@ public:
     class TrackView {
     public:
         void addRegion(Region region, nframes_t sampleRate) {
-            _track.addRegion(region);
+            synchronized(_regionMutex) {
+                _track.addRegion(region);
 
-            RegionView regionView = new RegionView(region, &_trackColor);
-            _regionViews ~= regionView;
-            this.outer._regionViews ~= regionView;
+                RegionView regionView = new RegionView(region, &_trackColor);
+                _regionViews ~= regionView;
+                this.outer._regionViews ~= regionView;
+            }
 
             _hScroll.reconfigure();
             _vScroll.reconfigure();
@@ -2293,31 +2301,35 @@ public:
     }
 
     TrackView createTrackView() {
-        TrackView trackView = new TrackView(_mixer.createTrack(), defaultTrackHeightPixels);
-        _trackViews ~= trackView;
-        _canvas.redraw();
-        return trackView;
+        synchronized(_trackMutex) {
+            TrackView trackView;
+            trackView = new TrackView(_mixer.createTrack(), defaultTrackHeightPixels);
+            _trackViews ~= trackView;
+            _canvas.redraw();
+            return trackView;
+        }
     }
 
     void loadRegionsFromFiles(const(string[]) fileNames) {
         auto progressCallback = progressTaskCallback!(Region.LoadState);
-        auto regionTaskList = appender!(DefaultProgressTask[]);
+        void loadRegionTask(string fileName) {
+            Region newRegion = Region.fromFile(fileName, _mixer.sampleRate, progressCallback);
+            if(newRegion is null) {
+                ErrorDialog.display(_parentWindow, "Could not load file " ~ baseName(fileName));
+            }
+            else {
+                auto newTrack = createTrackView();
+                newTrack.addRegion(newRegion);
+            }
+        }
+        alias RegionTask = ProgressTask!(typeof(task(&loadRegionTask, string.init)));
+        auto regionTaskList = appender!(RegionTask[]);
         foreach(fileName; fileNames) {
-            auto regionTask = delegate() {
-                Region newRegion = Region.fromFile(fileName, _mixer.sampleRate, progressCallback);
-                if(newRegion is null) {
-                    ErrorDialog.display(_parentWindow, "Could not load file " ~ baseName(fileName));
-                }
-                else {
-                    auto newTrack = createTrackView();
-                    newTrack.addRegion(newRegion);
-                }
-            };
-            regionTaskList.put(progressTask(baseName(fileName), regionTask));
+            regionTaskList.put(progressTask(baseName(fileName), task(&loadRegionTask, fileName)));
         }
 
         if(regionTaskList.data.length > 0) {
-            beginProgressTask!(Region.LoadState, DefaultProgressTask)(regionTaskList.data);
+            beginProgressTask!(Region.LoadState, RegionTask)(regionTaskList.data);
             _canvas.redraw();
         }
     }
@@ -2399,21 +2411,26 @@ private:
     }
 
     template ProgressTask(Task)
-        if(is(Task == void delegate()) ||
+        if(is(Task == U delegate(), U) ||
            (isPointer!Task && __traits(isSame, TemplateOf!(PointerTarget!Task), std.parallelism.Task)) ||
            __traits(isSame, TemplateOf!Task, std.parallelism.Task)) {
         struct ProgressTask {
             string name;
 
-            static if(is(Task == void delegate())) {
+            static if(is(Task == U delegate(), U)) {
                 this(string name, Task task) {
                     this.name = name;
                     this.task = std.parallelism.task!Task(task);
                 }
 
-                typeof(std.parallelism.task!Task(delegate void() {})) task;
+                typeof(std.parallelism.task!Task(delegate U() {})) task;
             }
             else {
+                this(string name, Task task) {
+                    this.name = name;
+                    this.task = task;
+                }
+
                 Task task;
             }
         }
@@ -2432,7 +2449,7 @@ private:
         };
     }
 
-    void beginProgressTask(ProgressState, ProgressTask, bool cancelButton = true)(ProgressTask[] taskList)
+    auto beginProgressTask(ProgressState, ProgressTask, bool cancelButton = true)(ProgressTask[] taskList)
         if(__traits(isSame, TemplateOf!ProgressState, Region.ProgressState) &&
            __traits(isSame, TemplateOf!ProgressTask, this.ProgressTask)) {
             enum progressRefreshRate = 10; // in Hz
@@ -3410,9 +3427,9 @@ private:
 
                     // stretch the audio inside a region
                     case Action.moveOnset:
-                        immutable(nframes_t) onsetFrameStart =
+                        immutable nframes_t onsetFrameStart =
                             _editRegion.getPrevOnset(_moveOnsetIndex, _moveOnsetChannel);
-                        immutable(nframes_t) onsetFrameEnd =
+                        immutable nframes_t onsetFrameEnd =
                             _editRegion.getNextOnset(_moveOnsetIndex, _moveOnsetChannel);
 
                         _editRegion.region.stretchThreePoint(onsetFrameStart,
@@ -3737,6 +3754,9 @@ private:
             return false;
         }
     }
+
+    __gshared static Mutex _trackMutex;
+    __gshared static Mutex _regionMutex;
 
     Window _parentWindow;
 
