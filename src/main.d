@@ -20,7 +20,6 @@ import std.typetuple;
 
 import core.memory;
 import core.time;
-import core.sync.mutex;
 
 version(HAVE_JACK) {
     import jack.jack;
@@ -141,6 +140,91 @@ private:
         }
         data.destroy();
     }
+}
+
+template Sequence(T) {
+    class Sequence {
+    public:
+        alias Buffer = immutable T[];
+
+        this(Buffer originalBuffer) {
+            assert(originalBuffer.length > 0);
+
+            this.originalBuffer = originalBuffer;
+
+            pieceTable = make!(DList!PieceTableEntry);
+            pieceTable.insertBack(PieceTableEntry(&originalBuffer, 0, originalBuffer.length));
+
+            _cachedBuffer = &originalBuffer;
+            _cachedBufferStart = 0;
+            _cachedBufferEnd = originalBuffer.length - 1;
+        }
+
+        void insertSlice(Buffer buffer, size_t logicalStart, size_t logicalEnd) {
+            bool foundStartIndex;
+            bool foundEndIndex;
+            size_t startIndex;
+            size_t endIndex;
+            size_t i;
+            foreach(ref piece; pieceTable) {
+                if(!foundStartIndex && piece.logicalOffset >= logicalStart) {
+                    foundStartIndex = true;
+                    startIndex = i;
+                }
+                else if(foundStartIndex && piece.logicalOffset + piece.length > logicalEnd) {
+                    foundEndIndex = true;
+                    endIndex = i;
+                    break;
+                }
+                ++i;
+            }
+            if(!foundStartIndex || !foundEndIndex) {
+                throw new RangeError();
+            }
+        }
+
+        immutable(T) opIndex(size_t index) {
+            if(index >= _cachedBufferStart && index <= _cachedBufferEnd) {
+                return (*_cachedBuffer)[index];
+            }
+            else {
+                size_t offsetSum;
+                foreach(ref piece; pieceTable) {
+                    if(index >= piece.logicalOffset && index < piece.logicalOffset + piece.length) {
+                        _cachedBuffer = piece.buffer;
+                        _cachedBufferStart = piece.logicalOffset;
+                        _cachedBufferEnd = piece.logicalOffset + piece.length - 1;
+
+                        return (*_cachedBuffer)[piece.logicalOffset - offsetSum];
+                    }
+                    offsetSum += piece.length;
+                }
+            }
+            throw new RangeError();
+        }
+
+        struct PieceTableEntry {
+            Buffer* buffer;
+            size_t start;
+            size_t length;
+            size_t logicalOffset;
+        }
+
+        immutable Buffer originalBuffer;
+        DList!PieceTableEntry pieceTable;
+
+    private:
+        Buffer* _cachedBuffer;
+        size_t _cachedBufferStart;
+        size_t _cachedBufferEnd;
+
+        //enum defaultPageSize = 16 * (1024 * 1024); // in units of bytes * T.sizeof
+    }
+}
+
+void test() {
+    immutable int[] a = new immutable(int[2]);
+    Sequence!int seq = new Sequence!int(a);
 }
 
 class Region {
@@ -1277,11 +1361,6 @@ public:
         showAll();
     }
 
-    shared static this() {
-        _trackMutex = new Mutex;
-        _regionMutex = new Mutex;
-    }
-
     final class ArrangeHScroll : Scrollbar {
     public:
         this() {
@@ -2231,7 +2310,7 @@ public:
     class TrackView {
     public:
         void addRegion(Region region, nframes_t sampleRate) {
-            synchronized(_regionMutex) {
+            synchronized {
                 _track.addRegion(region);
 
                 RegionView regionView = new RegionView(region, &_trackColor);
@@ -2301,7 +2380,7 @@ public:
     }
 
     TrackView createTrackView() {
-        synchronized(_trackMutex) {
+        synchronized {
             TrackView trackView;
             trackView = new TrackView(_mixer.createTrack(), defaultTrackHeightPixels);
             _trackViews ~= trackView;
@@ -3754,9 +3833,6 @@ private:
             return false;
         }
     }
-
-    __gshared static Mutex _trackMutex;
-    __gshared static Mutex _regionMutex;
 
     Window _parentWindow;
 
