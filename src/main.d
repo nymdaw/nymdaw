@@ -17,6 +17,7 @@ import std.parallelism;
 import std.typecons;
 import std.traits;
 import std.typetuple;
+import std.range;
 
 import core.memory;
 import core.time;
@@ -145,7 +146,7 @@ private:
 template Sequence(T) {
     class Sequence {
     public:
-        alias Buffer = immutable T[];
+        alias Buffer = T[];
 
         this(Buffer originalBuffer) {
             assert(originalBuffer.length > 0);
@@ -153,39 +154,62 @@ template Sequence(T) {
             this.originalBuffer = originalBuffer;
 
             pieceTable = make!(DList!PieceTableEntry);
-            pieceTable.insertBack(PieceTableEntry(&originalBuffer, 0, originalBuffer.length));
+            pieceTable.insertBack(PieceTableEntry(originalBuffer, 0, originalBuffer.length, 0));
 
-            _cachedBuffer = &originalBuffer;
+            _cachedBuffer = originalBuffer;
             _cachedBufferStart = 0;
             _cachedBufferEnd = originalBuffer.length - 1;
         }
 
-        void insertSlice(Buffer buffer, size_t logicalStart, size_t logicalEnd) {
-            bool foundStartIndex;
-            bool foundEndIndex;
-            size_t startIndex;
-            size_t endIndex;
-            size_t i;
-            foreach(ref piece; pieceTable) {
-                if(!foundStartIndex && piece.logicalOffset >= logicalStart) {
-                    foundStartIndex = true;
-                    startIndex = i;
-                }
-                else if(foundStartIndex && piece.logicalOffset + piece.length > logicalEnd) {
-                    foundEndIndex = true;
-                    endIndex = i;
-                    break;
-                }
-                ++i;
+        void insert(Buffer buffer, size_t logicalOffset) {
+            auto range = pieceTable[];
+
+            // pop the front of the range until the insertion point is found
+            for(; !range.empty && range.front.logicalOffset + range.front.length < logicalOffset;
+                range.popFront()) {}
+
+            // split the existing piece at the insertion point
+            auto startPiece = range.front;
+            auto oldStartPieceLength = range.front.length;
+            auto newStartPieceLength = logicalOffset - startPiece.logicalOffset;
+            range.front.length = logicalOffset - startPiece.logicalOffset;
+
+            // insert the new piece provided by the given argument
+            range = dropOne(range);
+            if(range.empty) {
+                pieceTable.insertAfter(range, PieceTableEntry(buffer, 0, buffer.length, logicalOffset));
             }
-            if(!foundStartIndex || !foundEndIndex) {
-                throw new RangeError();
+            else {
+                pieceTable.insertBefore(range, PieceTableEntry(buffer, 0, buffer.length, logicalOffset));
+            }
+
+            // insert a new piece containing the remaining part of the split piece
+            if(oldStartPieceLength - newStartPieceLength > 0) {
+                if(range.empty) {
+                    pieceTable.insertAfter(range, PieceTableEntry(startPiece.buffer,
+                                                                  startPiece.start +
+                                                                  logicalOffset - startPiece.logicalOffset,
+                                                                  oldStartPieceLength - newStartPieceLength,
+                                                                  startPiece.logicalOffset + buffer.length));
+                }
+                else {
+                    pieceTable.insertBefore(range, PieceTableEntry(startPiece.buffer,
+                                                                   startPiece.start +
+                                                                   logicalOffset - startPiece.logicalOffset,
+                                                                   oldStartPieceLength - newStartPieceLength,
+                                                                   startPiece.logicalOffset + buffer.length));
+                }
+            }
+
+            // fix the logical offsets for the remaining pieces
+            for(; !range.empty; range.popFront()) {
+                range.front.logicalOffset += buffer.length;
             }
         }
 
-        immutable(T) opIndex(size_t index) {
+        T opIndex(size_t index) {
             if(index >= _cachedBufferStart && index <= _cachedBufferEnd) {
-                return (*_cachedBuffer)[index];
+                return _cachedBuffer[index];
             }
             else {
                 size_t offsetSum;
@@ -195,7 +219,7 @@ template Sequence(T) {
                         _cachedBufferStart = piece.logicalOffset;
                         _cachedBufferEnd = piece.logicalOffset + piece.length - 1;
 
-                        return (*_cachedBuffer)[piece.logicalOffset - offsetSum];
+                        return _cachedBuffer[piece.logicalOffset - offsetSum];
                     }
                     offsetSum += piece.length;
                 }
@@ -204,27 +228,36 @@ template Sequence(T) {
         }
 
         struct PieceTableEntry {
-            Buffer* buffer;
+            Buffer buffer;
             size_t start;
             size_t length;
             size_t logicalOffset;
         }
 
-        immutable Buffer originalBuffer;
+        Buffer originalBuffer;
         DList!PieceTableEntry pieceTable;
 
     private:
-        Buffer* _cachedBuffer;
+        Buffer _cachedBuffer;
         size_t _cachedBufferStart;
         size_t _cachedBufferEnd;
-
-        //enum defaultPageSize = 16 * (1024 * 1024); // in units of bytes * T.sizeof
     }
 }
 
 void test() {
-    immutable int[] a = new immutable(int[2]);
+    int[] a = [1, 2, 3, 4];
     Sequence!int seq = new Sequence!int(a);
+    foreach(s; seq.pieceTable) {
+        writeln(s);
+    }
+    writeln("\n\n");
+
+    seq.insert([5, 6], 1);
+    seq.insert([7], 1);
+
+    foreach(s; seq.pieceTable) {
+        writeln(s);
+    }
 }
 
 class Region {
@@ -3919,6 +3952,7 @@ private:
 void main(string[] args) {
     string appName = "dseq";
 
+    version(none) {
     string[] availableAudioDrivers;
     version(HAVE_JACK) {
         availableAudioDrivers ~= "JACK";
@@ -3990,4 +4024,5 @@ void main(string[] args) {
         writeln("Fatal audio error: ", e.msg);
         return;
     }
+}
 }
