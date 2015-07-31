@@ -150,11 +150,11 @@ template Sequence(T) {
 
         this(Buffer originalBuffer) {
             assert(originalBuffer.length > 0);
-
             this.originalBuffer = originalBuffer;
 
-            pieceTable = make!(DList!PieceTableEntry);
-            pieceTable.insertBack(PieceTableEntry(originalBuffer, 0, originalBuffer.length, 0));
+            auto pieceTable = new PieceTableEntry[](1);
+            pieceTable[0] = PieceTableEntry(originalBuffer, 0, originalBuffer.length, 0);
+            pieceTableHistory.put(pieceTable);
 
             _cachedBuffer = originalBuffer;
             _cachedBufferStart = 0;
@@ -162,49 +162,54 @@ template Sequence(T) {
         }
 
         void insert(Buffer buffer, size_t logicalOffset) {
-            auto range = pieceTable[];
+            // allocate a new piece table
+            auto pieceTable = new PieceTableEntry[](pieceTableHistory.data[$ - 1].length + 2);
 
-            // pop the front of the range until the insertion point is found
-            for(; !range.empty && range.front.logicalOffset + range.front.length < logicalOffset;
-                range.popFront()) {}
-
-            // split the existing piece at the insertion point
-            auto startPiece = range.front;
-            auto oldStartPieceLength = range.front.length;
-            auto newStartPieceLength = logicalOffset - startPiece.logicalOffset;
-            range.front.length = logicalOffset - startPiece.logicalOffset;
-
-            // insert the new piece provided by the given argument
-            range = dropOne(range);
-            if(range.empty) {
-                pieceTable.insertAfter(range, PieceTableEntry(buffer, 0, buffer.length, logicalOffset));
-            }
-            else {
-                pieceTable.insertBefore(range, PieceTableEntry(buffer, 0, buffer.length, logicalOffset));
-            }
-
-            // insert a new piece containing the remaining part of the split piece
-            if(oldStartPieceLength - newStartPieceLength > 0) {
-                if(range.empty) {
-                    pieceTable.insertAfter(range, PieceTableEntry(startPiece.buffer,
-                                                                  startPiece.start +
-                                                                  logicalOffset - startPiece.logicalOffset,
-                                                                  oldStartPieceLength - newStartPieceLength,
-                                                                  startPiece.logicalOffset + buffer.length));
+            // copy elements from the previous piece table until the insertion point is found
+            size_t nCopied;
+            foreach(ref piece; pieceTableHistory.data[$ - 1]) {
+                if(piece.logicalOffset >= logicalOffset) {
+                    break;
                 }
                 else {
-                    pieceTable.insertBefore(range, PieceTableEntry(startPiece.buffer,
-                                                                   startPiece.start +
-                                                                   logicalOffset - startPiece.logicalOffset,
-                                                                   oldStartPieceLength - newStartPieceLength,
-                                                                   startPiece.logicalOffset + buffer.length));
+                    pieceTable[nCopied] = piece;
+                    ++nCopied;
                 }
             }
 
-            // fix the logical offsets for the remaining pieces
-            for(; !range.empty; range.popFront()) {
-                range.front.logicalOffset += buffer.length;
+            // split the existing piece at the insertion point
+            auto oldStartPieceLength = pieceTable[nCopied - 1].length;
+            auto newStartPieceLength = logicalOffset - pieceTable[nCopied - 1].logicalOffset;
+            pieceTable[nCopied - 1].length = logicalOffset - pieceTable[nCopied - 1].logicalOffset;
+
+            // insert the new piece provided by the given argument
+            pieceTable[nCopied] = PieceTableEntry(buffer, 0, buffer.length, logicalOffset);
+            size_t copyOffset = 1; // number of spaces added to the new piece table after nCopied
+
+            // insert another new piece containing the remaining part of the split piece
+            if(oldStartPieceLength - newStartPieceLength > 0) {
+                pieceTable[nCopied + 1] = PieceTableEntry(pieceTable[nCopied - 1].buffer,
+                                                          pieceTable[nCopied - 1].start +
+                                                          logicalOffset - pieceTable[nCopied - 1].logicalOffset,
+                                                          oldStartPieceLength - newStartPieceLength,
+                                                          pieceTable[nCopied - 1].logicalOffset + buffer.length);
+                ++copyOffset;
             }
+            else {
+                // an extra space was allocated for the new piece table
+                --pieceTable.length;
+            }
+
+            // copy the remaining pieces and fix their logical offsets
+            if(nCopied < pieceTableHistory.data.length) {
+                foreach(i, ref piece; pieceTableHistory.data[$ - 1][nCopied .. $]) {
+                    pieceTable[nCopied + i + copyOffset] = piece;
+                    pieceTable[nCopied + i + copyOffset].logicalOffset += buffer.length;
+                }
+            }
+
+            // add the new piece table to the end of the piece table history
+            pieceTableHistory.put(pieceTable);
         }
 
         T opIndex(size_t index) {
@@ -213,7 +218,7 @@ template Sequence(T) {
             }
             else {
                 size_t offsetSum;
-                foreach(ref piece; pieceTable) {
+                foreach(ref piece; pieceTableHistory.data[$ - 1]) {
                     if(index >= piece.logicalOffset && index < piece.logicalOffset + piece.length) {
                         _cachedBuffer = piece.buffer;
                         _cachedBufferStart = piece.logicalOffset;
@@ -235,7 +240,7 @@ template Sequence(T) {
         }
 
         Buffer originalBuffer;
-        DList!PieceTableEntry pieceTable;
+        Appender!(PieceTableEntry[][]) pieceTableHistory;
 
     private:
         Buffer _cachedBuffer;
@@ -247,17 +252,13 @@ template Sequence(T) {
 void test() {
     int[] a = [1, 2, 3, 4];
     Sequence!int seq = new Sequence!int(a);
-    foreach(s; seq.pieceTable) {
-        writeln(s);
-    }
-    writeln("\n\n");
+    writeln(seq.pieceTableHistory.data[$ - 1]);
 
     seq.insert([5, 6], 1);
-    seq.insert([7], 1);
+    writeln(seq.pieceTableHistory.data[$ - 1]);
 
-    foreach(s; seq.pieceTable) {
-        writeln(s);
-    }
+    seq.insert([7], 1);
+    writeln(seq.pieceTableHistory.data[$ - 1]);
 }
 
 class Region {
@@ -3951,6 +3952,8 @@ private:
 
 void main(string[] args) {
     string appName = "dseq";
+
+    test(); // TODO remove
 
     version(none) {
     string[] availableAudioDrivers;
