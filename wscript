@@ -26,6 +26,12 @@ def options( ctx ):
                     default = False,
                     dest = "debug" )
 
+    ctx.add_option( "--unittest",
+                    action = "store_true",
+                    help = ( "enable runtime unit tests" ),
+                    default = False,
+                    dest = "unittest" )
+
     ctx.add_option( "--release",
                     action = "store_true",
                     help = ( "enable optimizations and compile without debug symbols" ),
@@ -38,10 +44,13 @@ def configure( ctx ):
     ctx.load( "compiler_d" )
     ctx.load( "compiler_c" )
     ctx.env.append_value( "DFLAGS", "-w" )
-    if opts.debug :
+    if opts.debug:
         ctx.env.append_value( "DFLAGS", [ "-gc", "-debug" ] )
     else:
         ctx.env.append_value( "DFLAGS", [ "-O", "-release", "-inline", "-boundscheck=off" ] )
+
+    if opts.unittest:
+        ctx.env.append_value( "DFLAGS", "-unittest" )
 
     # Check for jack
     if ctx.check_cfg( package = "jack",

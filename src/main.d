@@ -148,117 +148,463 @@ template Sequence(T) {
     public:
         alias Buffer = T[];
 
+        // original buffer must not be empty
         this(Buffer originalBuffer) {
             assert(originalBuffer.length > 0);
+
             this.originalBuffer = originalBuffer;
 
-            auto pieceTable = new PieceTableEntry[](1);
-            pieceTable[0] = PieceTableEntry(originalBuffer, 0, originalBuffer.length, 0);
-            pieceTableHistory.put(pieceTable);
-
-            _cachedBuffer = originalBuffer;
-            _cachedBufferStart = 0;
-            _cachedBufferEnd = originalBuffer.length - 1;
+            PieceEntry[] table = new PieceEntry[](1);
+            table[0] = PieceEntry(originalBuffer, 0, originalBuffer.length, 0);
+            pieceTableHistory.put(PieceTable(table));
         }
 
+        // insert a new buffer at logicalOffset
         void insert(Buffer buffer, size_t logicalOffset) {
-            // allocate a new piece table
-            auto pieceTable = new PieceTableEntry[](pieceTableHistory.data[$ - 1].length + 2);
+            if(logicalOffset > logicalLength) {
+                throw new RangeError();
+            }
+
+            // construct a new piece table appender
+            Appender!(PieceEntry[]) pieceTable;
 
             // copy elements from the previous piece table until the insertion point is found
             size_t nCopied;
-            foreach(ref piece; pieceTableHistory.data[$ - 1]) {
-                if(piece.logicalOffset >= logicalOffset) {
+            foreach(ref piece; table) {
+                if(piece.logicalOffset + piece.length >= logicalOffset) {
                     break;
                 }
                 else {
-                    pieceTable[nCopied] = piece;
+                    pieceTable.put(piece);
                     ++nCopied;
                 }
             }
 
-            // split the existing piece at the insertion point
-            auto oldStartPieceLength = pieceTable[nCopied - 1].length;
-            auto newStartPieceLength = logicalOffset - pieceTable[nCopied - 1].logicalOffset;
-            pieceTable[nCopied - 1].length = logicalOffset - pieceTable[nCopied - 1].logicalOffset;
+            // if the insertion point is contained within another piece, split that piece
+            size_t oldStartPieceLength;
+            size_t newStartPieceLength;
+            if(table[nCopied].logicalOffset + table[nCopied].length >= logicalOffset) {
+                oldStartPieceLength = table[nCopied].length;
+                newStartPieceLength = logicalOffset - table[nCopied].logicalOffset;
+                if(newStartPieceLength > 0) {
+                    pieceTable.put(PieceEntry(table[nCopied].buffer,
+                                              table[nCopied].start,
+                                              newStartPieceLength,
+                                              table[nCopied].logicalOffset));
+                }
+            }
 
             // insert the new piece provided by the given argument
-            pieceTable[nCopied] = PieceTableEntry(buffer, 0, buffer.length, logicalOffset);
-            size_t copyOffset = 1; // number of spaces added to the new piece table after nCopied
+            pieceTable.put(PieceEntry(buffer, 0, buffer.length, logicalOffset));
 
             // insert another new piece containing the remaining part of the split piece
             if(oldStartPieceLength - newStartPieceLength > 0) {
-                pieceTable[nCopied + 1] = PieceTableEntry(pieceTable[nCopied - 1].buffer,
-                                                          pieceTable[nCopied - 1].start +
-                                                          logicalOffset - pieceTable[nCopied - 1].logicalOffset,
-                                                          oldStartPieceLength - newStartPieceLength,
-                                                          pieceTable[nCopied - 1].logicalOffset + buffer.length);
-                ++copyOffset;
-            }
-            else {
-                // an extra space was allocated for the new piece table
-                --pieceTable.length;
+                pieceTable.put(PieceEntry(table[nCopied].buffer,
+                                          table[nCopied].start +
+                                          logicalOffset - table[nCopied].logicalOffset,
+                                          oldStartPieceLength - newStartPieceLength,
+                                          logicalOffset + buffer.length));
             }
 
             // copy the remaining pieces and fix their logical offsets
-            if(nCopied < pieceTableHistory.data.length) {
-                foreach(i, ref piece; pieceTableHistory.data[$ - 1][nCopied .. $]) {
-                    pieceTable[nCopied + i + copyOffset] = piece;
-                    pieceTable[nCopied + i + copyOffset].logicalOffset += buffer.length;
+            ++nCopied;
+            if(nCopied < table.length) {
+                foreach(i, ref piece; table[nCopied .. $]) {
+                    pieceTable.put(PieceEntry(table[nCopied + i].buffer,
+                                              table[nCopied + i].start,
+                                              table[nCopied + i].length,
+                                              table[nCopied + i].logicalOffset +
+                                              buffer.length));
                 }
             }
 
             // add the new piece table to the end of the piece table history
-            pieceTableHistory.put(pieceTable);
+            pieceTableHistory.put(PieceTable(pieceTable.data));
         }
 
-        T opIndex(size_t index) {
-            if(index >= _cachedBufferStart && index <= _cachedBufferEnd) {
-                return _cachedBuffer[index];
+        // delete all indices in the range [logicalStart, logicalEnd)
+        void remove(size_t logicalStart, size_t logicalEnd) {
+            // degenerate case
+            if(logicalStart == logicalEnd) {
+                return;
             }
-            else {
-                size_t offsetSum;
-                foreach(ref piece; pieceTableHistory.data[$ - 1]) {
-                    if(index >= piece.logicalOffset && index < piece.logicalOffset + piece.length) {
-                        _cachedBuffer = piece.buffer;
-                        _cachedBufferStart = piece.logicalOffset;
-                        _cachedBufferEnd = piece.logicalOffset + piece.length - 1;
 
-                        return _cachedBuffer[piece.logicalOffset - offsetSum];
-                    }
-                    offsetSum += piece.length;
+            // range checks
+            if(logicalStart > logicalEnd ||
+               logicalStart >= logicalLength ||
+               logicalEnd > logicalLength) {
+                throw new RangeError();
+            }
+
+            // construct a new piece table appender
+            Appender!(PieceEntry[]) pieceTable;
+
+            // skip all pieces in the piece table that end before logicalStart
+            size_t nStartSkipped;
+            foreach(ref piece; table) {
+                if(piece.logicalOffset + piece.length >= logicalStart) {
+                    break;
+                }
+                else {
+                    pieceTable.put(piece);
+                    ++nStartSkipped;
                 }
             }
-            throw new RangeError();
+
+            // if logicalStart is contained within another piece, split that piece
+            size_t oldStartPieceLength;
+            size_t newStartPieceLength;
+            if(table[nStartSkipped].logicalOffset + table[nStartSkipped].length >= logicalStart) {
+                oldStartPieceLength = table[nStartSkipped].length;
+                newStartPieceLength = logicalStart - table[nStartSkipped].logicalOffset;
+                if(newStartPieceLength > 0) {
+                    pieceTable.put(PieceEntry(table[nStartSkipped].buffer,
+                                              table[nStartSkipped].start,
+                                              newStartPieceLength,
+                                              table[nStartSkipped].logicalOffset));
+                }
+            }
+
+            // skip all pieces between logicalStart and logicalEnd
+            size_t nEndSkipped = nStartSkipped;
+            foreach(ref piece; table[nStartSkipped .. $]) {
+                if(piece.logicalOffset + piece.length > logicalEnd) {
+                    break;
+                }
+                else {
+                    ++nEndSkipped;
+                }
+            }
+
+            if(nEndSkipped < table.length) {
+                // insert a new piece containing the remaining part of the split piece
+                if(oldStartPieceLength - newStartPieceLength > 0) {
+                    size_t oldStart = table[nEndSkipped].start;
+                    size_t newStart = oldStart + logicalEnd - table[nEndSkipped].logicalOffset;
+                    size_t newLength = table[nEndSkipped].length - (newStart - oldStart);
+                    if(newLength > 0) {
+                        pieceTable.put(PieceEntry(table[nEndSkipped].buffer,
+                                                  newStart,
+                                                  newLength,
+                                                  logicalStart));
+                    }
+                    ++nEndSkipped;
+                }
+
+                // copy the remaining pieces and fix their logical offsets
+                foreach(i, ref piece; table[nEndSkipped .. $]) {
+                    pieceTable.put(PieceEntry(table[nEndSkipped + i].buffer,
+                                              table[nEndSkipped + i].start,
+                                              table[nEndSkipped + i].length,
+                                              table[nEndSkipped + i].logicalOffset -
+                                              (logicalEnd - logicalStart)));
+                }
+            }
+
+            // add the new piece table to the end of the piece table history
+            pieceTableHistory.put(PieceTable(pieceTable.data));
         }
 
-        struct PieceTableEntry {
+        struct PieceEntry {
             Buffer buffer;
             size_t start;
             size_t length;
             size_t logicalOffset;
         }
 
-        Buffer originalBuffer;
-        Appender!(PieceTableEntry[][]) pieceTableHistory;
+        struct PieceTable {
+        public:
+            this(PieceEntry[] table) {
+                this.table = table;
 
-    private:
-        Buffer _cachedBuffer;
-        size_t _cachedBufferStart;
-        size_t _cachedBufferEnd;
+                if(table.length > 0) {
+                    this.logicalLength = table[$ - 1].logicalOffset + table[$ - 1].length;
+                }
+            }
+
+            T opIndex(size_t index) {
+                if(_cachedBuffer && index >= _cachedBufferStart && index <= _cachedBufferEnd) {
+                    return _cachedBuffer[index];
+                }
+                else {
+                    size_t offsetSum;
+                    foreach(ref piece; table) {
+                        if(index >= piece.logicalOffset && index < piece.logicalOffset + piece.length) {
+                            _cachedBuffer = piece.buffer;
+                            _cachedBufferStart = piece.logicalOffset;
+                            _cachedBufferEnd = piece.logicalOffset + piece.length - 1;
+
+                            return _cachedBuffer[piece.logicalOffset - offsetSum];
+                        }
+                        offsetSum += piece.length;
+                    }
+                }
+                throw new RangeError();
+            }
+
+            PieceTable opSlice(size_t logicalStart, size_t logicalEnd) {
+                // degenerate case
+                if(logicalStart == logicalEnd) {
+                    return PieceTable();
+                }
+
+                // range checks
+                if(logicalStart > logicalEnd ||
+                   logicalStart >= logicalLength ||
+                   logicalEnd > logicalLength) {
+                    throw new RangeError();
+                }
+
+                // construct a new piece table appender
+                Appender!(PieceEntry[]) pieceTable;
+
+                // skip all pieces in the piece table that end before logicalStart
+                size_t nStartSkipped;
+                foreach(ref piece; table) {
+                    if(piece.logicalOffset + piece.length >= logicalStart) {
+                        break;
+                    }
+                    else {
+                        ++nStartSkipped;
+                    }
+                }
+
+                // find the starting index for the slice
+                immutable size_t delta = logicalStart - table[nStartSkipped].logicalOffset;
+                if(table[nStartSkipped].logicalOffset + table[nStartSkipped].length >= logicalEnd) {
+                    pieceTable.put(PieceEntry(table[nStartSkipped].buffer,
+                                              table[nStartSkipped].start + delta,
+                                              logicalEnd - logicalStart,
+                                              logicalStart));
+                    return PieceTable(pieceTable.data);
+                }
+                else {
+                    pieceTable.put(PieceEntry(table[nStartSkipped].buffer,
+                                              table[nStartSkipped].start + delta,
+                                              table[nStartSkipped].length - delta,
+                                              logicalStart));
+                }
+
+                // copy elements into the slice until the element ending past the end of the slice is found
+                size_t nCopied;
+                foreach(ref piece; table[nStartSkipped + 1 .. $]) {
+                    if(piece.logicalOffset + piece.length > logicalEnd) {
+                        break;
+                    }
+                    else {
+                        pieceTable.put(piece);
+                        ++nCopied;
+                    }
+                }
+
+                // insert the last element in the slice
+                immutable size_t endIndex = nStartSkipped + nCopied;
+                if(endIndex < table.length &&
+                   table[endIndex].logicalOffset + table[endIndex].length >= logicalEnd) {
+                    pieceTable.put(PieceEntry(table[endIndex].buffer,
+                                              table[endIndex].start,
+                                              logicalEnd - pieceTable.data[$ - 1].logicalOffset,
+                                              table[endIndex].logicalOffset));
+                }
+
+                writeln(pieceTable.data);
+
+                // return the slice
+                return PieceTable(pieceTable.data);
+            }
+
+            PieceTable opSlice() {
+                return opSlice(0, logicalLength);
+            }
+
+            size_t opDollar(size_t pos)() {
+                static assert(pos == 0);
+
+                return logicalLength;
+            }
+
+            @property bool empty() {
+                return _pos >= logicalLength;
+            }
+            @property T front() {
+                return this[_pos];
+            }
+            void popFront() {
+                ++_pos;
+            }
+
+            @property T[] toArray() {
+                auto result = appender!(T[]);
+                foreach(piece; table) {
+                    for(auto i = 0; i < piece.length; ++i) {
+                        result.put(piece.buffer[piece.start + i]);
+                    }
+                }
+                return result.data;
+            }
+
+            @property string toString() {
+                return to!string(toArray);
+            }
+
+            PieceEntry[] table;
+            size_t logicalLength;
+
+        private:
+            size_t _pos;
+
+            Buffer _cachedBuffer;
+            size_t _cachedBufferStart;
+            size_t _cachedBufferEnd;
+        }
+
+        @property ref PieceTable currentPieceTable() {
+            return pieceTableHistory.data[$ - 1];
+        }
+        alias currentPieceTable this;
+
+        Buffer originalBuffer;
+        Appender!(PieceTable[]) pieceTableHistory;
     }
 }
 
-void test() {
-    int[] a = [1, 2, 3, 4];
-    Sequence!int seq = new Sequence!int(a);
-    writeln(seq.pieceTableHistory.data[$ - 1]);
+// test sequence slicing
+unittest {
+    alias IntSeq = Sequence!int;
 
-    seq.insert([5, 6], 1);
-    writeln(seq.pieceTableHistory.data[$ - 1]);
+    int[] intArray = [1, 2, 3, 4];
+    IntSeq intSeq = new IntSeq(intArray);
 
-    seq.insert([7], 1);
-    writeln(seq.pieceTableHistory.data[$ - 1]);
+    {
+        assert(intSeq.toArray == [1, 2, 3, 4]);
+        assert(intSeq.logicalLength == intArray.length);
+
+        assert(intSeq[0 .. 0].toArray == intArray[0 .. 0]);
+        assert(intSeq[0 .. $].toArray == intArray[0 .. $]);
+        assert(intSeq[0 .. 1].toArray == intArray[0 .. 1]);
+        assert(intSeq[0 .. 2].toArray == intArray[0 .. 2]);
+        assert(intSeq[0 .. 3].toArray == intArray[0 .. 3]);
+
+        assert(intSeq[1 .. 1].toArray == intArray[1 .. 1]);
+        assert(intSeq[1 .. 2].toArray == intArray[1 .. 2]);
+        assert(intSeq[1 .. 3].toArray == intArray[1 .. 3]);
+        assert(intSeq[1 .. $].toArray == intArray[1 .. $]);
+
+        assert(intSeq[2 .. 3].toArray == intArray[2 .. 3]);
+        assert(intSeq[2 .. $].toArray == intArray[2 .. $]);
+
+        assert(intSeq[3 .. $].toArray == intArray[3 .. $]);
+    }
+}
+
+// test sequence insertion
+unittest {
+    alias IntSeq = Sequence!int;
+
+    {
+        int[] intArray = [1];
+        IntSeq intSeq = new IntSeq(intArray);
+
+        intSeq.insert([2], 0);
+        assert(intSeq.toArray == [2, 1]);
+
+        intSeq.insert([3], 1);
+        assert(intSeq.toArray == [2, 3, 1]);
+
+        intSeq.insert([4], intSeq.logicalLength);
+        assert(intSeq.toArray == [2, 3, 1, 4]);
+    }
+
+    {
+        int[] intArray = [1, 2];
+        IntSeq intSeq = new IntSeq(intArray);
+
+        intSeq.insert([3, 4], 2);
+        assert(intSeq.toArray == [1, 2, 3, 4]);
+
+        intSeq.insert([5, 6], 2);
+        assert(intSeq.toArray == [1, 2, 5, 6, 3, 4]);
+
+        intSeq.insert([6, 7], 1);
+        assert(intSeq.toArray == [1, 6, 7, 2, 5, 6, 3, 4]);
+    }
+
+    {
+        int[] intArray = [1, 2, 3, 4];
+        IntSeq intSeq = new IntSeq(intArray);
+
+        intSeq.insert([5, 6], 2);
+        assert(intSeq.toArray == [1, 2, 5, 6, 3, 4]);
+
+        intSeq.insert([7, 8, 9], 5);
+        assert(intSeq.toArray == [1, 2, 5, 6, 3, 7, 8, 9, 4]);
+
+        intSeq.insert([10, 11], 0);
+        assert(intSeq.toArray == [10, 11, 1, 2, 5, 6, 3, 7, 8, 9, 4]);
+
+        intSeq.insert([12], 6);
+        assert(intSeq.toArray == [10, 11, 1, 2, 5, 6, 12, 3, 7, 8, 9, 4]);
+
+        intSeq.insert([13], 8);
+        assert(intSeq.toArray == [10, 11, 1, 2, 5, 6, 12, 3, 13, 7, 8, 9, 4]);
+
+        intSeq.insert([13, 14], 2);
+        assert(intSeq.toArray == [10, 11, 13, 14, 1, 2, 5, 6, 12, 3, 13, 7, 8, 9, 4]);
+
+        intSeq.insert([15], 13);
+        assert(intSeq.toArray == [10, 11, 13, 14, 1, 2, 5, 6, 12, 3, 13, 7, 8, 15, 9, 4]);
+    }
+}
+
+// test sequence removal
+unittest {
+    alias IntSeq = Sequence!int;
+
+    {
+        int[] intArray = [1, 2, 3, 4];
+        IntSeq intSeq = new IntSeq(intArray);
+
+        intSeq.remove(0, 1);
+        assert(intSeq.toArray == [2, 3, 4]);
+
+        intSeq.remove(1, 2);
+        assert(intSeq.toArray == [2, 4]);
+        
+        intSeq.remove(0, 1);
+        assert(intSeq.toArray == [4]);
+
+        intSeq.remove(0, 1);
+        assert(intSeq.toArray == []);
+    }
+
+    {
+        int[] intArray = [1, 2, 3, 4];
+        IntSeq intSeq = new IntSeq(intArray);
+
+        intSeq.insert([5, 6], 2);
+        intSeq.insert([7, 8, 9], 5);
+        intSeq.insert([10, 11], 0);
+        intSeq.insert([12, 13], 2);
+        assert(intSeq.toArray == [10, 11, 12, 13, 1, 2, 5, 6, 3, 7, 8, 9, 4]);
+
+        intSeq.remove(3, 4);
+        assert(intSeq.toArray == [10, 11, 12, 1, 2, 5, 6, 3, 7, 8, 9, 4]);
+
+        intSeq.remove(11, 12);
+        assert(intSeq.toArray == [10, 11, 12, 1, 2, 5, 6, 3, 7, 8, 9]);
+
+        intSeq.remove(2, 7);
+        assert(intSeq.toArray == [10, 11, 3, 7, 8, 9]);
+
+        intSeq.remove(2, 3);
+        assert(intSeq.toArray == [10, 11, 7, 8, 9]);
+
+        intSeq.remove(3, 5);
+        assert(intSeq.toArray == [10, 11, 7]);
+
+        intSeq.remove(0, 3);
+        assert(intSeq.toArray == []);
+    }
 }
 
 class Region {
@@ -3953,9 +4299,6 @@ private:
 void main(string[] args) {
     string appName = "dseq";
 
-    test(); // TODO remove
-
-    version(none) {
     string[] availableAudioDrivers;
     version(HAVE_JACK) {
         availableAudioDrivers ~= "JACK";
@@ -4027,5 +4370,4 @@ void main(string[] args) {
         writeln("Fatal audio error: ", e.msg);
         return;
     }
-}
 }
