@@ -450,7 +450,7 @@ template Sequence(T) {
                 ++_pos;
             }
 
-            @property T[] toArray() {
+            @property T[] toArray() const {
                 auto result = appender!(T[]);
                 foreach(piece; table) {
                     for(auto i = 0; i < piece.length; ++i) {
@@ -460,7 +460,7 @@ template Sequence(T) {
                 return result.data;
             }
 
-            @property string toString() {
+            @property string toString() const {
                 return to!string(toArray);
             }
 
@@ -4406,7 +4406,9 @@ void main(string[] args) {
         mainWindow.add(arrangeView);
         mainWindow.showAll();
 
-        arrangeView.loadRegionsFromFiles(args[1 .. $]);
+        if(!args[1 .. $].empty) {
+            arrangeView.loadRegionsFromFiles(args[1 .. $]);
+        }
         Main.run();
     }
     catch(AudioError e) {
