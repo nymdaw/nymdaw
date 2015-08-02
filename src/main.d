@@ -323,22 +323,39 @@ template Sequence(T) {
             }
 
             T opIndex(size_t index) {
-                if(_cachedBuffer && index >= _cachedBufferStart && index <= _cachedBufferEnd) {
-                    return _cachedBuffer[index];
-                }
-                else {
-                    size_t offsetSum;
-                    foreach(ref piece; table) {
-                        if(index >= piece.logicalOffset && index < piece.logicalOffset + piece.length) {
-                            _cachedBuffer = piece.buffer;
-                            _cachedBufferStart = piece.logicalOffset;
-                            _cachedBufferEnd = piece.logicalOffset + piece.length - 1;
-
-                            return _cachedBuffer[piece.logicalOffset - offsetSum];
+                if(_cachedBuffer) {
+                    // if the index is in the cached buffer
+                    if(index >= _cachedBufferStart && index < _cachedBufferEnd) {
+                        return _cachedBuffer[index + _cachedBufferOffset];
+                    }
+                    // try the next cache buffer, since most accesses should be sequential
+                    else if(++_cachedBufferIndex < table.length) {
+                        _cachedBuffer = table[_cachedBufferIndex].buffer;
+                        _cachedBufferOffset =
+                            table[_cachedBufferIndex].start - table[_cachedBufferIndex].logicalOffset;
+                        _cachedBufferStart = table[_cachedBufferIndex].logicalOffset;
+                        _cachedBufferEnd =
+                            table[_cachedBufferIndex].logicalOffset + table[_cachedBufferIndex].length;
+                        if(index >= _cachedBufferStart && index < _cachedBufferEnd) {
+                            return _cachedBuffer[index + _cachedBufferOffset];
                         }
-                        offsetSum += piece.length;
                     }
                 }
+
+                // in case of random access, search the entire piece table for the index
+                foreach(i, ref piece; table) {
+                    if(index >= piece.logicalOffset && index < piece.logicalOffset + piece.length) {
+                        _cachedBuffer = piece.buffer;
+                        _cachedBufferIndex = i;
+                        _cachedBufferOffset = piece.start - piece.logicalOffset;
+                        _cachedBufferStart = piece.logicalOffset;
+                        _cachedBufferEnd = piece.logicalOffset + piece.length;
+
+                        return _cachedBuffer[index + _cachedBufferOffset];
+                    }
+                }
+
+                // otherwise, the index was out of range
                 throw new RangeError();
             }
 
@@ -454,6 +471,8 @@ template Sequence(T) {
             size_t _pos;
 
             Buffer _cachedBuffer;
+            size_t _cachedBufferIndex;
+            size_t _cachedBufferOffset;
             size_t _cachedBufferStart;
             size_t _cachedBufferEnd;
         }
@@ -466,6 +485,30 @@ template Sequence(T) {
         Buffer originalBuffer;
         Appender!(PieceTable[]) pieceTableHistory;
     }
+}
+
+// test sequence indexing
+unittest {
+    alias IntSeq = Sequence!int;
+
+    int[] intArray = [1, 2, 3];
+    IntSeq intSeq = new IntSeq(intArray);
+
+    intSeq.insert([4, 5], 0);
+    intSeq.insert([6, 7], 1);
+    assert(intSeq.toArray == [4, 6, 7, 5, 1, 2, 3]);
+
+    assert(intSeq[0] == 4);
+    assert(intSeq[1] == 6);
+    assert(intSeq[2] == 7);
+    assert(intSeq[3] == 5);
+    assert(intSeq[4] == 1);
+    assert(intSeq[5] == 2);
+    assert(intSeq[6] == 3);
+
+    assert(intSeq[2] == 7);
+    assert(intSeq[6] == 3);
+    assert(intSeq[3] == 5);
 }
 
 // test sequence slicing
