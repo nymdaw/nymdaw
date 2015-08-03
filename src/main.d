@@ -185,6 +185,15 @@ public:
             this.table = table;
         }
 
+        // TODO remove this
+        void debugPrint() {
+            write("[");
+            foreach(piece; table) {
+                write("(", piece.start, ", ", piece.length, ", ", piece.logicalOffset, "), ");
+            }
+            writeln("]");
+        }
+
         // insert a new buffer at logicalOffset
         PieceTable insert(Buffer buffer, size_t logicalOffset) {
             if(logicalOffset > logicalLength) {
@@ -502,6 +511,8 @@ public:
     Buffer originalBuffer;
     Appender!(PieceTable[]) pieceTableHistory;
 }
+
+alias AudioSequence = Sequence!sample_t;
 
 // test sequence indexing
 unittest {
@@ -1085,28 +1096,6 @@ public:
         rubberband_retrieve(rState, secondHalfOutputPtr.ptr, secondHalfOutputLength);
         rubberband_delete(rState);
 
-//--------------------------------------------------------------------------------
-/*        if(linkChannels) {
-            foreach(channels_t channelIndex, channel; firstHalfOutputChannels) {
-                foreach(i, sample; channel) {
-                    setSampleLocal(channelIndex, cast(nframes_t)(globalStartFrame + i), sample);
-                }
-            }
-            foreach(channels_t channelIndex, channel; secondHalfOutputChannels) {
-                foreach(i, sample; channel) {
-                    setSampleLocal(channelIndex, cast(nframes_t)(globalDestFrame + i), sample);
-                }
-            }
-        }
-        else {
-            foreach(i, sample; firstHalfOutputChannels[0]) {
-                setSampleLocal(singleChannelIndex, cast(nframes_t)(globalStartFrame + i), sample);
-            }
-            foreach(i, sample; secondHalfOutputChannels[0]) {
-                setSampleLocal(singleChannelIndex, cast(nframes_t)(globalDestFrame + i), sample);
-            }
-            }*/
-//--------------------------------------------------------------------------------
         immutable nframes_t localStartFrame = globalStartFrame - offset;
         immutable nframes_t localEndFrame = globalEndFrame - offset;
         sample_t[] outputBuffer = new sample_t[]((firstHalfOutputLength + secondHalfOutputLength) * nChannels);
@@ -1300,6 +1289,42 @@ public:
             (frame < _offset + _nframes ? _audioSeq[(frame - _offset) * _nChannels + channelIndex] : 0) : 0;
     }
 
+    // returns a slice of the internal audio sequence, using global indexes as input
+    AudioSequence.PieceTable getSliceGlobal(nframes_t globalFrameStart, nframes_t globalFrameEnd) {
+        return _audioSeq[globalFrameStart - offset .. globalFrameEnd - offset];
+    }
+
+    // insert a subregion at a global offset, does nothing if the offset is not within this region
+    void insertGlobal(AudioSequence.PieceTable insertSlice, nframes_t globalFrameOffset) {
+        immutable nframes_t localFrameOffset = globalFrameOffset - offset;
+        if(localFrameOffset >= 0 && localFrameOffset < nframes) {
+            // TODO optimize this?
+            _audioSeq.insert(insertSlice.toArray, localFrameOffset * nChannels);
+
+            _nframes = cast(nframes_t)(_audioSeq.length / nChannels);
+            if(resizeDelegate !is null) {
+                resizeDelegate(offset + nframes);
+            }
+        }
+    }
+
+    // removes a subregion according to the given global offsets,
+    //does nothing if the offsets are not within this region
+    void removeGlobal(nframes_t globalFrameStart, nframes_t globalFrameEnd) {
+        immutable nframes_t localFrameStart = globalFrameStart - offset;
+        immutable nframes_t localFrameEnd = globalFrameEnd - offset;
+        if(localFrameStart < localFrameEnd &&
+           localFrameStart >= 0 && localFrameStart < nframes &&
+           localFrameEnd >= 0 && localFrameEnd < nframes) {
+            _audioSeq.remove(localFrameStart * nChannels, localFrameEnd * nChannels);
+
+            _nframes = cast(nframes_t)(_audioSeq.length / nChannels);
+            if(resizeDelegate !is null) {
+                resizeDelegate(offset + nframes);
+            }
+        }
+    }
+
     @property nframes_t sampleRate() const @nogc nothrow { return _sampleRate; }
     @property channels_t nChannels() const @nogc nothrow { return _nChannels; }
     @property nframes_t nframes() const @nogc nothrow { return _nframes; }
@@ -1325,7 +1350,7 @@ private:
         _nframes = cast(nframes_t)(audioBuffer.length / nChannels);
         _name = name;
 
-        _audioSeq = new Sequence!sample_t(audioBuffer);
+        _audioSeq = new AudioSequence(audioBuffer);
     }
 
     static sample_t _min(T)(T sourceData) {
@@ -1464,7 +1489,7 @@ private:
     channels_t _nChannels; // number of channels in the audio data
     nframes_t _nframes; // number of frames in the audio data, where 1 frame contains 1 sample for each channel
 
-    Sequence!sample_t _audioSeq; // sequence of interleaved audio data, for all channels
+    AudioSequence _audioSeq; // sequence of interleaved audio data, for all channels
 
     nframes_t _offset; // the offset, in frames, for the start of this region
     bool _mute; // flag indicating whether to mute all audio in this region during playback
@@ -4148,7 +4173,7 @@ private:
         bool onKeyPress(Event event, Widget widget) {
             if(event.type == EventType.KEY_PRESS) {
                 switch(_action) {
-                // insert a new marker
+                    // insert a new marker
                     case Action.createMarker:
                         _setAction(Action.none);
                         wchar keyval = cast(wchar)(Keymap.keyvalToUnicode(event.key.keyval));
@@ -4269,6 +4294,14 @@ private:
                         }
                         break;
 
+                    case GdkKeysyms.GDK_c:
+                        if(controlPressed && _mode == Mode.editRegion && _subregionSelected) {
+                            // save the selected subregion
+                            _copyBuffer = _editRegion.region.getSliceGlobal(_subregionStartFrame,
+                                                                            _subregionEndFrame);
+                        }
+                        break;
+
                     case GdkKeysyms.GDK_e:
                         if(controlPressed) {
                             // move the transport to the maximum length of all selected regions
@@ -4356,6 +4389,28 @@ private:
                         }
                         break;
 
+                    case GdkKeysyms.GDK_v:
+                        if(controlPressed && _mode == Mode.editRegion && _copyBuffer.length > 0) {
+                            // paste the copy buffer
+                            _editRegion.region.insertGlobal(_copyBuffer, _mixer.transportOffset);
+                            _editRegion.region.computeOverview();
+                            redraw();
+                        }
+                        break;
+
+                    case GdkKeysyms.GDK_x:
+                        if(controlPressed && _mode == Mode.editRegion && _subregionSelected) {
+                            // copy the selected subregion, then remove it
+                            _copyBuffer = _editRegion.region.getSliceGlobal(_subregionStartFrame,
+                                                                            _subregionEndFrame);
+                            _editRegion.region.removeGlobal(_subregionStartFrame, _subregionEndFrame);
+                            _editRegion.region.computeOverview();
+
+                            _subregionSelected = false;
+                            redraw();
+                        }
+                        break;
+
                     default:
                         break;
                 }
@@ -4418,6 +4473,8 @@ private:
     channels_t _moveOnsetChannel;
     nframes_t _moveOnsetFrameSrc; // locally indexed for region
     nframes_t _moveOnsetFrameDest; // locally indexed for region
+
+    AudioSequence.PieceTable _copyBuffer;
 }
 
 class AppMainWindow : MainWindow {
