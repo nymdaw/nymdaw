@@ -143,24 +143,50 @@ private:
     }
 }
 
-template Sequence(T) {
-    class Sequence {
+class Sequence(T) {
+public:
+    alias Buffer = T[];
+
+    // original buffer must not be empty
+    this(Buffer originalBuffer) {
+        assert(originalBuffer.length > 0);
+        this.originalBuffer = originalBuffer;
+
+        reinit(originalBuffer);
+    }
+
+    // overwrite the entire sequence with the given buffer and append the result to the piece table history
+    void reinit(Buffer buffer) {
+        PieceEntry[] table = new PieceEntry[](1);
+        table[0] = PieceEntry(buffer, 0, buffer.length, 0);
+        pieceTableHistory.put(PieceTable(table));
+    }
+
+    // insert a new buffer at logicalOffset and append the result to the piece table history
+    void insert(Buffer buffer, size_t logicalOffset) {
+        pieceTableHistory.put(currentPieceTable.insert(buffer, logicalOffset));
+    }
+
+    // delete all indices in the range [logicalStart, logicalEnd) and append the result to the piece table history
+    void remove(size_t logicalStart, size_t logicalEnd) {
+        pieceTableHistory.put(currentPieceTable.remove(logicalStart, logicalEnd));
+    }
+
+    struct PieceEntry {
+        Buffer buffer;
+        size_t start;
+        size_t length;
+        size_t logicalOffset;
+    }
+
+    struct PieceTable {
     public:
-        alias Buffer = T[];
-
-        // original buffer must not be empty
-        this(Buffer originalBuffer) {
-            assert(originalBuffer.length > 0);
-
-            this.originalBuffer = originalBuffer;
-
-            PieceEntry[] table = new PieceEntry[](1);
-            table[0] = PieceEntry(originalBuffer, 0, originalBuffer.length, 0);
-            pieceTableHistory.put(PieceTable(table));
+        this(PieceEntry[] table) {
+            this.table = table;
         }
 
         // insert a new buffer at logicalOffset
-        void insert(Buffer buffer, size_t logicalOffset) {
+        PieceTable insert(Buffer buffer, size_t logicalOffset) {
             if(logicalOffset > logicalLength) {
                 throw new RangeError();
             }
@@ -218,15 +244,14 @@ template Sequence(T) {
                 }
             }
 
-            // add the new piece table to the end of the piece table history
-            pieceTableHistory.put(PieceTable(pieceTable.data));
+            return PieceTable(pieceTable.data);
         }
 
         // delete all indices in the range [logicalStart, logicalEnd)
-        void remove(size_t logicalStart, size_t logicalEnd) {
+        PieceTable remove(size_t logicalStart, size_t logicalEnd) {
             // degenerate case
             if(logicalStart == logicalEnd) {
-                return;
+                return PieceTable();
             }
 
             // range checks
@@ -301,190 +326,181 @@ template Sequence(T) {
                 }
             }
 
-            // add the new piece table to the end of the piece table history
-            pieceTableHistory.put(PieceTable(pieceTable.data));
+            return PieceTable(pieceTable.data);
         }
 
-        struct PieceEntry {
-            Buffer buffer;
-            size_t start;
-            size_t length;
-            size_t logicalOffset;
-        }
-
-        struct PieceTable {
-        public:
-            this(PieceEntry[] table) {
-                this.table = table;
-
-                if(table.length > 0) {
-                    this.logicalLength = table[$ - 1].logicalOffset + table[$ - 1].length;
+        // return the element at a logical index; optimized for ascending sequential access
+        T opIndex(size_t index) @nogc nothrow {
+            if(_cachedBuffer) {
+                // if the index is in the cached buffer
+                if(index >= _cachedBufferStart && index < _cachedBufferEnd) {
+                    return _cachedBuffer[index + _cachedBufferOffset];
                 }
-            }
-
-            T opIndex(size_t index) {
-                if(_cachedBuffer) {
-                    // if the index is in the cached buffer
+                // try the next cache buffer, since most accesses should be sequential
+                else if(++_cachedBufferIndex < table.length) {
+                    _cachedBuffer = table[_cachedBufferIndex].buffer;
+                    _cachedBufferOffset =
+                        table[_cachedBufferIndex].start - table[_cachedBufferIndex].logicalOffset;
+                    _cachedBufferStart = table[_cachedBufferIndex].logicalOffset;
+                    _cachedBufferEnd =
+                        table[_cachedBufferIndex].logicalOffset + table[_cachedBufferIndex].length;
                     if(index >= _cachedBufferStart && index < _cachedBufferEnd) {
                         return _cachedBuffer[index + _cachedBufferOffset];
                     }
-                    // try the next cache buffer, since most accesses should be sequential
-                    else if(++_cachedBufferIndex < table.length) {
-                        _cachedBuffer = table[_cachedBufferIndex].buffer;
-                        _cachedBufferOffset =
-                            table[_cachedBufferIndex].start - table[_cachedBufferIndex].logicalOffset;
-                        _cachedBufferStart = table[_cachedBufferIndex].logicalOffset;
-                        _cachedBufferEnd =
-                            table[_cachedBufferIndex].logicalOffset + table[_cachedBufferIndex].length;
-                        if(index >= _cachedBufferStart && index < _cachedBufferEnd) {
-                            return _cachedBuffer[index + _cachedBufferOffset];
-                        }
-                    }
                 }
+            }
 
-                // in case of random access, search the entire piece table for the index
-                foreach(i, ref piece; table) {
-                    if(index >= piece.logicalOffset && index < piece.logicalOffset + piece.length) {
-                        _cachedBuffer = piece.buffer;
-                        _cachedBufferIndex = i;
-                        _cachedBufferOffset = piece.start - piece.logicalOffset;
-                        _cachedBufferStart = piece.logicalOffset;
-                        _cachedBufferEnd = piece.logicalOffset + piece.length;
+            // in case of random access, search the entire piece table for the index
+            foreach(i, ref piece; table) {
+                if(index >= piece.logicalOffset && index < piece.logicalOffset + piece.length) {
+                    _cachedBuffer = piece.buffer;
+                    _cachedBufferIndex = i;
+                    _cachedBufferOffset = piece.start - piece.logicalOffset;
+                    _cachedBufferStart = piece.logicalOffset;
+                    _cachedBufferEnd = piece.logicalOffset + piece.length;
 
-                        return _cachedBuffer[index + _cachedBufferOffset];
-                    }
+                    return _cachedBuffer[index + _cachedBufferOffset];
                 }
+            }
 
-                // otherwise, the index was out of range
+            // otherwise, the index was out of range
+            return T(); // TODO possibly throw here?
+        }
+
+        // returns a new piece table; similar semantics to built-in array slicing
+        PieceTable opSlice(size_t logicalStart, size_t logicalEnd) {
+            // degenerate case
+            if(logicalStart == logicalEnd) {
+                return PieceTable();
+            }
+
+            // range checks
+            if(logicalStart > logicalEnd ||
+               logicalStart >= logicalLength ||
+               logicalEnd > logicalLength) {
                 throw new RangeError();
             }
 
-            PieceTable opSlice(size_t logicalStart, size_t logicalEnd) {
-                // degenerate case
-                if(logicalStart == logicalEnd) {
-                    return PieceTable();
-                }
+            // construct a new piece table appender
+            Appender!(PieceEntry[]) pieceTable;
 
-                // range checks
-                if(logicalStart > logicalEnd ||
-                   logicalStart >= logicalLength ||
-                   logicalEnd > logicalLength) {
-                    throw new RangeError();
-                }
-
-                // construct a new piece table appender
-                Appender!(PieceEntry[]) pieceTable;
-
-                // skip all pieces in the piece table that end before logicalStart
-                size_t nStartSkipped;
-                foreach(ref piece; table) {
-                    if(piece.logicalOffset + piece.length >= logicalStart) {
-                        break;
-                    }
-                    else {
-                        ++nStartSkipped;
-                    }
-                }
-
-                // find the starting index for the slice
-                immutable size_t delta = logicalStart - table[nStartSkipped].logicalOffset;
-                if(table[nStartSkipped].logicalOffset + table[nStartSkipped].length >= logicalEnd) {
-                    pieceTable.put(PieceEntry(table[nStartSkipped].buffer,
-                                              table[nStartSkipped].start + delta,
-                                              logicalEnd - logicalStart,
-                                              logicalStart));
-                    return PieceTable(pieceTable.data);
+            // skip all pieces in the piece table that end before logicalStart
+            size_t nStartSkipped;
+            foreach(ref piece; table) {
+                if(piece.logicalOffset + piece.length >= logicalStart) {
+                    break;
                 }
                 else {
-                    pieceTable.put(PieceEntry(table[nStartSkipped].buffer,
-                                              table[nStartSkipped].start + delta,
-                                              table[nStartSkipped].length - delta,
-                                              logicalStart));
+                    ++nStartSkipped;
                 }
+            }
 
-                // copy elements into the slice until the element ending past the end of the slice is found
-                size_t nCopied;
-                foreach(ref piece; table[nStartSkipped + 1 .. $]) {
-                    if(piece.logicalOffset + piece.length > logicalEnd) {
-                        break;
-                    }
-                    else {
-                        pieceTable.put(piece);
-                        ++nCopied;
-                    }
-                }
-
-                // insert the last element in the slice
-                immutable size_t endIndex = nStartSkipped + nCopied;
-                if(endIndex < table.length &&
-                   table[endIndex].logicalOffset + table[endIndex].length >= logicalEnd) {
-                    pieceTable.put(PieceEntry(table[endIndex].buffer,
-                                              table[endIndex].start,
-                                              logicalEnd - pieceTable.data[$ - 1].logicalOffset,
-                                              table[endIndex].logicalOffset));
-                }
-
-                writeln(pieceTable.data);
-
-                // return the slice
+            // find the starting index for the slice
+            immutable size_t delta = logicalStart - table[nStartSkipped].logicalOffset;
+            if(table[nStartSkipped].logicalOffset + table[nStartSkipped].length >= logicalEnd) {
+                pieceTable.put(PieceEntry(table[nStartSkipped].buffer,
+                                          table[nStartSkipped].start + delta,
+                                          logicalEnd - logicalStart,
+                                          0));
                 return PieceTable(pieceTable.data);
             }
-
-            PieceTable opSlice() {
-                return opSlice(0, logicalLength);
+            else {
+                pieceTable.put(PieceEntry(table[nStartSkipped].buffer,
+                                          table[nStartSkipped].start + delta,
+                                          table[nStartSkipped].length - delta,
+                                          0));
+                ++nStartSkipped;
             }
 
-            size_t opDollar(size_t pos)() {
-                static assert(pos == 0);
-
-                return logicalLength;
-            }
-
-            @property bool empty() {
-                return _pos >= logicalLength;
-            }
-            @property T front() {
-                return this[_pos];
-            }
-            void popFront() {
-                ++_pos;
-            }
-
-            @property T[] toArray() const {
-                auto result = appender!(T[]);
-                foreach(piece; table) {
-                    for(auto i = 0; i < piece.length; ++i) {
-                        result.put(piece.buffer[piece.start + i]);
-                    }
+            // copy elements into the slice until the element ending past the end of the slice is found
+            size_t nCopied;
+            foreach(ref piece; table[nStartSkipped .. $]) {
+                if(piece.logicalOffset + piece.length >= logicalEnd) {
+                    break;
                 }
-                return result.data;
+                else {
+                    pieceTable.put(PieceEntry(piece.buffer,
+                                              piece.start,
+                                              piece.length,
+                                              piece.logicalOffset - logicalStart));
+                    ++nCopied;
+                }
             }
 
-            @property string toString() const {
-                return to!string(toArray);
+            // insert the last element in the slice
+            immutable size_t endIndex = nStartSkipped + nCopied;
+            if(endIndex < table.length && table[endIndex].logicalOffset < logicalEnd) {
+                pieceTable.put(PieceEntry(table[endIndex].buffer,
+                                          table[endIndex].start,
+                                          logicalEnd - table[endIndex].logicalOffset,
+                                          table[endIndex].logicalOffset - logicalStart));
             }
 
-            PieceEntry[] table;
-            size_t logicalLength;
-
-        private:
-            size_t _pos;
-
-            Buffer _cachedBuffer;
-            size_t _cachedBufferIndex;
-            size_t _cachedBufferOffset;
-            size_t _cachedBufferStart;
-            size_t _cachedBufferEnd;
+            // return the slice
+            return PieceTable(pieceTable.data);
         }
 
-        @property ref PieceTable currentPieceTable() {
-            return pieceTableHistory.data[$ - 1];
+        // copy this piece table
+        PieceTable opSlice() {
+            return this;
         }
-        alias currentPieceTable this;
 
-        Buffer originalBuffer;
-        Appender!(PieceTable[]) pieceTableHistory;
+        @property size_t logicalLength() const {
+            return table[$ - 1].logicalOffset + table[$ - 1].length;
+        }
+
+        alias length = logicalLength;
+        alias opDollar = length;
+
+        @property bool empty() const {
+            return _pos >= length;
+        }
+
+        @property T front() {
+            return opIndex(_pos);
+        }
+
+        void popFront() {
+            ++_pos;
+        }
+
+        @property auto save() {
+            return this;
+        }
+
+        @property T[] toArray() const {
+            auto result = appender!(T[]);
+            foreach(piece; table) {
+                for(auto i = 0; i < piece.length; ++i) {
+                    result.put(piece.buffer[piece.start + i]);
+                }
+            }
+            return result.data;
+        }
+
+        @property string toString() const {
+            return to!string(toArray);
+        }
+
+        PieceEntry[] table;
+
+    private:
+        size_t _pos;
+
+        Buffer _cachedBuffer;
+        size_t _cachedBufferIndex;
+        size_t _cachedBufferOffset;
+        size_t _cachedBufferStart;
+        size_t _cachedBufferEnd;
     }
+
+    @property ref PieceTable currentPieceTable() @nogc nothrow {
+        return pieceTableHistory.data[$ - 1];
+    }
+    alias currentPieceTable this;
+
+    Buffer originalBuffer;
+    Appender!(PieceTable[]) pieceTableHistory;
 }
 
 // test sequence indexing
@@ -515,10 +531,10 @@ unittest {
 unittest {
     alias IntSeq = Sequence!int;
 
-    int[] intArray = [1, 2, 3, 4];
-    IntSeq intSeq = new IntSeq(intArray);
-
     {
+        int[] intArray = [1, 2, 3, 4];
+        IntSeq intSeq = new IntSeq(intArray);
+
         assert(intSeq.toArray == [1, 2, 3, 4]);
         assert(intSeq.logicalLength == intArray.length);
 
@@ -538,12 +554,36 @@ unittest {
 
         assert(intSeq[3 .. $].toArray == intArray[3 .. $]);
     }
+
+    {
+        int[] intArray = [1, 2, 3, 4];
+        IntSeq intSeq = new IntSeq(intArray);
+
+        intSeq.insert([5, 6], 2);
+        intSeq.insert([7, 8, 9], 5);
+        intSeq.insert([10, 11], 0);
+        intSeq.insert([12, 13], 2);
+
+        int[] newArray = [10, 11, 12, 13, 1, 2, 5, 6, 3, 7, 8, 9, 4];
+        assert(intSeq.toArray == newArray);
+
+        assert(intSeq[].toArray == newArray);
+        assert(intSeq[0 .. $].toArray == newArray);
+        assert(intSeq[0 .. 1].toArray == newArray[0 .. 1]);
+        assert(intSeq[1 .. 4].toArray == newArray[1 .. 4]);
+        assert(intSeq[2 .. 7].toArray == newArray[2 .. 7]);
+        assert(intSeq[3 .. 5].toArray == newArray[3 .. 5]);
+        assert(intSeq[8 .. 9].toArray == newArray[8 .. 9]);
+        assert(intSeq[5 .. 10].toArray == newArray[5 .. 10]);
+        assert(intSeq[11 .. 12].toArray == newArray[11 .. 12]);
+    }
 }
 
 // test sequence insertion
 unittest {
     alias IntSeq = Sequence!int;
 
+    version(none)
     {
         int[] intArray = [1];
         IntSeq intSeq = new IntSeq(intArray);
@@ -647,6 +687,33 @@ unittest {
 
         intSeq.remove(0, 3);
         assert(intSeq.toArray == []);
+    }
+}
+
+// test sequence iteration
+unittest {
+    alias IntSeq = Sequence!int;
+
+    {
+        int[] intArray = [1, 2];
+        IntSeq intSeq = new IntSeq(intArray);
+
+        intSeq.insert([3, 4], 0);
+        intSeq.insert([5, 6], 3);
+        intSeq.insert([7], 6);
+        assert(intSeq.toArray == [3, 4, 1, 5, 6, 2, 7]);
+
+        auto app = appender!(int[]);
+        foreach(i; intSeq) {
+            app.put(i);
+        }
+        assert(app.data == [3, 4, 1, 5, 6, 2, 7]);
+
+        auto app2 = appender!(int[]);
+        foreach(i; intSeq) {
+            app2.put(i);
+        }
+        assert(app2.data == [3, 4, 1, 5, 6, 2, 7]);
     }
 }
 
@@ -768,7 +835,7 @@ public:
         return newRegion;
     }
 
-    // reanalyze the entire audio data for this region, in the case of edits
+    // recompute the waveform caches (overview) for the region
     void computeOverview(LoadState.Callback progressCallback = null) {
         if(progressCallback) {
             progressCallback(LoadState.computeOverview, 0);
@@ -797,26 +864,14 @@ public:
             }
 
             // constant indicating the algorithm to use for sample rate conversion
-            enum converter = SRC_SINC_BEST_QUALITY;
-
-            // allocate audio buffers for input/output
-            ScopedArray!(float[]) dataIn = new float[](_audioBuffer.length);
-            ScopedArray!(float[]) dataOut;
+            enum converter = SRC_SINC_MEDIUM_QUALITY; // TODO allow the user to specify this
 
             // libsamplerate requires floats
-            static if(is(sample_t == float)) {
-                dataIn = _audioBuffer.dup;
-                dataOut = _audioBuffer;
-            }
-            else if(is(sample_t == double)) {
-                foreach(i, sample; dataIn) {
-                    sample = _audioBuffer[i];
-                }
-                dataOut = new float[](_audioBuffer.length);
-            }
-            else {
-                static assert(0);
-            }
+            static assert(is(sample_t == float));
+
+            // allocate audio buffers for input/output
+            ScopedArray!(float[]) dataIn = _audioSeq.toArray;
+            float[] dataOut = new float[](_audioSeq.length);
 
             // compute the parameters for libsamplerate
             double srcRatio = (1.0 * newSampleRate) / _sampleRate;
@@ -837,13 +892,8 @@ public:
             }
             dataOut.length = cast(size_t)(srcData.output_frames_gen);
 
-            // convert the float buffer back to sample_t, if necessary
-            static if(is(sample_t == double)) {
-                _audioBuffer.length = dataOut.length;
-                foreach(i, sample; dataOut) {
-                    _audioBuffer[i] = sample;
-                }
-            }
+            // write the output buffer to the audio sequence
+            _audioSeq.reinit(dataOut);
 
             if(progressCallback) {
                 progressCallback(LoadState.resample, 1);
@@ -864,14 +914,14 @@ public:
     // returns an array of frames at which an onset occurs, with frames given locally for this region
     // all channels are summed before computing onsets
     nframes_t[] getOnsetsLinkedChannels(ref const(OnsetParams) params,
-                                        ComputeOnsetsState.Callback progressCallback = null) const {
+                                        ComputeOnsetsState.Callback progressCallback = null) {
         return _getOnsets(params, true, 0, progressCallback);
     }
 
     // returns an array of frames at which an onset occurs, with frames given locally for this region
     nframes_t[] getOnsetsSingleChannel(ref const(OnsetParams) params,
                                        channels_t channelIndex,
-                                       ComputeOnsetsState.Callback progressCallback = null) const {
+                                       ComputeOnsetsState.Callback progressCallback = null) {
         return _getOnsets(params, false, channelIndex, progressCallback);
     }
 
@@ -880,6 +930,7 @@ public:
     void stretchSubregion(nframes_t globalStartFrame, ref nframes_t globalEndFrame, double stretchRatio) {
         immutable channels_t nChannels = this.nChannels;
         immutable nframes_t localStartFrame = globalStartFrame - offset;
+        immutable nframes_t localEndFrame = globalEndFrame - offset;
 
         uint subregionLength = cast(uint)(globalEndFrame - globalStartFrame);
         ScopedArray!(float[][]) subregionChannels = new float[][](nChannels);
@@ -892,7 +943,7 @@ public:
 
         foreach(channels_t channelIndex, channel; subregionChannels) {
             foreach(i, ref sample; channel) {
-                sample = _audioBuffer[(localStartFrame + i) * this.nChannels + channelIndex];
+                sample = _audioSeq[(localStartFrame + i) * this.nChannels + channelIndex];
             }
         }
 
@@ -919,23 +970,22 @@ public:
         rubberband_delete(rState);
 
         nframes_t newSubregionEndFrame = globalStartFrame + subregionOutputLength;
-        long sizeDelta =
-            (cast(long)(subregionOutputLength) - cast(long)(subregionLength)) * cast(long)(nChannels);
-        sample_t[] oldAudioBuffer = _audioBuffer;
-        sample_t[] newAudioBuffer = new sample_t[](oldAudioBuffer.length + sizeDelta);
-        newAudioBuffer[0 .. localStartFrame * nChannels] = oldAudioBuffer[0 .. localStartFrame * nChannels];
+        sample_t[] subregionOutput = new sample_t[](subregionOutputLength * nChannels);
         foreach(channels_t channelIndex, channel; subregionOutputChannels) {
             foreach(i, sample; channel) {
-                newAudioBuffer[(localStartFrame + i) * this.nChannels + channelIndex] = sample;
+                subregionOutput[i * nChannels + channelIndex] = sample;
             }
         }
-        newAudioBuffer[(newSubregionEndFrame - offset) * nChannels .. $] =
-            oldAudioBuffer[(globalEndFrame - offset) * nChannels .. $];
-        _audioBuffer = newAudioBuffer;
-        oldAudioBuffer.destroy();
-        _nframes = cast(nframes_t)(newAudioBuffer.length / nChannels);
 
-        globalEndFrame = newSubregionEndFrame;
+        auto pieceTable = _audioSeq.currentPieceTable.
+            remove(localStartFrame * nChannels, localEndFrame * nChannels).
+            insert(subregionOutput, localStartFrame * nChannels);
+        _audioSeq.pieceTableHistory.put(pieceTable);
+
+        _nframes = cast(nframes_t)(_audioSeq.length / nChannels);
+
+        globalEndFrame = globalStartFrame + subregionOutputLength;
+
         if(resizeDelegate !is null) {
             resizeDelegate(offset + nframes);
         }
@@ -949,7 +999,7 @@ public:
                            nframes_t globalEndFrame,
                            bool linkChannels,
                            channels_t singleChannelIndex = 0) {
-        immutable channels_t nChannels = linkChannels ? this.nChannels : 1;
+        immutable channels_t stretchNChannels = linkChannels ? nChannels : 1;
 
         immutable double firstScaleFactor = (globalSrcFrame > globalStartFrame) ?
             (cast(double)(globalDestFrame - globalStartFrame) /
@@ -960,11 +1010,11 @@ public:
 
         uint firstHalfLength = cast(uint)(globalSrcFrame - globalStartFrame);
         uint secondHalfLength = cast(uint)(globalEndFrame - globalSrcFrame);
-        ScopedArray!(float[][]) firstHalfChannels = new float[][](nChannels);
-        ScopedArray!(float[][]) secondHalfChannels = new float[][](nChannels);
-        ScopedArray!(float*[]) firstHalfPtr = new float*[](nChannels);
-        ScopedArray!(float*[]) secondHalfPtr = new float*[](nChannels);
-        for(auto i = 0; i < nChannels; ++i) {
+        ScopedArray!(float[][]) firstHalfChannels = new float[][](stretchNChannels);
+        ScopedArray!(float[][]) secondHalfChannels = new float[][](stretchNChannels);
+        ScopedArray!(float*[]) firstHalfPtr = new float*[](stretchNChannels);
+        ScopedArray!(float*[]) secondHalfPtr = new float*[](stretchNChannels);
+        for(auto i = 0; i < stretchNChannels; ++i) {
             float[] firstHalf = new float[](firstHalfLength);
             float[] secondHalf = new float[](secondHalfLength);
             firstHalfChannels[i] = firstHalf;
@@ -976,31 +1026,31 @@ public:
         if(linkChannels) {
             foreach(channels_t channelIndex, channel; firstHalfChannels) {
                 foreach(i, ref sample; channel) {
-                    sample = _audioBuffer[(globalStartFrame + i) * this.nChannels + channelIndex];
+                    sample = _audioSeq[(globalStartFrame + i) * nChannels + channelIndex];
                 }
             }
             foreach(channels_t channelIndex, channel; secondHalfChannels) {
                 foreach(i, ref sample; channel) {
-                    sample = _audioBuffer[(globalSrcFrame + i) * this.nChannels + channelIndex];
+                    sample = _audioSeq[(globalSrcFrame + i) * nChannels + channelIndex];
                 }
             }
         }
         else {
             foreach(i, ref sample; firstHalfChannels[0]) {
-                sample = _audioBuffer[(globalStartFrame + i) * this.nChannels + singleChannelIndex];
+                sample = _audioSeq[(globalStartFrame + i) * nChannels + singleChannelIndex];
             }
             foreach(i, ref sample; secondHalfChannels[0]) {
-                sample = _audioBuffer[(globalSrcFrame + i) * this.nChannels + singleChannelIndex];
+                sample = _audioSeq[(globalSrcFrame + i) * nChannels + singleChannelIndex];
             }
         }
 
         uint firstHalfOutputLength = cast(uint)(firstHalfLength * firstScaleFactor);
         uint secondHalfOutputLength = cast(uint)(secondHalfLength * secondScaleFactor);
-        ScopedArray!(float[][]) firstHalfOutputChannels = new float[][](nChannels);
-        ScopedArray!(float[][]) secondHalfOutputChannels = new float[][](nChannels);
-        ScopedArray!(float*[]) firstHalfOutputPtr = new float*[](nChannels);
-        ScopedArray!(float*[]) secondHalfOutputPtr = new float*[](nChannels);
-        for(auto i = 0; i < nChannels; ++i) {
+        ScopedArray!(float[][]) firstHalfOutputChannels = new float[][](stretchNChannels);
+        ScopedArray!(float[][]) secondHalfOutputChannels = new float[][](stretchNChannels);
+        ScopedArray!(float*[]) firstHalfOutputPtr = new float*[](stretchNChannels);
+        ScopedArray!(float*[]) secondHalfOutputPtr = new float*[](stretchNChannels);
+        for(auto i = 0; i < stretchNChannels; ++i) {
             float[] firstHalfOutput = new float[](firstHalfOutputLength);
             float[] secondHalfOutput = new float[](secondHalfOutputLength);
             firstHalfOutputChannels[i] = firstHalfOutput;
@@ -1010,7 +1060,7 @@ public:
         }
 
         RubberBandState rState = rubberband_new(sampleRate,
-                                                nChannels,
+                                                stretchNChannels,
                                                 RubberBandOption.RubberBandOptionProcessOffline,
                                                 firstScaleFactor,
                                                 1.0);
@@ -1023,7 +1073,7 @@ public:
         rubberband_delete(rState);
 
         rState = rubberband_new(sampleRate,
-                                nChannels,
+                                stretchNChannels,
                                 RubberBandOption.RubberBandOptionProcessOffline,
                                 secondScaleFactor,
                                 1.0);
@@ -1035,7 +1085,8 @@ public:
         rubberband_retrieve(rState, secondHalfOutputPtr.ptr, secondHalfOutputLength);
         rubberband_delete(rState);
 
-        if(linkChannels) {
+//--------------------------------------------------------------------------------
+/*        if(linkChannels) {
             foreach(channels_t channelIndex, channel; firstHalfOutputChannels) {
                 foreach(i, sample; channel) {
                     setSampleLocal(channelIndex, cast(nframes_t)(globalStartFrame + i), sample);
@@ -1054,7 +1105,56 @@ public:
             foreach(i, sample; secondHalfOutputChannels[0]) {
                 setSampleLocal(singleChannelIndex, cast(nframes_t)(globalDestFrame + i), sample);
             }
+            }*/
+//--------------------------------------------------------------------------------
+        immutable nframes_t localStartFrame = globalStartFrame - offset;
+        immutable nframes_t localEndFrame = globalEndFrame - offset;
+        sample_t[] outputBuffer = new sample_t[]((firstHalfOutputLength + secondHalfOutputLength) * nChannels);
+        if(linkChannels) {
+            foreach(channels_t channelIndex, channel; firstHalfOutputChannels) {
+                foreach(i, sample; channel) {
+                    outputBuffer[i * nChannels + channelIndex] = sample;
+                }
+            }
+            auto secondHalfOffset = firstHalfOutputLength * nChannels;
+            foreach(channels_t channelIndex, channel; secondHalfOutputChannels) {
+                foreach(i, sample; channel) {
+                    outputBuffer[secondHalfOffset + i * nChannels + channelIndex] = sample;
+                }
+            }
         }
+        else {
+            auto firstHalfOffset = localStartFrame * nChannels;
+            foreach(i, sample; firstHalfOutputChannels[0]) {
+                for(channels_t channelIndex = 0; channelIndex < nChannels; ++channelIndex) {
+                    if(channelIndex == singleChannelIndex) {
+                        outputBuffer[i * nChannels + channelIndex] = sample;
+                    }
+                    else {
+                        outputBuffer[i * nChannels + channelIndex] =
+                            _audioSeq[firstHalfOffset + i * nChannels + channelIndex];
+                    }
+                }
+            }
+            auto secondHalfOutputOffset = firstHalfOutputLength * nChannels;
+            auto secondHalfOffset = firstHalfOffset + secondHalfOutputOffset;
+            foreach(i, sample; secondHalfOutputChannels[0]) {
+                for(channels_t channelIndex = 0; channelIndex < nChannels; ++channelIndex) {
+                    if(channelIndex == singleChannelIndex) {
+                        outputBuffer[secondHalfOutputOffset + i * nChannels + channelIndex] = sample;
+                    }
+                    else {
+                        outputBuffer[secondHalfOutputOffset + i * nChannels + channelIndex] =
+                            _audioSeq[secondHalfOffset + i * nChannels + channelIndex];
+                    }
+                }
+            }
+        }
+
+        auto pieceTable = _audioSeq.currentPieceTable.
+            remove(localStartFrame * nChannels, localEndFrame * nChannels).
+            insert(outputBuffer, localStartFrame * nChannels);
+        _audioSeq.pieceTableHistory.put(pieceTable);
     }
 
     // normalize subregion from startFrame to endFrame to the given maximum gain, in dBFS
@@ -1066,20 +1166,29 @@ public:
             progressCallback(NormalizeState.normalize, 0);
         }
 
-        auto audioSlice = _audioBuffer[localStartFrame * nChannels .. localEndFrame * nChannels];
+        // TODO optimize this
+        auto audioBuffer = _audioSeq[localStartFrame * nChannels .. localEndFrame * nChannels].toArray;
 
+        // calculate the maximum sample
         sample_t minSample, maxSample;
-        _minMax(minSample, maxSample, audioSlice);
+        _minMax(minSample, maxSample, audioBuffer);
         maxSample = max(abs(minSample), abs(maxSample));
 
+        // normalize the selection
         sample_t sampleFactor =  pow(10, (maxGain > 0 ? 0 : maxGain) / 20) / maxSample;
-        foreach(i, ref s; audioSlice) {
+        foreach(i, ref s; audioBuffer) {
             s *= sampleFactor;
 
-            if(progressCallback !is null && i % (audioSlice.length / NormalizeState.stepsPerStage) == 0) {
-                progressCallback(NormalizeState.normalize, cast(double)(i) / cast(double)(audioSlice.length));
+            if(progressCallback !is null && i % (audioBuffer.length / NormalizeState.stepsPerStage) == 0) {
+                progressCallback(NormalizeState.normalize, cast(double)(i) / cast(double)(audioBuffer.length));
             }
         }
+
+        // write the normalized selection to the audio sequence
+        auto pieceTable = _audioSeq.currentPieceTable.
+            remove(localStartFrame * nChannels, localEndFrame * nChannels).
+            insert(audioBuffer, localStartFrame * nChannels);
+        _audioSeq.pieceTableHistory.put(pieceTable);
 
         if(progressCallback !is null) {
             progressCallback(NormalizeState.complete, 1);
@@ -1104,16 +1213,18 @@ public:
             assert(binSize > 0);
 
             _binSize = binSize;
-            _length = (_audioBuffer.length / _nChannels) / binSize;
+            _length = (_audioSeq.length / _nChannels) / binSize;
             _minValues = new sample_t[](_length);
             _maxValues = new sample_t[](_length);
 
-            for(auto i = 0, j = 0; i < _audioBuffer.length && j < _length; i += binSize * _nChannels, ++j) {
+            auto audioBuffer = _audioSeq.toArray; // TODO optimize this
+
+            for(auto i = 0, j = 0; i < audioBuffer.length && j < _length; i += binSize * _nChannels, ++j) {
                 _minMaxChannel(channelIndex,
                                _nChannels,
                                _minValues[j],
                                _maxValues[j],
-                               _audioBuffer[i .. i + binSize * _nChannels]);
+                               audioBuffer[i .. i + binSize * _nChannels]);
             }
         }
 
@@ -1184,17 +1295,11 @@ public:
     }
 
     // returns the sample value at a given channel and frame, globally indexed
-    sample_t getSampleGlobal(channels_t channelIndex, nframes_t frame) const @nogc nothrow {
+    sample_t getSampleGlobal(channels_t channelIndex, nframes_t frame) @nogc nothrow {
         return frame >= _offset ?
-            (frame < _offset + _nframes ? _audioBuffer[(frame - _offset) * _nChannels + channelIndex] : 0) : 0;
+            (frame < _offset + _nframes ? _audioSeq[(frame - _offset) * _nChannels + channelIndex] : 0) : 0;
     }
 
-    // modifies the sample for a given channel and frame, locallyIndexed
-    void setSampleLocal(channels_t channelIndex, nframes_t frame, sample_t newSample) {
-        _audioBuffer[frame * _nChannels + channelIndex] = newSample;
-    }
-
-    @property const(sample_t[]) audioBuffer() const { return _audioBuffer; }
     @property nframes_t sampleRate() const @nogc nothrow { return _sampleRate; }
     @property channels_t nChannels() const @nogc nothrow { return _nChannels; }
     @property nframes_t nframes() const @nogc nothrow { return _nframes; }
@@ -1217,19 +1322,20 @@ private:
          string name) {
         _sampleRate = sampleRate;
         _nChannels = nChannels;
-        _audioBuffer = audioBuffer;
         _nframes = cast(nframes_t)(audioBuffer.length / nChannels);
         _name = name;
+
+        _audioSeq = new Sequence!sample_t(audioBuffer);
     }
 
-    static sample_t _min(const(sample_t[]) sourceData) {
+    static sample_t _min(T)(T sourceData) {
         sample_t minSample = 1;
         foreach(s; sourceData) {
             if(s < minSample) minSample = s;
         }
         return minSample;
     }
-    static sample_t _max(const(sample_t[]) sourceData) {
+    static sample_t _max(T)(T sourceData) {
         sample_t maxSample = -1;
         foreach(s; sourceData) {
             if(s > maxSample) maxSample = s;
@@ -1237,7 +1343,7 @@ private:
         return maxSample;
     }
 
-    static void _minMax(out sample_t minSample, out sample_t maxSample, const(sample_t[]) sourceData) {
+    static void _minMax(T)(out sample_t minSample, out sample_t maxSample, T sourceData) {
         minSample = 1;
         maxSample = -1;
         foreach(s; sourceData) {
@@ -1245,15 +1351,15 @@ private:
             if(s < minSample) minSample = s;
         }
     }
-    void _minMax(out sample_t minSample, out sample_t maxSample) const {
-        _minMax(minSample, maxSample, _audioBuffer);
+    void _minMax(out sample_t minSample, out sample_t maxSample) {
+        _minMax(minSample, maxSample, _audioSeq);
     }
 
-    static void _minMaxChannel(channels_t channelIndex,
-                               channels_t nChannels,
-                               out sample_t minSample,
-                               out sample_t maxSample,
-                               const(sample_t[]) sourceData) {
+    static void _minMaxChannel(T)(channels_t channelIndex,
+                                  channels_t nChannels,
+                                  out sample_t minSample,
+                                  out sample_t maxSample,
+                                  T sourceData) {
         minSample = 1;
         maxSample = -1;
         for(auto i = channelIndex; i < sourceData.length; i += nChannels) {
@@ -1263,15 +1369,15 @@ private:
     }
     void _minMaxChannel(channels_t channelIndex,
                         out sample_t minSample,
-                        out sample_t maxSample) const {
-        _minMaxChannel(channelIndex, _nChannels, minSample, maxSample, _audioBuffer);
+                        out sample_t maxSample) {
+        _minMaxChannel(channelIndex, _nChannels, minSample, maxSample, _audioSeq);
     }
 
     // channelIndex is ignored when linkChannels == true
     nframes_t[] _getOnsets(ref const(OnsetParams) params,
                            bool linkChannels,
                            channels_t channelIndex,
-                           ComputeOnsetsState.Callback progressCallback = null) const {
+                           ComputeOnsetsState.Callback progressCallback = null) {
         immutable nframes_t framesPerProgressStep =
             (nframes / ComputeOnsetsState.stepsPerStage) * (linkChannels ? 1 : nChannels);
         nframes_t progressStep;
@@ -1297,7 +1403,7 @@ private:
         aubio_onset_set_silence(o, silenceThreshold);
         for(nframes_t samplesRead = 0; samplesRead < nframes; samplesRead += hopSize) {
             uint hopSizeLimit;
-            if(((hopSize - 1 + samplesRead) * nChannels + channelIndex) > _audioBuffer.length) {
+            if(((hopSize - 1 + samplesRead) * nChannels + channelIndex) > _audioSeq.length) {
                 hopSizeLimit = nframes - samplesRead;
                 fvec_zeros(hopBuffer);
             }
@@ -1309,13 +1415,13 @@ private:
                 for(auto sample = 0; sample < hopSizeLimit; ++sample) {
                     hopBuffer.data[sample] = 0;
                     for(channels_t i = 0; i < nChannels; ++i) {
-                        hopBuffer.data[sample] += _audioBuffer[(sample + samplesRead) * nChannels + i];
+                        hopBuffer.data[sample] += _audioSeq[(sample + samplesRead) * nChannels + i];
                     }
                 }
             }
             else {
                 for(auto sample = 0; sample < hopSizeLimit; ++sample) {
-                    hopBuffer.data[sample] = _audioBuffer[(sample + samplesRead) * nChannels + channelIndex];
+                    hopBuffer.data[sample] = _audioSeq[(sample + samplesRead) * nChannels + channelIndex];
                 }
             }
 
@@ -1356,8 +1462,9 @@ private:
 
     nframes_t _sampleRate; // sample rate of the audio data
     channels_t _nChannels; // number of channels in the audio data
-    sample_t[] _audioBuffer; // raw audio data for all channels
     nframes_t _nframes; // number of frames in the audio data, where 1 frame contains 1 sample for each channel
+
+    Sequence!sample_t _audioSeq; // sequence of interleaved audio data, for all channels
 
     nframes_t _offset; // the offset, in frames, for the start of this region
     bool _mute; // flag indicating whether to mute all audio in this region during playback
@@ -1380,7 +1487,7 @@ package:
     void mixStereoInterleaved(nframes_t offset,
                               nframes_t bufNFrames,
                               channels_t nChannels,
-                              sample_t* mixBuf) const @nogc nothrow {
+                              sample_t* mixBuf) @nogc nothrow {
         for(auto i = 0, j = 0; i < bufNFrames; i += nChannels, ++j) {
             foreach(r; _regions) {
                 if(!r.mute()) {
@@ -1396,7 +1503,7 @@ package:
     void mixStereoNonInterleaved(nframes_t offset,
                                  nframes_t bufNFrames,
                                  sample_t* mixBuf1,
-                                 sample_t* mixBuf2) const @nogc nothrow {
+                                 sample_t* mixBuf2) @nogc nothrow {
         for(auto i = 0; i < bufNFrames; ++i) {
             foreach(r; _regions) {
                 if(!r.mute()) {
