@@ -152,24 +152,32 @@ public:
         assert(originalBuffer.length > 0);
         this.originalBuffer = originalBuffer;
 
-        reinit(originalBuffer);
+        PieceEntry[] table = new PieceEntry[](1);
+        table[0] = PieceEntry(originalBuffer, 0);
+        pieceTableHistory.put(PieceTable(table));
     }
 
-    // overwrite the entire sequence with the given buffer and append the result to the piece table history
-    void reinit(Buffer buffer) {
-        PieceEntry[] table = new PieceEntry[](1);
-        table[0] = PieceEntry(buffer, 0);
-        pieceTableHistory.put(PieceTable(table));
+    void undo() {
+        reallocateNext = true;
+        if(currentPieceTableIndex > 0) {
+            --currentPieceTableIndex;
+        }
+    }
+
+    void redo() {
+        if(currentPieceTableIndex + 1 < pieceTableHistory.data.length) {
+            ++currentPieceTableIndex;
+        }
     }
 
     // insert a new buffer at logicalOffset and append the result to the piece table history
     void insert(T)(T buffer, size_t logicalOffset) {
-        pieceTableHistory.put(currentPieceTable.insert(buffer, logicalOffset));
+        appendToHistory(currentPieceTable.insert(buffer, logicalOffset));
     }
 
     // delete all indices in the range [logicalStart, logicalEnd) and append the result to the piece table history
     void remove(size_t logicalStart, size_t logicalEnd) {
-        pieceTableHistory.put(currentPieceTable.remove(logicalStart, logicalEnd));
+        appendToHistory(currentPieceTable.remove(logicalStart, logicalEnd));
     }
 
     struct PieceEntry {
@@ -478,13 +486,33 @@ public:
         size_t _cachedBufferEnd;
     }
 
+    void appendToHistory(PieceEntry[] pieceTable) {
+        onAppendToHistory();
+        pieceTableHistory.put(PieceTable(pieceTable));
+    }
+    void appendToHistory(PieceTable pieceTable) {
+        onAppendToHistory();
+        pieceTableHistory.put(pieceTable);
+    }
+
     @property ref PieceTable currentPieceTable() @nogc nothrow {
-        return pieceTableHistory.data[$ - 1];
+        return pieceTableHistory.data[currentPieceTableIndex];
     }
     alias currentPieceTable this;
 
+protected:
+    void onAppendToHistory() {
+        ++currentPieceTableIndex;
+        if(reallocateNext) {
+            reallocateNext = false;
+            pieceTableHistory.shrinkTo(currentPieceTableIndex);
+        }
+    }
+
     Buffer originalBuffer;
     Appender!(PieceTable[]) pieceTableHistory;
+    size_t currentPieceTableIndex;
+    bool reallocateNext;
 }
 
 alias AudioSequence = Sequence!sample_t;
@@ -806,19 +834,81 @@ public:
         }
         while(readCount && readTotal < audioBuffer.length);
 
+        immutable nframes_t originalSampleRate = cast(nframes_t)(sfinfo.samplerate);
+        immutable channels_t nChannels = cast(channels_t)(sfinfo.channels);
+
+        // resample, if necessary
+        if(sampleRate != originalSampleRate) {
+            audioBuffer = convertSampleRate(audioBuffer,
+                                            nChannels,
+                                            originalSampleRate,
+                                            sampleRate,
+                                            progressCallback);
+        }
+
         // construct the region
-        auto newRegion = new Region(cast(nframes_t)(sfinfo.samplerate),
-                                    cast(channels_t)(sfinfo.channels),
+        auto newRegion = new Region(sampleRate,
+                                    nChannels,
                                     audioBuffer,
                                     baseName(stripExtension(fileName)));
 
-        // resample, if necessary
-        newRegion.convertSampleRate(sampleRate, progressCallback);
         newRegion.computeOverview(progressCallback);
+
         if(progressCallback) {
             progressCallback(LoadState.complete, 1.0);
         }
+
         return newRegion;
+    }
+
+    static sample_t[] convertSampleRate(sample_t[] audioBuffer,
+                                         channels_t nChannels,
+                                         nframes_t oldSampleRate,
+                                         nframes_t newSampleRate,
+                                         LoadState.Callback progressCallback = null) {
+        if(newSampleRate != oldSampleRate && newSampleRate > 0) {
+            if(progressCallback) {
+                progressCallback(LoadState.resample, 0);
+            }
+
+            // constant indicating the algorithm to use for sample rate conversion
+            enum converter = SRC_SINC_MEDIUM_QUALITY; // TODO allow the user to specify this
+
+            // libsamplerate requires floats
+            static assert(is(sample_t == float));
+
+            // allocate audio buffers for input/output
+            ScopedArray!(float[]) dataIn = audioBuffer;
+            float[] dataOut = new float[](audioBuffer.length);
+
+            // compute the parameters for libsamplerate
+            double srcRatio = (1.0 * newSampleRate) / oldSampleRate;
+            if(!src_is_valid_ratio(srcRatio)) {
+                throw new AudioError("Invalid sample rate requested: " ~ to!string(newSampleRate));
+            }
+            SRC_DATA srcData;
+            srcData.data_in = dataIn.ptr;
+            srcData.data_out = dataOut.ptr;
+            immutable auto nframes = audioBuffer.length / nChannels;
+            srcData.input_frames = cast(typeof(srcData.input_frames))(nframes);
+            srcData.output_frames = cast(typeof(srcData.output_frames))(ceil(nframes * srcRatio));
+            srcData.src_ratio = srcRatio;
+
+            // compute the sample rate conversion
+            int error = src_simple(&srcData, converter, cast(int)(nChannels));
+            if(error) {
+                throw new AudioError("Sample rate conversion failed: " ~ to!string(src_strerror(error)));
+            }
+            dataOut.length = cast(size_t)(srcData.output_frames_gen);
+
+            if(progressCallback) {
+                progressCallback(LoadState.resample, 1);
+            }
+
+            return dataOut;
+        }
+
+        return audioBuffer;
     }
 
     // recompute the waveform caches (overview) for the region
@@ -840,50 +930,6 @@ public:
 
         if(progressCallback) {
             progressCallback(LoadState.computeOverview, 1);
-        }
-    }
-
-    void convertSampleRate(nframes_t newSampleRate, LoadState.Callback progressCallback = null) {
-        if(newSampleRate != _sampleRate && newSampleRate > 0) {
-            if(progressCallback) {
-                progressCallback(LoadState.resample, 0);
-            }
-
-            // constant indicating the algorithm to use for sample rate conversion
-            enum converter = SRC_SINC_MEDIUM_QUALITY; // TODO allow the user to specify this
-
-            // libsamplerate requires floats
-            static assert(is(sample_t == float));
-
-            // allocate audio buffers for input/output
-            ScopedArray!(float[]) dataIn = _audioSeq.toArray;
-            float[] dataOut = new float[](_audioSeq.length);
-
-            // compute the parameters for libsamplerate
-            double srcRatio = (1.0 * newSampleRate) / _sampleRate;
-            if(!src_is_valid_ratio(srcRatio)) {
-                throw new AudioError("Invalid sample rate requested: " ~ to!string(newSampleRate));
-            }
-            SRC_DATA srcData;
-            srcData.data_in = dataIn.ptr;
-            srcData.data_out = dataOut.ptr;
-            srcData.input_frames = cast(typeof(srcData.input_frames))(_nframes);
-            srcData.output_frames = cast(typeof(srcData.output_frames))(ceil(nframes * srcRatio));
-            srcData.src_ratio = srcRatio;
-
-            // compute the sample rate conversion
-            int error = src_simple(&srcData, converter, cast(int)(_nChannels));
-            if(error) {
-                throw new AudioError("Sample rate conversion failed: " ~ to!string(src_strerror(error)));
-            }
-            dataOut.length = cast(size_t)(srcData.output_frames_gen);
-
-            // write the output buffer to the audio sequence
-            _audioSeq.reinit(dataOut);
-
-            if(progressCallback) {
-                progressCallback(LoadState.resample, 1);
-            }
         }
     }
 
@@ -966,7 +1012,7 @@ public:
         auto pieceTable = _audioSeq.currentPieceTable.
             remove(localStartFrame * nChannels, localEndFrame * nChannels).
             insert(subregionOutput, localStartFrame * nChannels);
-        _audioSeq.pieceTableHistory.put(pieceTable);
+        _audioSeq.appendToHistory(pieceTable);
 
         _nframes = cast(nframes_t)(_audioSeq.length / nChannels);
 
@@ -1124,7 +1170,7 @@ public:
         auto pieceTable = _audioSeq.currentPieceTable.
             remove(removeStartIndex, removeEndIndex).
             insert(outputBuffer, localStartFrame * nChannels);
-        _audioSeq.pieceTableHistory.put(pieceTable);
+        _audioSeq.appendToHistory(pieceTable);
     }
 
     // normalize subregion from startFrame to endFrame to the given maximum gain, in dBFS
@@ -1157,7 +1203,7 @@ public:
         auto pieceTable = _audioSeq.currentPieceTable.
             remove(localStartFrame * nChannels, localEndFrame * nChannels).
             insert(audioBuffer, localStartFrame * nChannels);
-        _audioSeq.pieceTableHistory.put(pieceTable);
+        _audioSeq.appendToHistory(pieceTable);
 
         if(progressCallback !is null) {
             progressCallback(NormalizeState.complete, 1);
@@ -1302,6 +1348,16 @@ public:
                 resizeDelegate(offset + nframes);
             }
         }
+    }
+
+    // undo the last edit operation; does not recompute the overview
+    void undoEdit() {
+        _audioSeq.undo();
+    }
+
+    // redo the last edit operation; does not recompute the overview
+    void redoEdit() {
+        _audioSeq.redo();
     }
 
     @property nframes_t sampleRate() const @nogc nothrow { return _sampleRate; }
@@ -4386,6 +4442,24 @@ private:
                             _editRegion.region.computeOverview();
 
                             _subregionSelected = false;
+                            redraw();
+                        }
+                        break;
+
+                    case GdkKeysyms.GDK_y:
+                        if(_mode == Mode.editRegion) {
+                            // redo the last edit
+                            _editRegion.region.redoEdit();
+                            _editRegion.region.computeOverview();
+                            redraw();
+                        }
+                        break;
+
+                    case GdkKeysyms.GDK_z:
+                        if(_mode == Mode.editRegion) {
+                            // undo the last edit
+                            _editRegion.region.undoEdit();
+                            _editRegion.region.computeOverview();
                             redraw();
                         }
                         break;
