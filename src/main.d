@@ -163,7 +163,7 @@ public:
     }
 
     // insert a new buffer at logicalOffset and append the result to the piece table history
-    void insert(Buffer buffer, size_t logicalOffset) {
+    void insert(T)(T buffer, size_t logicalOffset) {
         pieceTableHistory.put(currentPieceTable.insert(buffer, logicalOffset));
     }
 
@@ -197,7 +197,7 @@ public:
         }
 
         // insert a new buffer at logicalOffset
-        PieceTable insert(Buffer buffer, size_t logicalOffset) {
+        PieceTable insert(T)(T buffer, size_t logicalOffset) if(is(T == Buffer) || is(T == PieceTable)) {
             if(logicalOffset > logicalLength) {
                 throw new RangeError();
             }
@@ -226,7 +226,14 @@ public:
                 }
 
                 // insert the new piece provided by the given argument
-                pieceTable.put(PieceEntry(buffer, logicalOffset));
+                static if(is(T == Buffer)) {
+                    pieceTable.put(PieceEntry(buffer, logicalOffset));
+                }
+                else if(is(T == PieceTable)) {
+                    foreach(piece; buffer.table) {
+                        pieceTable.put(PieceEntry(piece.buffer, piece.logicalOffset + logicalOffset));
+                    }
+                }
 
                 // insert another new piece containing the remaining part of the split piece
                 if(splitSecondHalfBuffer.length > 0) {
@@ -317,6 +324,8 @@ public:
         }
 
         // return the element at the given logical index; optimized for ascending sequential access
+        // returns T() if the item is not found instead of throwing,
+        //since this function is called in the audio thread
         T opIndex(size_t index) @nogc nothrow {
             if(_cachedBuffer) {
                 // if the index is in the cached buffer
@@ -346,7 +355,7 @@ public:
             }
 
             // otherwise, the index was out of range
-            return T(); // TODO possibly throw here?
+            return T();
         }
 
         // returns a new piece table, with similar semantics to built-in array slicing
@@ -1106,9 +1115,14 @@ public:
             }
         }
 
+        auto removeStartIndex = clamp(localStartFrame * nChannels,
+                                      0,
+                                      _audioSeq.currentPieceTable.logicalLength);
+        auto removeEndIndex = clamp(localEndFrame * nChannels,
+                                    removeStartIndex,
+                                    _audioSeq.currentPieceTable.logicalLength);
         auto pieceTable = _audioSeq.currentPieceTable.
-            remove(localStartFrame * nChannels,
-                   min(localEndFrame * nChannels, _audioSeq.currentPieceTable.logicalLength)).
+            remove(removeStartIndex, removeEndIndex).
             insert(outputBuffer, localStartFrame * nChannels);
         _audioSeq.pieceTableHistory.put(pieceTable);
     }
@@ -1264,8 +1278,7 @@ public:
     void insertGlobal(AudioSequence.PieceTable insertSlice, nframes_t globalFrameOffset) {
         immutable nframes_t localFrameOffset = globalFrameOffset - offset;
         if(localFrameOffset >= 0 && localFrameOffset < nframes) {
-            // TODO optimize this?
-            _audioSeq.insert(insertSlice.toArray, localFrameOffset * nChannels);
+            _audioSeq.insert(insertSlice, localFrameOffset * nChannels);
 
             _nframes = cast(nframes_t)(_audioSeq.length / nChannels);
             if(resizeDelegate !is null) {
