@@ -18,6 +18,7 @@ import std.typecons;
 import std.traits;
 import std.typetuple;
 import std.range;
+import std.cstream;
 
 import core.memory;
 import core.time;
@@ -207,7 +208,10 @@ public:
         // insert a new buffer at logicalOffset
         PieceTable insert(T)(T buffer, size_t logicalOffset) if(is(T == Buffer) || is(T == PieceTable)) {
             if(logicalOffset > logicalLength) {
-                throw new RangeError();
+                derr.writefln("Warning: requested insertion to a piece table with length ", logicalLength,
+                              " at logical offset ", logicalOffset);
+                assert(0);
+                //return PieceTable();
             }
 
             // construct a new piece table appender
@@ -272,7 +276,8 @@ public:
             if(logicalStart > logicalEnd ||
                logicalStart >= logicalLength ||
                logicalEnd > logicalLength) {
-                throw new RangeError();
+                derr.writefln("Warning: invalid piece table removal slice [", logicalStart, " ", logicalEnd, "]");
+                return PieceTable();
             }
 
             // construct a new piece table appender
@@ -332,8 +337,8 @@ public:
         }
 
         // return the element at the given logical index; optimized for ascending sequential access
-        // returns T() if the item is not found instead of throwing,
-        //since this function is called in the audio thread
+        // instead of throwing, returns T() without warning if the item is not found,
+        // since this function is called in the audio thread
         T opIndex(size_t index) @nogc nothrow {
             if(_cachedBuffer) {
                 // if the index is in the cached buffer
@@ -377,7 +382,8 @@ public:
             if(logicalStart > logicalEnd ||
                logicalStart >= logicalLength ||
                logicalEnd > logicalLength) {
-                throw new RangeError();
+                derr.writefln("Warning: invalid piece table slice [", logicalStart, " ", logicalEnd, "]");
+                return PieceTable();
             }
 
             // construct a new piece table appender
@@ -439,7 +445,10 @@ public:
         }
 
         @property size_t logicalLength() const {
-            return table[$ - 1].logicalOffset + table[$ - 1].length;
+            if(table.length > 0) {
+                return table[$ - 1].logicalOffset + table[$ - 1].length;
+            }
+            return 0;
         }
 
         alias length = logicalLength;
@@ -957,14 +966,13 @@ public:
         return _getOnsets(params, false, channelIndex, progressCallback);
     }
 
-    // stretches the subregion between the given global indices according to stretchRatio
+    // stretches the subregion between the given local indices according to stretchRatio
     // note that this function does not recompute the overview
-    void stretchSubregion(nframes_t globalStartFrame, ref nframes_t globalEndFrame, double stretchRatio) {
+    // returns the local end frame of the stretch
+    nframes_t stretchSubregion(nframes_t localStartFrame, nframes_t localEndFrame, double stretchRatio) {
         immutable channels_t nChannels = this.nChannels;
-        immutable nframes_t localStartFrame = globalStartFrame - offset;
-        immutable nframes_t localEndFrame = globalEndFrame - offset;
 
-        uint subregionLength = cast(uint)(globalEndFrame - globalStartFrame);
+        uint subregionLength = cast(uint)(localEndFrame - localStartFrame);
         ScopedArray!(float[][]) subregionChannels = new float[][](nChannels);
         ScopedArray!(float*[]) subregionPtr = new float*[](nChannels);
         for(auto i = 0; i < nChannels; ++i) {
@@ -1001,7 +1009,6 @@ public:
         rubberband_retrieve(rState, subregionOutputPtr.ptr, subregionOutputLength);
         rubberband_delete(rState);
 
-        nframes_t newSubregionEndFrame = globalStartFrame + subregionOutputLength;
         sample_t[] subregionOutput = new sample_t[](subregionOutputLength * nChannels);
         foreach(channels_t channelIndex, channel; subregionOutputChannels) {
             foreach(i, sample; channel) {
@@ -1016,32 +1023,32 @@ public:
 
         _nframes = cast(nframes_t)(_audioSeq.length / nChannels);
 
-        globalEndFrame = globalStartFrame + subregionOutputLength;
-
         if(resizeDelegate !is null) {
             resizeDelegate(offset + nframes);
         }
+
+        return localStartFrame + subregionOutputLength;
     }
 
-    // stretch the audio such that the frame at globalSrcFrame becomes the frame at globalDestFrame
+    // stretch the audio such that the frame at localSrcFrame becomes the frame at localDestFrame
     // if linkChannels is true, perform the stretch for all channels simultaneously, ignoring channelIndex
-    void stretchThreePoint(nframes_t globalStartFrame,
-                           nframes_t globalSrcFrame,
-                           nframes_t globalDestFrame,
-                           nframes_t globalEndFrame,
+    void stretchThreePoint(nframes_t localStartFrame,
+                           nframes_t localSrcFrame,
+                           nframes_t localDestFrame,
+                           nframes_t localEndFrame,
                            bool linkChannels,
                            channels_t singleChannelIndex = 0) {
         immutable channels_t stretchNChannels = linkChannels ? nChannels : 1;
 
-        immutable double firstScaleFactor = (globalSrcFrame > globalStartFrame) ?
-            (cast(double)(globalDestFrame - globalStartFrame) /
-             cast(double)(globalSrcFrame - globalStartFrame)) : 0;
-        immutable double secondScaleFactor = (globalEndFrame > globalSrcFrame) ?
-            (cast(double)(globalEndFrame - globalDestFrame) /
-             cast(double)(globalEndFrame - globalSrcFrame)) : 0;
+        immutable double firstScaleFactor = (localSrcFrame > localStartFrame) ?
+            (cast(double)(localDestFrame - localStartFrame) /
+             cast(double)(localSrcFrame - localStartFrame)) : 0;
+        immutable double secondScaleFactor = (localEndFrame > localSrcFrame) ?
+            (cast(double)(localEndFrame - localDestFrame) /
+             cast(double)(localEndFrame - localSrcFrame)) : 0;
 
-        uint firstHalfLength = cast(uint)(globalSrcFrame - globalStartFrame);
-        uint secondHalfLength = cast(uint)(globalEndFrame - globalSrcFrame);
+        uint firstHalfLength = cast(uint)(localSrcFrame - localStartFrame);
+        uint secondHalfLength = cast(uint)(localEndFrame - localSrcFrame);
         ScopedArray!(float[][]) firstHalfChannels = new float[][](stretchNChannels);
         ScopedArray!(float[][]) secondHalfChannels = new float[][](stretchNChannels);
         ScopedArray!(float*[]) firstHalfPtr = new float*[](stretchNChannels);
@@ -1058,21 +1065,21 @@ public:
         if(linkChannels) {
             foreach(channels_t channelIndex, channel; firstHalfChannels) {
                 foreach(i, ref sample; channel) {
-                    sample = _audioSeq[(globalStartFrame + i) * nChannels + channelIndex];
+                    sample = _audioSeq[(localStartFrame + i) * nChannels + channelIndex];
                 }
             }
             foreach(channels_t channelIndex, channel; secondHalfChannels) {
                 foreach(i, ref sample; channel) {
-                    sample = _audioSeq[(globalSrcFrame + i) * nChannels + channelIndex];
+                    sample = _audioSeq[(localSrcFrame + i) * nChannels + channelIndex];
                 }
             }
         }
         else {
             foreach(i, ref sample; firstHalfChannels[0]) {
-                sample = _audioSeq[(globalStartFrame + i) * nChannels + singleChannelIndex];
+                sample = _audioSeq[(localStartFrame + i) * nChannels + singleChannelIndex];
             }
             foreach(i, ref sample; secondHalfChannels[0]) {
-                sample = _audioSeq[(globalSrcFrame + i) * nChannels + singleChannelIndex];
+                sample = _audioSeq[(localSrcFrame + i) * nChannels + singleChannelIndex];
             }
         }
 
@@ -1117,8 +1124,6 @@ public:
         rubberband_retrieve(rState, secondHalfOutputPtr.ptr, secondHalfOutputLength);
         rubberband_delete(rState);
 
-        immutable nframes_t localStartFrame = globalStartFrame - offset;
-        immutable nframes_t localEndFrame = globalEndFrame - offset;
         sample_t[] outputBuffer = new sample_t[]((firstHalfOutputLength + secondHalfOutputLength) * nChannels);
         if(linkChannels) {
             foreach(channels_t channelIndex, channel; firstHalfOutputChannels) {
@@ -1879,6 +1884,10 @@ struct BoundingBox {
     bool intersect(ref const(BoundingBox) other) const {
         return !(other.x0 > x1 || other.x1 < x0 || other.y0 > y1 || other.y1 < y0);
     }
+
+    bool containsPoint(pixels_t x, pixels_t y) const {
+        return (x >= x0 && x <= x1) && (y >= y0 && y <= y1);
+    }
 }
 
 struct Color {
@@ -2179,7 +2188,10 @@ public:
                 }
                 destroyDialog();
 
-                _region.region.stretchSubregion(_subregionStartFrame, _subregionEndFrame, stretchRatio);
+                _subregionEndFrame =
+                    _region.region.stretchSubregion(_subregionStartFrame - _editRegion.region.offset,
+                                                    _subregionEndFrame - _editRegion.region.offset,
+                                                    stretchRatio) + _editRegion.region.offset;
 
                 _region.region.computeOverview();
                 _region.computeOnsets();
@@ -2434,6 +2446,8 @@ public:
         Region region;
         Region.OnsetParams onsetParams;
 
+        nframes_t editPointOffset; // locally indexed for this region
+
         bool subregionSelected;
         nframes_t subregionStartFrame;
         nframes_t subregionEndFrame;
@@ -2485,6 +2499,7 @@ public:
                (regionOffset < viewOffset &&
                 (regionOffset + region.nframes >= viewOffset ||
                  regionOffset + region.nframes <= viewOffset + viewWidthSamples))) {
+                // xOffset is the number of horizontal pixels, if any, to skip before the start of the waveform
                 immutable pixels_t xOffset =
                     (viewOffset < regionOffset) ? (regionOffset - viewOffset) / samplesPerPixel : 0;
                 pixels_t height = heightPixels;
@@ -2669,13 +2684,15 @@ public:
                 }
                 cr.restore();
 
-                // compute audio rendering parameters
-                height = heightPixels - headerHeight; // height of the area containing the waveform, in pixels
-                yOffset += headerHeight; // y-coordinate in pixels where the waveform rendering begins
+                // height of the area containing the waveform, in pixels
+                height = heightPixels - headerHeight;
+                // y-coordinate in pixels where the waveform rendering begins
+                pixels_t bodyYOffset = yOffset + headerHeight;
                 // pixelsOffset is the screen-space x-coordinate at which to begin rendering the waveform
                 pixels_t pixelsOffset =
                     (viewOffset > regionOffset) ? (viewOffset - regionOffset) / samplesPerPixel : 0;
-                pixels_t channelHeight = height / region.nChannels; // height of each channel in pixels
+                // height of each channel in pixels
+                pixels_t channelHeight = height / region.nChannels;
 
                 bool moveOnset;                
                 pixels_t onsetPixelsStart,
@@ -2714,7 +2731,7 @@ public:
 
                 // draw the region's waveform
                 auto cacheIndex = region.getCacheIndex(_zoomStep);
-                auto channelYOffset = yOffset + (channelHeight / 2);
+                auto channelYOffset = bodyYOffset + (channelHeight / 2);
                 for(channels_t channelIndex = 0; channelIndex < region.nChannels; ++channelIndex) {
                     pixels_t startPixel = (moveOnset && onsetPixelsStart < 0 && firstScaleFactor != 0) ?
                         max(cast(pixels_t)(onsetPixelsStart / firstScaleFactor), onsetPixelsStart) : 0;
@@ -2843,14 +2860,17 @@ public:
                     channelYOffset += channelHeight;
                 }
 
-                // if the edit mode flag is set, draw the onsets
                 if(editMode) {
+                    cr.setAntialias(cairo_antialias_t.NONE);
+                    cr.setLineWidth(1.0);
+
+                    // draw the onsets
                     if(linkChannels) {
                         foreach(onset; _onsetsLinked) {
                             if(onset + regionOffset >= viewOffset &&
                                onset + regionOffset < viewOffset + viewWidthSamples) {
-                                cr.moveTo(xOffset + onset / samplesPerPixel - pixelsOffset, yOffset);
-                                cr.lineTo(xOffset + onset / samplesPerPixel - pixelsOffset, yOffset + height);
+                                cr.moveTo(xOffset + onset / samplesPerPixel - pixelsOffset, bodyYOffset);
+                                cr.lineTo(xOffset + onset / samplesPerPixel - pixelsOffset, bodyYOffset + height);
                             }
                         }
                     }
@@ -2860,17 +2880,43 @@ public:
                                 if(onset + regionOffset >= viewOffset &&
                                    onset + regionOffset < viewOffset + viewWidthSamples) {
                                     cr.moveTo(xOffset + onset / samplesPerPixel - pixelsOffset,
-                                              yOffset + cast(pixels_t)((channelIndex * channelHeight)));
+                                              bodyYOffset + cast(pixels_t)((channelIndex * channelHeight)));
                                     cr.lineTo(xOffset + onset / samplesPerPixel - pixelsOffset,
-                                              yOffset + cast(pixels_t)(((channelIndex + 1) * channelHeight)));
+                                              bodyYOffset + cast(pixels_t)(((channelIndex + 1) * channelHeight)));
                                 }
                             }
                         }
                     }
+
                     cr.setSourceRgba(1.0, 1.0, 1.0, alpha);
-                    cr.setAntialias(cairo_antialias_t.NONE);
-                    cr.setLineWidth(1.0);
                     cr.stroke();
+
+                    // draw the edit point
+                    if(editPointOffset + regionOffset >= viewOffset &&
+                       editPointOffset + regionOffset < viewOffset + viewWidthSamples) {
+                        enum editPointWidth = 16;
+
+                        cr.setSourceRgba(0.0, 1.0, 0.5, alpha);
+                        immutable pixels_t editPointXPixel =
+                            xOffset + editPointOffset / samplesPerPixel - pixelsOffset;
+
+                        cr.moveTo(editPointXPixel - editPointWidth / 2, yOffset);
+                        cr.lineTo(editPointXPixel - editPointWidth / 2, yOffset + headerHeight);
+                        cr.lineTo(editPointXPixel, yOffset + headerHeight / 2);
+                        cr.closePath();
+                        cr.fill();
+
+                        cr.moveTo(editPointXPixel + editPointWidth / 2, yOffset);
+                        cr.lineTo(editPointXPixel + editPointWidth / 2, yOffset + headerHeight);
+                        cr.lineTo(editPointXPixel, yOffset + headerHeight / 2);
+                        cr.closePath();
+                        cr.fill();
+
+                        cr.moveTo(editPointXPixel, yOffset);
+                        cr.lineTo(editPointXPixel, yOffset + headerHeight + height);
+
+                        cr.stroke();
+                    }
                 }
 
                 // if the region is muted, gray it out
@@ -3772,7 +3818,9 @@ private:
 
         void onSelectSubregion() {
             if(_mouseX >= 0 && _mouseX <= viewWidthPixels) {
-                nframes_t mouseFrame = _mouseX * samplesPerPixel + viewOffset;
+                nframes_t mouseFrame =
+                    clamp(_mouseX, _editRegion.boundingBox.x0, _editRegion.boundingBox.x1) *
+                    samplesPerPixel + viewOffset;
                 if(mouseFrame < _subregionStartFrame) {
                     _subregionStartFrame = mouseFrame;
                     _subregionDirection = Direction.left;
@@ -3963,29 +4011,35 @@ private:
 
                             case Mode.editRegion:
                                 if(_editRegion) {
-                                    // select a subregion
-                                    if(controlPressed) {
-                                        _subregionStartFrame = _subregionEndFrame =
-                                            cast(nframes_t)(_mouseX * samplesPerPixel) + viewOffset;
-                                        _setAction(Action.selectSubregion);
+                                    // detect if the mouse is over an onset
+                                    _moveOnsetChannel = _editRegion.mouseOverChannel(_mouseY);
+                                    if(_editRegion.getOnset(viewOffset + _mouseX * samplesPerPixel -
+                                                            _editRegion.region.offset,
+                                                            mouseOverThreshold * samplesPerPixel,
+                                                            _moveOnsetFrameSrc,
+                                                            _moveOnsetIndex,
+                                                            _moveOnsetChannel)) {
+                                        _moveOnsetFrameDest = _moveOnsetFrameSrc;
+                                        _setAction(Action.moveOnset);
                                         newAction = true;
                                     }
-                                    else if(_subregionSelected && shiftPressed) {
-                                        onSelectSubregion();
-                                        _setAction(Action.selectSubregion);
-                                        newAction = true;
-                                    }
-                                    else {
-                                        // detect if the mouse is over an onset
-                                        _moveOnsetChannel = _editRegion.mouseOverChannel(_mouseY);
-                                        if(_editRegion.getOnset(viewOffset + _mouseX * samplesPerPixel -
-                                                                _editRegion.region.offset,
-                                                                mouseOverThreshold * samplesPerPixel,
-                                                                _moveOnsetFrameSrc,
-                                                                _moveOnsetIndex,
-                                                                _moveOnsetChannel)) {
-                                            _moveOnsetFrameDest = _moveOnsetFrameSrc;
-                                            _setAction(Action.moveOnset);
+                                }
+
+                                if(!newAction) {
+                                    if(_editRegion.boundingBox.containsPoint(_mouseX, _mouseY)) {
+                                        if(_subregionSelected && shiftPressed) {
+                                            // append to the selected subregion
+                                            onSelectSubregion();
+                                            _setAction(Action.selectSubregion);
+                                            newAction = true;
+                                        }
+                                        else {
+                                            // move the edit point and start selecting a subregion
+                                            _subregionStartFrame = _subregionEndFrame =
+                                                cast(nframes_t)(_mouseX * samplesPerPixel) + viewOffset;
+                                            _editRegion.editPointOffset =
+                                                _subregionStartFrame - _editRegion.region.offset;
+                                            _setAction(Action.selectSubregion);
                                             newAction = true;
                                         }
                                     }
@@ -4254,6 +4308,9 @@ private:
                                 _mixer.pause();
                             }
                             else {
+                                if(_mode == Mode.editRegion) {
+                                    _mixer.transportOffset = _editRegion.editPointOffset + _editRegion.region.offset;
+                                }
                                 _mixer.play();
                             }
                         }
@@ -4308,6 +4365,18 @@ private:
                         _mixer.transportOffset = _mixer.transportOffset > largeSeekIncrement ?
                             _mixer.transportOffset - largeSeekIncrement : 0;
                         redraw();
+                        break;
+
+                    case GdkKeysyms.GDK_BackSpace:
+                        if(_mode == Mode.editRegion && _subregionSelected) {
+                            // remove the selected subregion
+                            _editRegion.region.removeGlobal(_subregionStartFrame, _subregionEndFrame);
+                            _editRegion.region.computeOverview();
+
+                            _subregionSelected = false;
+                            redraw();
+
+                        }
                         break;
 
                     case GdkKeysyms.GDK_a:
@@ -4422,13 +4491,25 @@ private:
                             }
                             redraw();
                         }
+                        else if(_mode == Mode.editRegion) {
+                            _editRegion.region.mute = !_editRegion.region.mute;
+                            redraw();
+                        }
                         break;
 
                     case GdkKeysyms.GDK_v:
                         if(controlPressed && _mode == Mode.editRegion && _copyBuffer.length > 0) {
                             // paste the copy buffer
-                            _editRegion.region.insertGlobal(_copyBuffer, _mixer.transportOffset);
+                            immutable nframes_t insertFrameGlobal =
+                                _editRegion.editPointOffset + _editRegion.region.offset;
+                            _editRegion.region.insertGlobal(_copyBuffer, insertFrameGlobal);
                             _editRegion.region.computeOverview();
+
+                            // select the pasted region
+                            _subregionSelected = true;
+                            _subregionStartFrame = insertFrameGlobal;
+                            _subregionEndFrame = insertFrameGlobal + cast(nframes_t)(_copyBuffer.length);
+
                             redraw();
                         }
                         break;
