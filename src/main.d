@@ -459,7 +459,7 @@ public:
         }
 
         @property T front() {
-            return opIndex(_pos);
+            return this[_pos];
         }
 
         void popFront() {
@@ -2447,6 +2447,7 @@ public:
         Region.OnsetParams onsetParams;
 
         nframes_t editPointOffset; // locally indexed for this region
+        bool showOnsets;
 
         bool subregionSelected;
         nframes_t subregionStartFrame;
@@ -2865,31 +2866,37 @@ public:
                     cr.setLineWidth(1.0);
 
                     // draw the onsets
-                    if(linkChannels) {
-                        foreach(onset; _onsetsLinked) {
-                            if(onset + regionOffset >= viewOffset &&
-                               onset + regionOffset < viewOffset + viewWidthSamples) {
-                                cr.moveTo(xOffset + onset / samplesPerPixel - pixelsOffset, bodyYOffset);
-                                cr.lineTo(xOffset + onset / samplesPerPixel - pixelsOffset, bodyYOffset + height);
-                            }
-                        }
-                    }
-                    else {
-                        foreach(channelIndex, channel; _onsets) {
-                            foreach(onset; channel) {
+                    if(showOnsets) {
+                        if(linkChannels) {
+                            foreach(onset; _onsetsLinked) {
                                 if(onset + regionOffset >= viewOffset &&
                                    onset + regionOffset < viewOffset + viewWidthSamples) {
                                     cr.moveTo(xOffset + onset / samplesPerPixel - pixelsOffset,
-                                              bodyYOffset + cast(pixels_t)((channelIndex * channelHeight)));
+                                              bodyYOffset);
                                     cr.lineTo(xOffset + onset / samplesPerPixel - pixelsOffset,
-                                              bodyYOffset + cast(pixels_t)(((channelIndex + 1) * channelHeight)));
+                                              bodyYOffset + height);
                                 }
                             }
                         }
-                    }
+                        else {
+                            foreach(channelIndex, channel; _onsets) {
+                                foreach(onset; channel) {
+                                    if(onset + regionOffset >= viewOffset &&
+                                       onset + regionOffset < viewOffset + viewWidthSamples) {
+                                        cr.moveTo(xOffset + onset / samplesPerPixel - pixelsOffset,
+                                                  bodyYOffset +
+                                                  cast(pixels_t)((channelIndex * channelHeight)));
+                                        cr.lineTo(xOffset + onset / samplesPerPixel - pixelsOffset,
+                                                  bodyYOffset +
+                                                  cast(pixels_t)(((channelIndex + 1) * channelHeight)));
+                                    }
+                                }
+                            }
+                        }
 
-                    cr.setSourceRgba(1.0, 1.0, 1.0, alpha);
-                    cr.stroke();
+                        cr.setSourceRgba(1.0, 1.0, 1.0, alpha);
+                        cr.stroke();
+                    }
 
                     // draw the edit point
                     if(editPointOffset + regionOffset >= viewOffset &&
@@ -3276,12 +3283,20 @@ private:
         _editRegionMenu.append(new MenuItem(delegate void (MenuItem) { new NormalizeDialog(); },
                                             "Normalize..."));
 
+        _showOnsetsMenuItem = new CheckMenuItem("Show Onsets");
+        _showOnsetsMenuItem.addOnToggled(&onShowOnsets);
+        _editRegionMenu.append(_showOnsetsMenuItem);
+
         _linkChannelsMenuItem = new CheckMenuItem("Link Channels");
-        _linkChannelsMenuItem.setDrawAsRadio(true);
         _linkChannelsMenuItem.addOnToggled(&onLinkChannels);
         _editRegionMenu.append(_linkChannelsMenuItem);
 
         _editRegionMenu.attachToWidget(this, null);
+    }
+
+    void onShowOnsets(CheckMenuItem showOnsets) {
+        _editRegion.showOnsets = showOnsets.getActive();
+        _canvas.redraw();
     }
 
     void onLinkChannels(CheckMenuItem linkChannels) {
@@ -4010,7 +4025,7 @@ private:
                                 break;
 
                             case Mode.editRegion:
-                                if(_editRegion) {
+                                if(_editRegion && _editRegion.showOnsets) {
                                     // detect if the mouse is over an onset
                                     _moveOnsetChannel = _editRegion.mouseOverChannel(_mouseY);
                                     if(_editRegion.getOnset(viewOffset + _mouseX * samplesPerPixel -
@@ -4076,7 +4091,11 @@ private:
                         if(_editRegionMenu is null) {
                             _createEditRegionMenu();
                         }
-                        _linkChannelsMenuItem.setSensitive(_editRegion.region.nChannels > 1);
+
+                        _showOnsetsMenuItem.setActive(_editRegion.showOnsets);
+
+                        _linkChannelsMenuItem.setSensitive(_editRegion.region.nChannels > 1 &&
+                                                           _editRegion.showOnsets);
                         _linkChannelsMenuItem.setActive(_editRegion.linkChannels);
 
                         _stretchSelectionMenuItem.setSensitive(_subregionSelected);
@@ -4587,6 +4606,7 @@ private:
 
     Menu _editRegionMenu;
     MenuItem _stretchSelectionMenuItem;
+    CheckMenuItem _showOnsetsMenuItem;
     CheckMenuItem _linkChannelsMenuItem;
 
     pixels_t _viewWidthPixels;
