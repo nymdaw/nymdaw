@@ -773,7 +773,7 @@ unittest {
     }
 }
 
-auto rangeMin(T)(T sourceData) if(isIterable!T && is(int : typeof(sourceData[size_t.init]))) {
+auto sliceMin(T)(T sourceData) if(isIterable!T && is(int : typeof(sourceData[size_t.init]))) {
     alias BaseSampleType = typeof(sourceData[size_t.init]);
     static if(is(BaseSampleType == const(U), U)) {
         alias SampleType = U;
@@ -789,7 +789,7 @@ auto rangeMin(T)(T sourceData) if(isIterable!T && is(int : typeof(sourceData[siz
     return minSample;
 }
 
-auto rangeMax(T)(T sourceData) if(isIterable!T && is(int : typeof(sourceData[size_t.init]))) {
+auto sliceMax(T)(T sourceData) if(isIterable!T && is(int : typeof(sourceData[size_t.init]))) {
     alias BaseSampleType = typeof(sourceData[size_t.init]);
     static if(is(BaseSampleType == const(U), U)) {
         alias SampleType = U;
@@ -1446,7 +1446,7 @@ public:
             immutable auto logicalStart = piece.logicalOffset / nChannels;
             immutable auto logicalEnd = (piece.logicalOffset + piece.length) / nChannels;
             if(sampleOffset * binSize >= logicalStart && sampleOffset * binSize < logicalEnd) {
-                return rangeMin(piece.buffer.waveformCache.getWaveformBinned(channelIndex, cacheIndex).minValues
+                return sliceMin(piece.buffer.waveformCache.getWaveformBinned(channelIndex, cacheIndex).minValues
                                 [(sampleOffset * binSize - logicalStart) / cacheSize..
                                  ((sampleOffset + 1) * binSize - logicalStart) / cacheSize]);
             }
@@ -1462,7 +1462,7 @@ public:
             immutable auto logicalStart = piece.logicalOffset / nChannels;
             immutable auto logicalEnd = (piece.logicalOffset + piece.length) / nChannels;
             if(sampleOffset * binSize >= logicalStart && sampleOffset * binSize < logicalEnd) {
-                return rangeMax(piece.buffer.waveformCache.getWaveformBinned(channelIndex, cacheIndex).maxValues
+                return sliceMax(piece.buffer.waveformCache.getWaveformBinned(channelIndex, cacheIndex).maxValues
                                 [(sampleOffset * binSize - logicalStart) / cacheSize ..
                                  ((sampleOffset + 1) * binSize - logicalStart) / cacheSize]);
             }
@@ -3805,7 +3805,10 @@ private:
 
             cr.save();
 
-            if(_action == Action.moveTransport) {
+            if(_mode == Mode.editRegion && !_mixer.playing) {
+                return;
+            }
+            else if(_action == Action.moveTransport) {
                 _transportPixelsOffset = clamp(_mouseX, 0, (viewOffset + viewWidthSamples > _mixer.lastFrame) ?
                                                ((_mixer.lastFrame - viewOffset) / samplesPerPixel) :
                                                viewWidthPixels);
@@ -4460,6 +4463,7 @@ private:
                                 _mixer.play();
                             }
                         }
+                        redraw();
                         break;
 
                     case GdkKeysyms.GDK_equal:
