@@ -166,19 +166,29 @@ public:
 
         PieceEntry[] table;
         table ~= PieceEntry(originalBuffer, 0);
-        pieceTableHistory.put(PieceTable(table));
+        undoHistory.insertFront(PieceTable(table));
     }
 
     void undo() {
-        reallocateNext = true;
-        if(currentPieceTableIndex > 0) {
-            --currentPieceTableIndex;
+        auto operation = takeOne(retro(undoHistory[]));
+        if(!operation.empty) {
+            // never remove the last element in the undo history
+            auto newUndoHistory = undoHistory[];
+            newUndoHistory.popFront();
+            if(!newUndoHistory.empty) {
+                undoHistory.removeBack(1);
+                redoHistory.insertFront(operation);
+            }
         }
+
+        clearRedoHistory = true;
     }
 
     void redo() {
-        if(currentPieceTableIndex + 1 < pieceTableHistory.data.length) {
-            ++currentPieceTableIndex;
+        auto operation = takeOne(redoHistory[]);
+        if(!operation.empty) {
+            redoHistory.removeFront(1);
+            undoHistory.insertBack(operation);
         }
     }
 
@@ -531,32 +541,33 @@ public:
     }
 
     void appendToHistory(PieceEntry[] pieceTable) {
+        undoHistory.insertBack(PieceTable(pieceTable));
         onAppendToHistory();
-        pieceTableHistory.put(PieceTable(pieceTable));
     }
     void appendToHistory(PieceTable pieceTable) {
+        undoHistory.insertBack(pieceTable);
         onAppendToHistory();
-        pieceTableHistory.put(pieceTable);
     }
 
     @property ref PieceTable currentPieceTable() @nogc nothrow {
-        return pieceTableHistory.data[currentPieceTableIndex];
+        return undoHistory.back;
     }
     alias currentPieceTable this;
 
 protected:
     void onAppendToHistory() {
-        ++currentPieceTableIndex;
-        if(reallocateNext) {
-            reallocateNext = false;
-            pieceTableHistory.shrinkTo(currentPieceTableIndex);
+        if(clearRedoHistory) {
+            clearRedoHistory = false;
+            redoHistory.clear();
         }
     }
 
+    alias PieceTableHistory = DList!PieceTable;
+    PieceTableHistory undoHistory;
+    PieceTableHistory redoHistory;
+
     Buffer originalBuffer;
-    Appender!(PieceTable[]) pieceTableHistory;
-    size_t currentPieceTableIndex;
-    bool reallocateNext;
+    bool clearRedoHistory;
 }
 
 // test sequence indexing
