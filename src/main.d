@@ -1473,8 +1473,7 @@ public:
     // returns the sample value at a given channel and frame, globally indexed
     sample_t getSampleGlobal(channels_t channelIndex, nframes_t frame) @nogc nothrow {
         return frame >= offset ?
-            (frame < offset + nframes ?
-             _audioSeq[(frame - offset) * nChannels + channelIndex] : 0) : 0;
+            (frame < offset + nframes ? _audioSeq[(frame - offset) * nChannels + channelIndex] : 0) : 0;
     }
 
     // returns a slice of the internal audio sequence, using global indexes as input
@@ -1759,11 +1758,15 @@ public:
     }
     final void play() nothrow {
         GC.disable(); // disable garbage collection while playing
+
         _playing = true;
     }
     final void pause() nothrow {
-        GC.enable(); // enable garbage collection while paused
         _playing = false;
+
+        GC.enable(); // enable garbage collection while paused
+        GC.minimize();
+        GC.collect();
     }
 
     @property final bool looping() const @nogc nothrow {
