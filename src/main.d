@@ -133,7 +133,8 @@ private:
             enum rec = "";
         }
 
-        enum destroySubArrays = "foreach(" ~ element ~ "; " ~ S ~ ") {" ~ rec ~ element ~ ".destroy(); }";
+        enum destroySubArrays = "foreach(" ~ element ~ "; " ~ S ~ ") {" ~
+            rec ~ element ~ ".destroy(); GC.free(&" ~ element ~ "); }";
     }
 
     void _destroyData() {
@@ -141,20 +142,30 @@ private:
             mixin(destroySubArrays!("data", ArrayType));
         }
         data.destroy();
+        GC.free(&data);
     }
 }
 
-class Sequence(T) {
+class Sequence(Buffer) if(is(typeof(Buffer[size_t.init]))) {
 public:
-    alias Buffer = T[];
+    static if(is(T == BufferType[], T)) {
+        enum BufferCacheIsPointer = false;
+        alias BufferCache = Buffer;
+    }
+    else {
+        enum BufferCacheIsPointer = true;
+        alias BufferCache = Buffer*;
+    }
+
+    alias T = typeof(Buffer[size_t.init]);
 
     // original buffer must not be empty
     this(Buffer originalBuffer) {
         assert(originalBuffer.length > 0);
         this.originalBuffer = originalBuffer;
 
-        PieceEntry[] table = new PieceEntry[](1);
-        table[0] = PieceEntry(originalBuffer, 0);
+        PieceEntry[] table;
+        table ~= PieceEntry(originalBuffer, 0);
         pieceTableHistory.put(PieceTable(table));
     }
 
@@ -210,8 +221,7 @@ public:
             if(logicalOffset > logicalLength) {
                 derr.writefln("Warning: requested insertion to a piece table with length ", logicalLength,
                               " at logical offset ", logicalOffset);
-                assert(0);
-                //return PieceTable();
+                return PieceTable();
             }
 
             // construct a new piece table appender
@@ -337,21 +347,36 @@ public:
         }
 
         // return the element at the given logical index; optimized for ascending sequential access
-        // instead of throwing, returns T() without warning if the item is not found,
+        // instead of throwing, this function returns T() if the item is not found,
         // since this function is called in the audio thread
         T opIndex(size_t index) @nogc nothrow {
             if(_cachedBuffer) {
                 // if the index is in the cached buffer
                 if(index >= _cachedBufferStart && index < _cachedBufferEnd) {
-                    return _cachedBuffer[index - _cachedBufferStart];
+                    static if(BufferCacheIsPointer) {
+                        return (*_cachedBuffer)[index - _cachedBufferStart];
+                    }
+                    else {
+                        return _cachedBuffer[index - _cachedBufferStart];
+                    }
                 }
                 // try the next cache buffer, since most accesses should be sequential
                 else if(++_cachedBufferIndex < table.length) {
-                    _cachedBuffer = table[_cachedBufferIndex].buffer;
+                    static if(BufferCacheIsPointer) {
+                        _cachedBuffer = &(table[_cachedBufferIndex].buffer);
+                    }
+                    else {
+                        _cachedBuffer = table[_cachedBufferIndex].buffer;
+                    }
                     _cachedBufferStart = table[_cachedBufferIndex].logicalOffset;
                     _cachedBufferEnd = _cachedBufferStart + table[_cachedBufferIndex].length;
                     if(index >= _cachedBufferStart && index < _cachedBufferEnd) {
-                        return _cachedBuffer[index - _cachedBufferStart];
+                        static if(BufferCacheIsPointer) {
+                            return (*_cachedBuffer)[index - _cachedBufferStart];
+                        }
+                        else {
+                            return _cachedBuffer[index - _cachedBufferStart];
+                        }
                     }
                 }
             }
@@ -359,11 +384,21 @@ public:
             // in case of random access, search the entire piece table for the index
             foreach(i, ref piece; table) {
                 if(index >= piece.logicalOffset && index < piece.logicalOffset + piece.length) {
-                    _cachedBuffer = piece.buffer;
+                    static if(BufferCacheIsPointer) {
+                        _cachedBuffer = &piece.buffer;
+                    }
+                    else {
+                        _cachedBuffer = piece.buffer;
+                    }
                     _cachedBufferIndex = i;
                     _cachedBufferStart = piece.logicalOffset;
                     _cachedBufferEnd = piece.logicalOffset + piece.length;
-                    return _cachedBuffer[index - _cachedBufferStart];
+                    static if(BufferCacheIsPointer) {
+                        return (*_cachedBuffer)[index - _cachedBufferStart];
+                    }
+                    else {
+                        return _cachedBuffer[index - _cachedBufferStart];
+                    }
                 }
             }
 
@@ -489,7 +524,7 @@ public:
     private:
         size_t _pos;
 
-        Buffer _cachedBuffer;
+        BufferCache _cachedBuffer;
         size_t _cachedBufferIndex;
         size_t _cachedBufferStart;
         size_t _cachedBufferEnd;
@@ -524,11 +559,9 @@ protected:
     bool reallocateNext;
 }
 
-alias AudioSequence = Sequence!sample_t;
-
 // test sequence indexing
 unittest {
-    alias IntSeq = Sequence!int;
+    alias IntSeq = Sequence!(int[]);
 
     int[] intArray = [1, 2, 3];
     IntSeq intSeq = new IntSeq(intArray);
@@ -552,7 +585,7 @@ unittest {
 
 // test sequence slicing
 unittest {
-    alias IntSeq = Sequence!int;
+    alias IntSeq = Sequence!(int[]);
 
     {
         int[] intArray = [1, 2, 3, 4];
@@ -604,7 +637,7 @@ unittest {
 
 // test sequence insertion
 unittest {
-    alias IntSeq = Sequence!int;
+    alias IntSeq = Sequence!(int[]);
 
     version(none)
     {
@@ -664,7 +697,7 @@ unittest {
 
 // test sequence removal
 unittest {
-    alias IntSeq = Sequence!int;
+    alias IntSeq = Sequence!(int[]);
 
     {
         int[] intArray = [1, 2, 3, 4];
@@ -715,7 +748,7 @@ unittest {
 
 // test sequence iteration
 unittest {
-    alias IntSeq = Sequence!int;
+    alias IntSeq = Sequence!(int[]);
 
     {
         int[] intArray = [1, 2];
@@ -739,6 +772,210 @@ unittest {
         assert(app2.data == [3, 4, 1, 5, 6, 2, 7]);
     }
 }
+
+auto rangeMin(T)(T sourceData) if(isIterable!T && is(int : typeof(sourceData[size_t.init]))) {
+    alias BaseSampleType = typeof(sourceData[size_t.init]);
+    static if(is(BaseSampleType == const(U), U)) {
+        alias SampleType = U;
+    }
+    else {
+        alias SampleType = BaseSampleType;
+    }
+
+    SampleType minSample = 1;
+    foreach(s; sourceData) {
+        if(s < minSample) minSample = s;
+    }
+    return minSample;
+}
+
+auto rangeMax(T)(T sourceData) if(isIterable!T && is(int : typeof(sourceData[size_t.init]))) {
+    alias BaseSampleType = typeof(sourceData[size_t.init]);
+    static if(is(BaseSampleType == const(U), U)) {
+        alias SampleType = U;
+    }
+    else {
+        alias SampleType = BaseSampleType;
+    }
+
+    SampleType maxSample = -1;
+    foreach(s; sourceData) {
+        if(s > maxSample) maxSample = s;
+    }
+    return maxSample;
+}
+
+// stores the min/max sample values of a single-channel waveform at a specified binning size
+struct WaveformBinned {
+public:
+    @property nframes_t binSize() const { return _binSize; }
+    @property const(sample_t[]) minValues() const { return _minValues; }
+    @property const(sample_t[]) maxValues() const { return _maxValues; }
+
+    WaveformBinned opSlice(size_t startIndex, size_t endIndex) {
+        return WaveformBinned(_binSize, _minValues[startIndex .. endIndex], _maxValues[startIndex .. endIndex]);
+    }
+
+    // compute this cache via raw audio data
+    this(nframes_t binSize, sample_t[] audioBuffer, channels_t nChannels, channels_t channelIndex) {
+        assert(binSize > 0);
+
+        _binSize = binSize;
+        immutable auto cacheLength = (audioBuffer.length / nChannels) / binSize;
+        _minValues = new sample_t[](cacheLength);
+        _maxValues = new sample_t[](cacheLength);
+
+        for(auto i = 0, j = 0; i < audioBuffer.length && j < cacheLength; i += binSize * nChannels, ++j) {
+            auto audioSlice = audioBuffer[i .. i + binSize * nChannels];
+            _minValues[j] = 1;
+            _maxValues[j] = -1;
+
+            for(auto k = channelIndex; k < audioSlice.length; k += nChannels) {
+                if(audioSlice[k] > _maxValues[j]) _maxValues[j] = audioSlice[k];
+                if(audioSlice[k] < _minValues[j]) _minValues[j] = audioSlice[k];
+            }
+        }
+    }
+
+    // compute this cache via another cache
+    this(nframes_t binSize, const(WaveformBinned) other) {
+        assert(binSize > 0);
+
+        auto binScale = binSize / other.binSize;
+        _binSize = binSize;
+        _minValues = new sample_t[](other.minValues.length / binScale);
+        _maxValues = new sample_t[](other.maxValues.length / binScale);
+
+        immutable size_t srcCount = min(other.minValues.length, other.maxValues.length);
+        immutable size_t destCount = srcCount / binScale;
+        for(auto i = 0, j = 0; i < srcCount && j < destCount; i += binScale, ++j) {
+            for(auto k = 0; k < binScale; ++k) {
+                _minValues[j] = 1;
+                _maxValues[j] = -1;
+                if(other.minValues[i + k] < _minValues[j]) {
+                    _minValues[j] = other.minValues[i + k];
+                }
+                if(other.maxValues[i + k] > _maxValues[j]) {
+                    _maxValues[j] = other.maxValues[i + k];
+                }
+            }
+        }
+    }
+
+    // for initializing this cache from a slice of a previously computed cache
+    this(nframes_t binSize, sample_t[] minValues, sample_t[] maxValues) {
+        _binSize = binSize;
+        _minValues = minValues;
+        _maxValues = maxValues;
+    }
+
+private:
+    nframes_t _binSize;
+    sample_t[] _minValues;
+    sample_t[] _maxValues;
+}
+
+struct WaveformCache {
+public:
+    static immutable nframes_t[] cacheBinSizes = [10, 100];
+    static assert(cacheBinSizes.length > 0);
+
+    static Nullable!size_t getCacheIndex(nframes_t binSize) {
+        nframes_t binSizeMatch;
+        Nullable!size_t cacheIndex;
+        foreach(i, s; cacheBinSizes) {
+            if(s <= binSize && binSize % s == 0) {
+                cacheIndex = i;
+                binSizeMatch = s;
+            }
+            else {
+                break;
+            }
+        }
+        return cacheIndex;
+    }
+
+    this(sample_t[] audioBuffer, channels_t nChannels) {
+        // initialize the cache
+        _waveformBinnedChannels = null;
+        _waveformBinnedChannels.reserve(nChannels);
+        for(auto c = 0; c < nChannels; ++c) {
+            WaveformBinned[] channelsBinned;
+            channelsBinned.reserve(cacheBinSizes.length);
+
+            // compute the first cache from the raw audio data
+            channelsBinned ~= WaveformBinned(cacheBinSizes[0], audioBuffer, nChannels, c);
+
+            // compute the subsequent caches from previously computed caches
+            foreach(binSize; cacheBinSizes[1 .. $]) {
+                channelsBinned ~= WaveformBinned(binSize, channelsBinned[$ - 1]);
+            }
+            _waveformBinnedChannels ~= channelsBinned;
+        }
+    }
+
+    WaveformCache opSlice(size_t startIndex, size_t endIndex) {
+        WaveformBinned[][] result;
+        result.reserve(_waveformBinnedChannels.length);
+        foreach(channelsBinned; _waveformBinnedChannels) {
+            WaveformBinned[] resultChannelsBinned;
+            resultChannelsBinned.reserve(channelsBinned.length);
+            foreach(waveformBinned; channelsBinned) {
+                resultChannelsBinned ~= waveformBinned[startIndex / waveformBinned.binSize ..
+                                                       endIndex / waveformBinned.binSize];
+            }
+            result ~= resultChannelsBinned;
+        }
+        return WaveformCache(result);
+    }
+
+    const(WaveformBinned) getWaveformBinned(channels_t channelIndex, size_t cacheIndex) const {
+        return _waveformBinnedChannels[channelIndex][cacheIndex];
+    }
+
+private:
+    this(WaveformBinned[][] waveformBinnedChannels) {
+        _waveformBinnedChannels = waveformBinnedChannels;
+    }
+
+    WaveformBinned[][] _waveformBinnedChannels; // indexed as [channel][waveformBinned]
+}
+
+struct AudioSegment {
+    this(sample_t[] audioBuffer, channels_t nChannels) {
+        this.audioBuffer = audioBuffer;
+        this.nChannels = nChannels;
+        waveformCache = WaveformCache(audioBuffer, nChannels);
+    }
+
+    this(sample_t[] audioBuffer, channels_t nChannels, WaveformCache waveformCache) {
+        this.audioBuffer = audioBuffer;
+        this.nChannels = nChannels;
+        this.waveformCache = waveformCache;
+    }
+
+    @property size_t length() const @nogc nothrow {
+        return audioBuffer.length;
+    }
+
+    alias opDollar = length;
+
+    sample_t opIndex(size_t index) const @nogc nothrow {
+        return audioBuffer[index];
+    }
+
+    AudioSegment opSlice(size_t startIndex, size_t endIndex) {
+        return AudioSegment(audioBuffer[startIndex .. endIndex],
+                            nChannels,
+                            waveformCache[startIndex / nChannels .. endIndex / nChannels]);
+    }
+
+    sample_t[] audioBuffer;
+    channels_t nChannels;
+    WaveformCache waveformCache;
+}
+
+alias AudioSequence = Sequence!(AudioSegment);
 
 class Region {
 public:
@@ -856,12 +1093,11 @@ public:
         }
 
         // construct the region
-        auto newRegion = new Region(sampleRate,
-                                    nChannels,
-                                    audioBuffer,
-                                    baseName(stripExtension(fileName)));
-
-        newRegion.computeOverview(progressCallback);
+        if(progressCallback) {
+            progressCallback(LoadState.computeOverview, 0);
+        }
+        auto audioSegment = AudioSegment(audioBuffer, nChannels);
+        auto newRegion = new Region(sampleRate, nChannels, audioSegment, baseName(stripExtension(fileName)));
 
         if(progressCallback) {
             progressCallback(LoadState.complete, 1.0);
@@ -920,28 +1156,6 @@ public:
         return audioBuffer;
     }
 
-    // recompute the waveform caches (overview) for the region
-    void computeOverview(LoadState.Callback progressCallback = null) {
-        if(progressCallback) {
-            progressCallback(LoadState.computeOverview, 0);
-        }
-
-        // initialize the cache
-        _waveformCacheList = null;
-        for(auto c = 0; c < _nChannels; ++c) {
-            WaveformCache[] channelCache;
-            channelCache ~= new WaveformCache(_cacheBinSizes[0], c);
-            foreach(binSize; _cacheBinSizes[1 .. $]) {
-                channelCache ~= new WaveformCache(binSize, channelCache[$ - 1]);
-            }
-            _waveformCacheList ~= channelCache;
-        }
-
-        if(progressCallback) {
-            progressCallback(LoadState.computeOverview, 1);
-        }
-    }
-
     struct OnsetParams {
         enum onsetThresholdMin = 0.0;
         enum onsetThresholdMax = 1.0;
@@ -967,7 +1181,6 @@ public:
     }
 
     // stretches the subregion between the given local indices according to stretchRatio
-    // note that this function does not recompute the overview
     // returns the local end frame of the stretch
     nframes_t stretchSubregion(nframes_t localStartFrame, nframes_t localEndFrame, double stretchRatio) {
         immutable channels_t nChannels = this.nChannels;
@@ -1018,7 +1231,7 @@ public:
 
         auto pieceTable = _audioSeq.currentPieceTable.
             remove(localStartFrame * nChannels, localEndFrame * nChannels).
-            insert(subregionOutput, localStartFrame * nChannels);
+            insert(AudioSegment(subregionOutput, nChannels), localStartFrame * nChannels);
         _audioSeq.appendToHistory(pieceTable);
 
         _nframes = cast(nframes_t)(_audioSeq.length / nChannels);
@@ -1174,7 +1387,7 @@ public:
                                     _audioSeq.currentPieceTable.logicalLength);
         auto pieceTable = _audioSeq.currentPieceTable.
             remove(removeStartIndex, removeEndIndex).
-            insert(outputBuffer, localStartFrame * nChannels);
+            insert(AudioSegment(outputBuffer, nChannels), localStartFrame * nChannels);
         _audioSeq.appendToHistory(pieceTable);
     }
 
@@ -1190,8 +1403,12 @@ public:
         auto audioBuffer = _audioSeq[localStartFrame * nChannels .. localEndFrame * nChannels].toArray;
 
         // calculate the maximum sample
-        sample_t minSample, maxSample;
-        _minMax(minSample, maxSample, audioBuffer);
+        sample_t minSample = 1;
+        sample_t maxSample = -1;
+        foreach(s; audioBuffer) {
+            if(s > maxSample) maxSample = s;
+            if(s < minSample) minSample = s;
+        }
         maxSample = max(abs(minSample), abs(maxSample));
 
         // normalize the selection
@@ -1207,7 +1424,7 @@ public:
         // write the normalized selection to the audio sequence
         auto pieceTable = _audioSeq.currentPieceTable.
             remove(localStartFrame * nChannels, localEndFrame * nChannels).
-            insert(audioBuffer, localStartFrame * nChannels);
+            insert(AudioSegment(audioBuffer, nChannels), localStartFrame * nChannels);
         _audioSeq.appendToHistory(pieceTable);
 
         if(progressCallback !is null) {
@@ -1220,109 +1437,49 @@ public:
         normalize(0, nframes, maxGain, progressCallback);
     }
 
-    class WaveformCache {
-    public:
-        @property nframes_t binSize() const { return _binSize; }
-        @property size_t length() const { return _length; }
-        @property const(sample_t[]) minValues() const { return _minValues; }
-        @property const(sample_t[]) maxValues() const { return _maxValues; }
-
-    private:
-        // compute this cache via raw audio data
-        this(nframes_t binSize, channels_t channelIndex) {
-            assert(binSize > 0);
-
-            _binSize = binSize;
-            _length = (_audioSeq.length / _nChannels) / binSize;
-            _minValues = new sample_t[](_length);
-            _maxValues = new sample_t[](_length);
-
-            auto audioBuffer = _audioSeq.toArray; // TODO optimize this
-
-            for(auto i = 0, j = 0; i < audioBuffer.length && j < _length; i += binSize * _nChannels, ++j) {
-                _minMaxChannel(channelIndex,
-                               _nChannels,
-                               _minValues[j],
-                               _maxValues[j],
-                               audioBuffer[i .. i + binSize * _nChannels]);
-            }
-        }
-
-        // compute this cache via another cache
-        this(nframes_t binSize, const(WaveformCache) cache) {
-            assert(binSize > 0);
-
-            auto binScale = binSize / cache.binSize;
-            _binSize = binSize;
-            _minValues = new sample_t[](cache.minValues.length / binScale);
-            _maxValues = new sample_t[](cache.maxValues.length / binScale);
-
-            immutable size_t srcCount = min(cache.minValues.length, cache.maxValues.length);
-            immutable size_t destCount = srcCount / binScale;
-            for(auto i = 0, j = 0; i < srcCount && j < destCount; i += binScale, ++j) {
-                for(auto k = 0; k < binScale; ++k) {
-                    _minValues[j] = 1;
-                    _maxValues[j] = -1;
-                    if(cache.minValues[i + k] < _minValues[j]) {
-                        _minValues[j] = cache.minValues[i + k];
-                    }
-                    if(cache.maxValues[i + k] > _maxValues[j]) {
-                        _maxValues[j] = cache.maxValues[i + k];
-                    }
-                }
-            }
-        }
-
-        nframes_t _binSize;
-        size_t _length;
-        sample_t[] _minValues;
-        sample_t[] _maxValues;
-    }
-
-    size_t getCacheIndex(nframes_t binSize) const {
-        nframes_t binSizeMatch;
-        size_t cacheIndex;
-        bool foundIndex;
-        foreach(i, s; _cacheBinSizes) {
-            if(s <= binSize && binSize % s == 0) {
-                foundIndex = true;
-                cacheIndex = i;
-                binSizeMatch = s;
-            }
-            else {
-                break;
-            }
-        }
-        assert(foundIndex); // TODO, fix this when implementing extremely fine zoom levels
-        return cacheIndex;
-    }
-
     sample_t getMin(channels_t channelIndex,
                     size_t cacheIndex,
                     nframes_t binSize,
-                    nframes_t sampleOffset) const {
-        auto cacheSize = _cacheBinSizes[cacheIndex];
-        return _min(_waveformCacheList[channelIndex][cacheIndex].minValues
-                    [sampleOffset * (binSize / cacheSize) .. (sampleOffset + 1) * (binSize / cacheSize)]);
+                    nframes_t sampleOffset) {
+        immutable auto cacheSize = WaveformCache.cacheBinSizes[cacheIndex];
+        foreach(piece; _audioSeq.table) {
+            immutable auto logicalStart = piece.logicalOffset / nChannels;
+            immutable auto logicalEnd = (piece.logicalOffset + piece.length) / nChannels;
+            if(sampleOffset * binSize >= logicalStart && sampleOffset * binSize < logicalEnd) {
+                return rangeMin(piece.buffer.waveformCache.getWaveformBinned(channelIndex, cacheIndex).minValues
+                                [(sampleOffset * binSize - logicalStart) / cacheSize..
+                                 ((sampleOffset + 1) * binSize - logicalStart) / cacheSize]);
+            }
+        }
+        return 0;
     }
     sample_t getMax(channels_t channelIndex,
                     size_t cacheIndex,
                     nframes_t binSize,
-                    nframes_t sampleOffset) const {
-        auto cacheSize = _cacheBinSizes[cacheIndex];
-        return _max(_waveformCacheList[channelIndex][cacheIndex].maxValues
-                    [sampleOffset * (binSize / cacheSize) .. (sampleOffset + 1) * (binSize / cacheSize)]);
+                    nframes_t sampleOffset) {
+        immutable auto cacheSize = WaveformCache.cacheBinSizes[cacheIndex];
+        foreach(piece; _audioSeq.table) {
+            immutable auto logicalStart = piece.logicalOffset / nChannels;
+            immutable auto logicalEnd = (piece.logicalOffset + piece.length) / nChannels;
+            if(sampleOffset * binSize >= logicalStart && sampleOffset * binSize < logicalEnd) {
+                return rangeMax(piece.buffer.waveformCache.getWaveformBinned(channelIndex, cacheIndex).maxValues
+                                [(sampleOffset * binSize - logicalStart) / cacheSize ..
+                                 ((sampleOffset + 1) * binSize - logicalStart) / cacheSize]);
+            }
+        }
+        return 0;
     }
 
     // returns the sample value at a given channel and frame, globally indexed
     sample_t getSampleGlobal(channels_t channelIndex, nframes_t frame) @nogc nothrow {
-        return frame >= _offset ?
-            (frame < _offset + _nframes ? _audioSeq[(frame - _offset) * _nChannels + channelIndex] : 0) : 0;
+        return frame >= offset ?
+            (frame < offset + nframes ?
+             _audioSeq[(frame - offset) * nChannels + channelIndex] : 0) : 0;
     }
 
     // returns a slice of the internal audio sequence, using global indexes as input
     AudioSequence.PieceTable getSliceGlobal(nframes_t globalFrameStart, nframes_t globalFrameEnd) {
-        return _audioSeq[globalFrameStart - offset .. globalFrameEnd - offset];
+        return _audioSeq[(globalFrameStart - offset) * nChannels .. (globalFrameEnd - offset) * nChannels];
     }
 
     // insert a subregion at a global offset, does nothing if the offset is not within this region
@@ -1355,14 +1512,25 @@ public:
         }
     }
 
-    // undo the last edit operation; does not recompute the overview
+    // undo the last edit operation
     void undoEdit() {
         _audioSeq.undo();
+
+        _nframes = cast(nframes_t)(_audioSeq.length / nChannels);
+        if(resizeDelegate !is null) {
+            resizeDelegate(offset + nframes);
+        }
     }
 
-    // redo the last edit operation; does not recompute the overview
+    // redo the last edit operation
     void redoEdit() {
         _audioSeq.redo();
+
+        _nframes = cast(nframes_t)(_audioSeq.length / nChannels);
+        if(resizeDelegate !is null) {
+            resizeDelegate(offset + nframes);
+        }
+
     }
 
     @property nframes_t sampleRate() const @nogc nothrow { return _sampleRate; }
@@ -1377,13 +1545,10 @@ public:
     @property string name(string newName) { return (_name = newName); }
 
 package:
-    ResizeDelegate resizeDelegate;
-
-private:
-    // this constructor only initializes data members; it does not construct the overview
+    // this constructor only initializes data members
     this(nframes_t sampleRate,
          channels_t nChannels,
-         sample_t[] audioBuffer,
+         AudioSegment audioBuffer,
          string name) {
         _sampleRate = sampleRate;
         _nChannels = nChannels;
@@ -1393,51 +1558,9 @@ private:
         _audioSeq = new AudioSequence(audioBuffer);
     }
 
-    static sample_t _min(T)(T sourceData) {
-        sample_t minSample = 1;
-        foreach(s; sourceData) {
-            if(s < minSample) minSample = s;
-        }
-        return minSample;
-    }
-    static sample_t _max(T)(T sourceData) {
-        sample_t maxSample = -1;
-        foreach(s; sourceData) {
-            if(s > maxSample) maxSample = s;
-        }
-        return maxSample;
-    }
+    ResizeDelegate resizeDelegate;
 
-    static void _minMax(T)(out sample_t minSample, out sample_t maxSample, T sourceData) {
-        minSample = 1;
-        maxSample = -1;
-        foreach(s; sourceData) {
-            if(s > maxSample) maxSample = s;
-            if(s < minSample) minSample = s;
-        }
-    }
-    void _minMax(out sample_t minSample, out sample_t maxSample) {
-        _minMax(minSample, maxSample, _audioSeq);
-    }
-
-    static void _minMaxChannel(T)(channels_t channelIndex,
-                                  channels_t nChannels,
-                                  out sample_t minSample,
-                                  out sample_t maxSample,
-                                  T sourceData) {
-        minSample = 1;
-        maxSample = -1;
-        for(auto i = channelIndex; i < sourceData.length; i += nChannels) {
-            if(sourceData[i] > maxSample) maxSample = sourceData[i];
-            if(sourceData[i] < minSample) minSample = sourceData[i];
-        }
-    }
-    void _minMaxChannel(channels_t channelIndex,
-                        out sample_t minSample,
-                        out sample_t maxSample) {
-        _minMaxChannel(channelIndex, _nChannels, minSample, maxSample, _audioSeq);
-    }
-
+private:
     // channelIndex is ignored when linkChannels == true
     nframes_t[] _getOnsets(ref const(OnsetParams) params,
                            bool linkChannels,
@@ -1519,11 +1642,6 @@ private:
 
         return app.data;
     }
-
-    immutable nframes_t[] _cacheBinSizes = [10, 100];
-    static assert(_cacheBinSizes.length > 0);
-
-    WaveformCache[][] _waveformCacheList; // indexed as [channel][waveform]
 
     nframes_t _sampleRate; // sample rate of the audio data
     channels_t _nChannels; // number of channels in the audio data
@@ -2193,7 +2311,6 @@ public:
                                                     _subregionEndFrame - _editRegion.region.offset,
                                                     stretchRatio) + _editRegion.region.offset;
 
-                _region.region.computeOverview();
                 _region.computeOnsets();
                 _canvas.redraw();
             }
@@ -2256,7 +2373,6 @@ public:
                         }
                     });
                 beginProgressTask!(Region.NormalizeState, DefaultProgressTask)(progressTask);
-                _region.region.computeOverview();
                 _canvas.redraw();
             }
         }
@@ -2447,14 +2563,16 @@ public:
         Region.OnsetParams onsetParams;
 
         nframes_t editPointOffset; // locally indexed for this region
-        bool showOnsets;
 
         bool subregionSelected;
         nframes_t subregionStartFrame;
         nframes_t subregionEndFrame;
 
         @property bool editMode() const { return _editMode; }
-        @property bool editMode(bool enable) {
+        @property bool editMode(bool enable) { return (_editMode = enable); }
+
+        @property bool showOnsets() const { return _showOnsets; }
+        @property bool showOnsets(bool enable) {
             if(enable) {
                 if(linkChannels && _onsetsLinked is null) {
                     computeOnsetsLinkedChannels();
@@ -2463,7 +2581,7 @@ public:
                     computeOnsetsIndependentChannels();
                 }
             }
-            return (_editMode = enable);
+            return (_showOnsets = enable);
         }
 
         @property bool linkChannels() const { return _linkChannels; }
@@ -2731,7 +2849,7 @@ public:
                 OnsetDrawState onsetDrawState;
 
                 // draw the region's waveform
-                auto cacheIndex = region.getCacheIndex(_zoomStep);
+                auto cacheIndex = WaveformCache.getCacheIndex(_zoomStep);
                 auto channelYOffset = bodyYOffset + (channelHeight / 2);
                 for(channels_t channelIndex = 0; channelIndex < region.nChannels; ++channelIndex) {
                     pixels_t startPixel = (moveOnset && onsetPixelsStart < 0 && firstScaleFactor != 0) ?
@@ -2753,7 +2871,7 @@ public:
                     if(moveOnset) {
                         onsetDrawState = OnsetDrawState.init;
                     }
-                    for(auto i = 1 + startPixel; i < width + endPixel; ++i) {                        
+                    for(auto i = 1 + startPixel; i < width + endPixel; ++i) {
                         pixels_t scaledI = i;
                         if(moveOnset && (channelIndex == _moveOnsetChannel || linkChannels)) {
                             switch(onsetDrawState) {
@@ -2901,9 +3019,12 @@ public:
                     // draw the edit point
                     if(editPointOffset + regionOffset >= viewOffset &&
                        editPointOffset + regionOffset < viewOffset + viewWidthSamples) {
+                        enum editPointLineWidth = 1;
                         enum editPointWidth = 16;
 
+                        cr.setLineWidth(editPointLineWidth);
                         cr.setSourceRgba(0.0, 1.0, 0.5, alpha);
+
                         immutable pixels_t editPointXPixel =
                             xOffset + editPointOffset / samplesPerPixel - pixelsOffset;
 
@@ -2913,9 +3034,9 @@ public:
                         cr.closePath();
                         cr.fill();
 
-                        cr.moveTo(editPointXPixel + editPointWidth / 2, yOffset);
-                        cr.lineTo(editPointXPixel + editPointWidth / 2, yOffset + headerHeight);
-                        cr.lineTo(editPointXPixel, yOffset + headerHeight / 2);
+                        cr.moveTo(editPointXPixel + editPointLineWidth + editPointWidth / 2, yOffset);
+                        cr.lineTo(editPointXPixel + editPointLineWidth + editPointWidth / 2, yOffset + headerHeight);
+                        cr.lineTo(editPointXPixel + editPointLineWidth, yOffset + headerHeight / 2);
                         cr.closePath();
                         cr.fill();
 
@@ -2939,6 +3060,7 @@ public:
         }
 
         bool _editMode;
+        bool _showOnsets;
         bool _linkChannels;
 
         nframes_t[][] _onsets; // indexed as [channel][onset]
@@ -3273,9 +3395,6 @@ private:
     void _createEditRegionMenu() {
         _editRegionMenu = new Menu();
 
-        _editRegionMenu.append(new MenuItem(delegate void(MenuItem) { new OnsetDetectionDialog(); },
-                                            "Onset Detection..."));
-
         _stretchSelectionMenuItem = new MenuItem(delegate void(MenuItem) { new StretchSelectionDialog(); },
                                                  "Stretch Selection...");
         _editRegionMenu.append(_stretchSelectionMenuItem);
@@ -3286,6 +3405,10 @@ private:
         _showOnsetsMenuItem = new CheckMenuItem("Show Onsets");
         _showOnsetsMenuItem.addOnToggled(&onShowOnsets);
         _editRegionMenu.append(_showOnsetsMenuItem);
+
+        _onsetDetectionMenuItem = new MenuItem(delegate void(MenuItem) { new OnsetDetectionDialog(); },
+                                               "Onset Detection...");
+        _editRegionMenu.append(_onsetDetectionMenuItem);
 
         _linkChannelsMenuItem = new CheckMenuItem("Link Channels");
         _linkChannelsMenuItem.addOnToggled(&onLinkChannels);
@@ -4094,6 +4217,8 @@ private:
 
                         _showOnsetsMenuItem.setActive(_editRegion.showOnsets);
 
+                        _onsetDetectionMenuItem.setSensitive(_editRegion.showOnsets);
+
                         _linkChannelsMenuItem.setSensitive(_editRegion.region.nChannels > 1 &&
                                                            _editRegion.showOnsets);
                         _linkChannelsMenuItem.setActive(_editRegion.linkChannels);
@@ -4180,7 +4305,6 @@ private:
                                                              onsetFrameEnd,
                                                              _editRegion.linkChannels,
                                                              _moveOnsetChannel);
-                        _editRegion.region.computeOverview();
 
                         redraw();
                         _setAction(Action.none);
@@ -4390,7 +4514,6 @@ private:
                         if(_mode == Mode.editRegion && _subregionSelected) {
                             // remove the selected subregion
                             _editRegion.region.removeGlobal(_subregionStartFrame, _subregionEndFrame);
-                            _editRegion.region.computeOverview();
 
                             _subregionSelected = false;
                             redraw();
@@ -4522,12 +4645,12 @@ private:
                             immutable nframes_t insertFrameGlobal =
                                 _editRegion.editPointOffset + _editRegion.region.offset;
                             _editRegion.region.insertGlobal(_copyBuffer, insertFrameGlobal);
-                            _editRegion.region.computeOverview();
 
                             // select the pasted region
                             _subregionSelected = true;
                             _subregionStartFrame = insertFrameGlobal;
-                            _subregionEndFrame = insertFrameGlobal + cast(nframes_t)(_copyBuffer.length);
+                            _subregionEndFrame = insertFrameGlobal +
+                                cast(nframes_t)(_copyBuffer.length / _editRegion.region.nChannels);
 
                             redraw();
                         }
@@ -4539,7 +4662,6 @@ private:
                             _copyBuffer = _editRegion.region.getSliceGlobal(_subregionStartFrame,
                                                                             _subregionEndFrame);
                             _editRegion.region.removeGlobal(_subregionStartFrame, _subregionEndFrame);
-                            _editRegion.region.computeOverview();
 
                             _subregionSelected = false;
                             redraw();
@@ -4550,7 +4672,6 @@ private:
                         if(_mode == Mode.editRegion) {
                             // redo the last edit
                             _editRegion.region.redoEdit();
-                            _editRegion.region.computeOverview();
                             redraw();
                         }
                         break;
@@ -4559,7 +4680,6 @@ private:
                         if(_mode == Mode.editRegion) {
                             // undo the last edit
                             _editRegion.region.undoEdit();
-                            _editRegion.region.computeOverview();
                             redraw();
                         }
                         break;
@@ -4607,6 +4727,7 @@ private:
     Menu _editRegionMenu;
     MenuItem _stretchSelectionMenuItem;
     CheckMenuItem _showOnsetsMenuItem;
+    MenuItem _onsetDetectionMenuItem;
     CheckMenuItem _linkChannelsMenuItem;
 
     pixels_t _viewWidthPixels;
