@@ -146,6 +146,79 @@ private:
     }
 }
 
+struct StateHistory(T) {
+public:
+    this(T initialState) {
+        _undoHistory.insertFront(initialState);
+    }
+
+    @disable this();
+
+    // returns true if an undo operation is currently possible
+    bool queryUndo() {
+        auto undoRange = _undoHistory[];
+        if(!undoRange.empty) {
+            // the undo history must always contain at least one element
+            undoRange.popFront();
+            return !undoRange.empty();
+        }
+        return false;
+    }
+
+    // returns true if a redo operation is currently possible
+    bool queryRedo() {
+        auto redoRange = _redoHistory[];
+        return !redoRange.empty;
+    }
+
+    // undo the last operation, if possible
+    // this function will clear the redo history if the user subsequently appends new operation
+    void undo() {
+        auto operation = takeOne(retro(_undoHistory[]));
+        if(!operation.empty) {
+            // never remove the last element in the undo history
+            auto newUndoHistory = _undoHistory[];
+            newUndoHistory.popFront();
+            if(!newUndoHistory.empty) {
+                _undoHistory.removeBack(1);
+                _redoHistory.insertFront(operation);
+                _clearRedoHistory = true;
+            }
+        }
+    }
+
+    // redo the last operation, if possible
+    void redo() {
+        auto operation = takeOne(_redoHistory[]);
+        if(!operation.empty) {
+            _redoHistory.removeFront(1);
+            _undoHistory.insertBack(operation);
+        }
+    }
+
+    // execute this function when the user effects a new undo-able state
+    void appendState(T t) {
+        _undoHistory.insertBack(t);
+
+        if(_clearRedoHistory) {
+            _clearRedoHistory = false;
+            _redoHistory.clear();
+        }
+    }
+
+    // returns the current user-modifiable state
+    @property ref T currentState() @nogc nothrow {
+        return _undoHistory.back;
+    }
+
+private:
+    alias HistoryContainer = DList!T;
+    HistoryContainer _undoHistory;
+    HistoryContainer _redoHistory;
+
+    bool _clearRedoHistory;
+}
+
 class Sequence(Buffer) if(is(typeof(Buffer[size_t.init]))) {
 public:
     static if(is(T == BufferType[], T)) {
@@ -166,30 +239,14 @@ public:
 
         PieceEntry[] table;
         table ~= PieceEntry(originalBuffer, 0);
-        undoHistory.insertFront(PieceTable(table));
+        stateHistory = StateHistory!PieceTable(PieceTable(table));
     }
 
     void undo() {
-        auto operation = takeOne(retro(undoHistory[]));
-        if(!operation.empty) {
-            // never remove the last element in the undo history
-            auto newUndoHistory = undoHistory[];
-            newUndoHistory.popFront();
-            if(!newUndoHistory.empty) {
-                undoHistory.removeBack(1);
-                redoHistory.insertFront(operation);
-            }
-        }
-
-        clearRedoHistory = true;
+        stateHistory.undo();
     }
-
     void redo() {
-        auto operation = takeOne(redoHistory[]);
-        if(!operation.empty) {
-            redoHistory.removeFront(1);
-            undoHistory.insertBack(operation);
-        }
+        stateHistory.redo();
     }
 
     // insert a new buffer at logicalOffset and append the result to the piece table history
@@ -541,33 +598,20 @@ public:
     }
 
     void appendToHistory(PieceEntry[] pieceTable) {
-        undoHistory.insertBack(PieceTable(pieceTable));
-        onAppendToHistory();
+        stateHistory.appendState(PieceTable(pieceTable));
     }
     void appendToHistory(PieceTable pieceTable) {
-        undoHistory.insertBack(pieceTable);
-        onAppendToHistory();
+        stateHistory.appendState(pieceTable);
     }
 
     @property ref PieceTable currentPieceTable() @nogc nothrow {
-        return undoHistory.back;
+        return stateHistory.currentState;
     }
     alias currentPieceTable this;
 
 protected:
-    void onAppendToHistory() {
-        if(clearRedoHistory) {
-            clearRedoHistory = false;
-            redoHistory.clear();
-        }
-    }
-
-    alias PieceTableHistory = DList!PieceTable;
-    PieceTableHistory undoHistory;
-    PieceTableHistory redoHistory;
-
     Buffer originalBuffer;
-    bool clearRedoHistory;
+    StateHistory!PieceTable stateHistory;
 }
 
 // test sequence indexing
@@ -2481,7 +2525,6 @@ public:
                              out size_t foundIndex,
                              size_t leftIndex,
                              size_t rightIndex) {
-
                 foundIndex = (leftIndex + rightIndex) / 2;
                 if(foundIndex >= onsets.length) return false;
 
@@ -2568,6 +2611,63 @@ public:
             return clamp((mouseY - (boundingBox.y0 + headerHeight)) / channelHeight, 0, region.nChannels - 1);
         }
 
+        EditState currentState(bool audioEdited) {
+            return EditState(audioEdited,
+                             _subregionSelected,
+                             _subregionStartFrame,
+                             _subregionEndFrame);
+        }
+
+        void updateCurrentState() {
+            _subregionSelected = subregionSelected = stateHistory.currentState.subregionSelected;
+            if(_subregionSelected) {
+                _subregionStartFrame = subregionStartFrame = stateHistory.currentState.subregionStartFrame;
+                _subregionEndFrame = subregionEndFrame = stateHistory.currentState.subregionEndFrame;
+
+                editPointOffset = _subregionStartFrame;
+            }
+        }
+
+        void undoEdit() {
+            if(stateHistory.queryUndo()) {
+                if(stateHistory.currentState.audioEdited) {
+                    region.undoEdit();
+                }
+                stateHistory.undo();
+
+                updateCurrentState();
+            }
+        }
+        void redoEdit() {
+            if(stateHistory.queryRedo()) {
+                if(stateHistory.currentState.audioEdited) {
+                    region.redoEdit();
+                }
+                stateHistory.redo();
+
+                updateCurrentState();
+            }
+        }
+
+        struct EditState {
+            this(bool audioEdited,
+                 bool subregionSelected,
+                 nframes_t subregionStartFrame = 0,
+                 nframes_t subregionEndFrame = 0) {
+                this.audioEdited = audioEdited;
+                this.subregionSelected = subregionSelected;
+                this.subregionStartFrame = subregionStartFrame;
+                this.subregionEndFrame = subregionEndFrame;
+            }
+
+            const(bool) audioEdited;
+            const(bool) subregionSelected;
+            const(nframes_t) subregionStartFrame;
+            const(nframes_t) subregionEndFrame;
+        }
+
+        StateHistory!EditState stateHistory;
+
         bool selected;
         nframes_t selectedOffset;
         BoundingBox boundingBox;
@@ -2611,6 +2711,7 @@ public:
         this(Region region, Color* color) {
             this.region = region;
             _regionColor = color;
+            stateHistory = StateHistory!EditState(EditState());
         }
 
         void _drawRegion(ref Scoped!Context cr,
@@ -4531,8 +4632,10 @@ private:
                             _editRegion.region.removeGlobal(_subregionStartFrame, _subregionEndFrame);
 
                             _subregionSelected = false;
-                            redraw();
 
+                            _editRegion.stateHistory.appendState(_editRegion.currentState(true));
+
+                            redraw();
                         }
                         break;
 
@@ -4667,6 +4770,8 @@ private:
                             _subregionEndFrame = insertFrameGlobal +
                                 cast(nframes_t)(_copyBuffer.length / _editRegion.region.nChannels);
 
+                            _editRegion.stateHistory.appendState(_editRegion.currentState(true));
+
                             redraw();
                         }
                         break;
@@ -4679,6 +4784,9 @@ private:
                             _editRegion.region.removeGlobal(_subregionStartFrame, _subregionEndFrame);
 
                             _subregionSelected = false;
+
+                            _editRegion.stateHistory.appendState(_editRegion.currentState(true));
+
                             redraw();
                         }
                         break;
@@ -4686,7 +4794,7 @@ private:
                     case GdkKeysyms.GDK_y:
                         if(_mode == Mode.editRegion) {
                             // redo the last edit
-                            _editRegion.region.redoEdit();
+                            _editRegion.redoEdit();
                             redraw();
                         }
                         break;
@@ -4694,7 +4802,7 @@ private:
                     case GdkKeysyms.GDK_z:
                         if(_mode == Mode.editRegion) {
                             // undo the last edit
-                            _editRegion.region.undoEdit();
+                            _editRegion.undoEdit();
                             redraw();
                         }
                         break;
