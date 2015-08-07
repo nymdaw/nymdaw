@@ -817,14 +817,14 @@ auto sliceMax(T)(T sourceData) if(isIterable!T && is(int : typeof(sourceData[siz
 }
 
 // stores the min/max sample values of a single-channel waveform at a specified binning size
-struct WaveformBinned {
+class WaveformBinned {
 public:
     @property nframes_t binSize() const { return _binSize; }
     @property const(sample_t[]) minValues() const { return _minValues; }
     @property const(sample_t[]) maxValues() const { return _maxValues; }
 
     WaveformBinned opSlice(size_t startIndex, size_t endIndex) {
-        return WaveformBinned(_binSize, _minValues[startIndex .. endIndex], _maxValues[startIndex .. endIndex]);
+        return new WaveformBinned(_binSize, _minValues[startIndex .. endIndex], _maxValues[startIndex .. endIndex]);
     }
 
     // compute this cache via raw audio data
@@ -886,7 +886,7 @@ private:
     sample_t[] _maxValues;
 }
 
-struct WaveformCache {
+class WaveformCache {
 public:
     static immutable nframes_t[] cacheBinSizes = [10, 100];
     static assert(cacheBinSizes.length > 0);
@@ -915,11 +915,11 @@ public:
             channelsBinned.reserve(cacheBinSizes.length);
 
             // compute the first cache from the raw audio data
-            channelsBinned ~= WaveformBinned(cacheBinSizes[0], audioBuffer, nChannels, c);
+            channelsBinned ~= new WaveformBinned(cacheBinSizes[0], audioBuffer, nChannels, c);
 
             // compute the subsequent caches from previously computed caches
             foreach(binSize; cacheBinSizes[1 .. $]) {
-                channelsBinned ~= WaveformBinned(binSize, channelsBinned[$ - 1]);
+                channelsBinned ~= new WaveformBinned(binSize, channelsBinned[$ - 1]);
             }
             _waveformBinnedChannels ~= channelsBinned;
         }
@@ -937,7 +937,7 @@ public:
             }
             result ~= resultChannelsBinned;
         }
-        return WaveformCache(result);
+        return new WaveformCache(result);
     }
 
     const(WaveformBinned) getWaveformBinned(channels_t channelIndex, size_t cacheIndex) const {
@@ -956,7 +956,7 @@ struct AudioSegment {
     this(sample_t[] audioBuffer, channels_t nChannels) {
         this.audioBuffer = audioBuffer;
         this.nChannels = nChannels;
-        waveformCache = WaveformCache(audioBuffer, nChannels);
+        waveformCache = new WaveformCache(audioBuffer, nChannels);
     }
 
     this(sample_t[] audioBuffer, channels_t nChannels, WaveformCache waveformCache) {
@@ -1776,8 +1776,6 @@ public:
         _playing = false;
 
         GC.enable(); // enable garbage collection while paused
-        GC.minimize();
-        GC.collect();
     }
 
     @property final bool looping() const @nogc nothrow {
