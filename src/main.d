@@ -3028,6 +3028,20 @@ public:
                         cr.stroke();
                     }
 
+                    // draw the subregion selection box
+                    if(_subregionSelected || _action == Action.selectSubregion) {
+                        cr.setOperator(cairo_operator_t.OVER);
+                        cr.setAntialias(cairo_antialias_t.NONE);
+
+                        pixels_t x0 = (viewOffset < _subregionStartFrame) ?
+                            (_subregionStartFrame - viewOffset) / samplesPerPixel : 0;
+                        pixels_t x1 = (viewOffset < _subregionEndFrame) ?
+                            (_subregionEndFrame - viewOffset) / samplesPerPixel : 0;
+                        cr.rectangle(x0, yOffset, x1 - x0, headerHeight + height);
+                        cr.setSourceRgba(0.0, 1.0, 0.0, 0.5);
+                        cr.fill();
+                    }
+
                     // draw the edit point
                     if(editPointOffset + regionOffset >= viewOffset &&
                        editPointOffset + regionOffset < viewOffset + viewWidthSamples) {
@@ -3861,21 +3875,6 @@ private:
                 cr.fillPreserve();
                 cr.setSourceRgb(0.0, 1.0, 0.0);
                 cr.stroke();
-
-                cr.restore();
-            }
-            else if(_mode == Mode.editRegion && (_subregionSelected || _action == Action.selectSubregion)) {
-                cr.save();
-
-                cr.setOperator(cairo_operator_t.OVER);
-                cr.setAntialias(cairo_antialias_t.NONE);
-
-                pixels_t x0 = (_subregionStartFrame - viewOffset) / samplesPerPixel;
-                pixels_t x1 = (_subregionEndFrame - viewOffset) / samplesPerPixel;
-                cr.rectangle(x0, _editRegion.boundingBox.y0,
-                             x1 - x0,  _editRegion.boundingBox.y1 - _editRegion.boundingBox.y0);
-                cr.setSourceRgba(0.0, 1.0, 0.0, 0.5);
-                cr.fill();
 
                 cr.restore();
             }
