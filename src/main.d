@@ -2367,6 +2367,8 @@ public:
                     _region.computeOnsets();
                 }
 
+                _region.appendState(_region.currentState(true));
+
                 _canvas.redraw();
             }
             else {
@@ -2421,10 +2423,12 @@ public:
                                                      _region.subregionEndFrame,
                                                      cast(sample_t)(_normalizeGainAdjustment.getValue()),
                                                      progressCallback);
+                            _region.appendState(_region.currentState(true));
                         }
                         else if(entireRegion) {
                             _region.region.normalize(cast(sample_t)(_normalizeGainAdjustment.getValue()),
                                                      progressCallback);
+                            _region.appendState(_region.currentState(true));
                         }
                     });
                 beginProgressTask!(Region.NormalizeState, DefaultProgressTask)(progressTask);
@@ -2615,29 +2619,33 @@ public:
         }
 
         void updateCurrentState() {
-            subregionSelected = stateHistory.currentState.subregionSelected;
+            subregionSelected = _stateHistory.currentState.subregionSelected;
             if(subregionSelected) {
-                subregionStartFrame = stateHistory.currentState.subregionStartFrame;
-                subregionEndFrame = stateHistory.currentState.subregionEndFrame;
+                subregionStartFrame = _stateHistory.currentState.subregionStartFrame;
+                subregionEndFrame = _stateHistory.currentState.subregionEndFrame;
 
                 editPointOffset = subregionStartFrame;
             }
         }
 
+        void appendState(EditState editState) {
+            _stateHistory.appendState(editState);
+        }
+
         void undoEdit() {
-            if(stateHistory.queryUndo()) {
-                if(stateHistory.currentState.audioEdited) {
+            if(_stateHistory.queryUndo()) {
+                if(_stateHistory.currentState.audioEdited) {
                     region.undoEdit();
                 }
-                stateHistory.undo();
+                _stateHistory.undo();
 
                 updateCurrentState();
             }
         }
         void redoEdit() {
-            if(stateHistory.queryRedo()) {
-                stateHistory.redo();
-                if(stateHistory.currentState.audioEdited) {
+            if(_stateHistory.queryRedo()) {
+                _stateHistory.redo();
+                if(_stateHistory.currentState.audioEdited) {
                     region.redoEdit();
                 }
 
@@ -2661,8 +2669,6 @@ public:
             const(nframes_t) subregionStartFrame;
             const(nframes_t) subregionEndFrame;
         }
-
-        StateHistory!EditState stateHistory;
 
         Region region;
         @property channels_t nChannels() const @nogc nothrow { return region.nChannels; }
@@ -2712,7 +2718,7 @@ public:
         this(Region region, Color* color) {
             this.region = region;
             _regionColor = color;
-            stateHistory = StateHistory!EditState(EditState());
+            _stateHistory = StateHistory!EditState(EditState());
         }
 
         void _drawRegion(ref Scoped!Context cr,
@@ -3188,6 +3194,8 @@ public:
 
             cr.restore();
         }
+
+        StateHistory!EditState _stateHistory;
 
         bool _editMode;
         bool _showOnsets;
@@ -4358,6 +4366,9 @@ private:
                     case Action.selectSubregion:
                         _editRegion.subregionSelected =
                             !(_editRegion.subregionStartFrame == _editRegion.subregionEndFrame);
+
+                        _editRegion.appendState(_editRegion.currentState(false));
+
                         _setAction(Action.none);
                         redraw();
                         break;
@@ -4622,7 +4633,7 @@ private:
 
                             _editRegion.subregionSelected = false;
 
-                            _editRegion.stateHistory.appendState(_editRegion.currentState(true));
+                            _editRegion.appendState(_editRegion.currentState(true));
 
                             redraw();
                         }
@@ -4758,7 +4769,7 @@ private:
                             _editRegion.subregionEndFrame = _editRegion.editPointOffset +
                                 cast(nframes_t)(_copyBuffer.length / _editRegion.nChannels);
 
-                            _editRegion.stateHistory.appendState(_editRegion.currentState(true));
+                            _editRegion.appendState(_editRegion.currentState(true));
 
                             redraw();
                         }
@@ -4774,7 +4785,7 @@ private:
 
                             _editRegion.subregionSelected = false;
 
-                            _editRegion.stateHistory.appendState(_editRegion.currentState(true));
+                            _editRegion.appendState(_editRegion.currentState(true));
 
                             redraw();
                         }
