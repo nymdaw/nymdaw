@@ -2117,6 +2117,8 @@ public:
         _mixer = mixer;
         _samplesPerPixel = defaultSamplesPerPixel;
 
+        _arrangeStateHistory = StateHistory!ArrangeState(ArrangeState());
+
         _canvas = new Canvas();
         _hScroll = new ArrangeHScroll();
         _vScroll = new ArrangeVScroll();
@@ -2367,7 +2369,7 @@ public:
                     _region.computeOnsets();
                 }
 
-                _region.appendState(_region.currentState(true));
+                _region.appendEditState(_region.currentEditState(true));
 
                 _canvas.redraw();
             }
@@ -2423,12 +2425,12 @@ public:
                                                      _region.subregionEndFrame,
                                                      cast(sample_t)(_normalizeGainAdjustment.getValue()),
                                                      progressCallback);
-                            _region.appendState(_region.currentState(true));
+                            _region.appendEditState(_region.currentEditState(true));
                         }
                         else if(entireRegion) {
                             _region.region.normalize(cast(sample_t)(_normalizeGainAdjustment.getValue()),
                                                      progressCallback);
-                            _region.appendState(_region.currentState(true));
+                            _region.appendEditState(_region.currentEditState(true));
                         }
                     });
                 beginProgressTask!(Region.NormalizeState, DefaultProgressTask)(progressTask);
@@ -2614,45 +2616,6 @@ public:
             return clamp((mouseY - (boundingBox.y0 + headerHeight)) / channelHeight, 0, region.nChannels - 1);
         }
 
-        EditState currentState(bool audioEdited) {
-            return EditState(audioEdited, subregionSelected, subregionStartFrame, subregionEndFrame);
-        }
-
-        void updateCurrentState() {
-            subregionSelected = _stateHistory.currentState.subregionSelected;
-            if(subregionSelected) {
-                subregionStartFrame = _stateHistory.currentState.subregionStartFrame;
-                subregionEndFrame = _stateHistory.currentState.subregionEndFrame;
-
-                editPointOffset = subregionStartFrame;
-            }
-        }
-
-        void appendState(EditState editState) {
-            _stateHistory.appendState(editState);
-        }
-
-        void undoEdit() {
-            if(_stateHistory.queryUndo()) {
-                if(_stateHistory.currentState.audioEdited) {
-                    region.undoEdit();
-                }
-                _stateHistory.undo();
-
-                updateCurrentState();
-            }
-        }
-        void redoEdit() {
-            if(_stateHistory.queryRedo()) {
-                _stateHistory.redo();
-                if(_stateHistory.currentState.audioEdited) {
-                    region.redoEdit();
-                }
-
-                updateCurrentState();
-            }
-        }
-
         struct EditState {
             this(bool audioEdited,
                  bool subregionSelected,
@@ -2668,6 +2631,43 @@ public:
             const(bool) subregionSelected;
             const(nframes_t) subregionStartFrame;
             const(nframes_t) subregionEndFrame;
+        }
+
+        EditState currentEditState(bool audioEdited) {
+            return EditState(audioEdited, subregionSelected, subregionStartFrame, subregionEndFrame);
+        }
+
+        void updateCurrentEditState() {
+            subregionSelected = _editStateHistory.currentState.subregionSelected;
+            if(subregionSelected) {
+                subregionStartFrame = _editStateHistory.currentState.subregionStartFrame;
+                subregionEndFrame = _editStateHistory.currentState.subregionEndFrame;
+
+                editPointOffset = subregionStartFrame;
+            }
+        }
+
+        void appendEditState(EditState editState) {
+            _editStateHistory.appendState(editState);
+        }
+
+        void undoEdit() {
+            if(_editStateHistory.queryUndo()) {
+                if(_editStateHistory.currentState.audioEdited) {
+                    region.undoEdit();
+                }
+                _editStateHistory.undo();
+                updateCurrentEditState();
+            }
+        }
+        void redoEdit() {
+            if(_editStateHistory.queryRedo()) {
+                _editStateHistory.redo();
+                if(_editStateHistory.currentState.audioEdited) {
+                    region.redoEdit();
+                }
+                updateCurrentEditState();
+            }
         }
 
         Region region;
@@ -2718,7 +2718,9 @@ public:
         this(Region region, Color* color) {
             this.region = region;
             _regionColor = color;
-            _stateHistory = StateHistory!EditState(EditState());
+
+            _arrangeStateHistory = StateHistory!ArrangeState(ArrangeState());
+            _editStateHistory = StateHistory!EditState(EditState());
         }
 
         void _drawRegion(ref Scoped!Context cr,
@@ -3195,7 +3197,8 @@ public:
             cr.restore();
         }
 
-        StateHistory!EditState _stateHistory;
+        StateHistory!ArrangeState _arrangeStateHistory;
+        StateHistory!EditState _editStateHistory;
 
         bool _editMode;
         bool _showOnsets;
@@ -3631,13 +3634,11 @@ private:
             case Action.moveRegion:
                 _earliestSelectedRegion = null;
                 nframes_t minOffset = nframes_t.max;
-                foreach(regionView; _regionViews) {
-                    if(regionView.selected) {
-                        regionView.selectedOffset = regionView.offset;
-                        if(regionView.offset < minOffset) {
-                            minOffset = regionView.offset;
-                            _earliestSelectedRegion = regionView;
-                        }
+                foreach(regionView; _selectedRegions) {
+                    regionView.selectedOffset = regionView.offset;
+                    if(regionView.offset < minOffset) {
+                        minOffset = regionView.offset;
+                        _earliestSelectedRegion = regionView;
                     }
                 }
                 break;
@@ -3654,12 +3655,10 @@ private:
             case Mode.editRegion:
                 // enable edit mode for the first selected region
                 _editRegion = null;
-                foreach(regionView; _regionViews) {
-                    if(regionView.selected) {
-                        regionView.editMode = true;
-                        _editRegion = regionView;
-                        break;
-                    }
+                foreach(regionView; _selectedRegions) {
+                    regionView.editMode = true;
+                    _editRegion = regionView;
+                    break;
                 }
                 if(_editRegion is null) {
                     return;
@@ -4122,20 +4121,18 @@ private:
                         break;
 
                     case Action.moveRegion:
-                        foreach(regionView; _regionViews) {
-                            if(regionView.selected) {
-                                nframes_t deltaXSamples = abs(_mouseX - prevMouseX) * samplesPerPixel;
-                                if(_mouseX > prevMouseX) {
-                                    regionView.selectedOffset += deltaXSamples;
-                                }
-                                else if(_earliestSelectedRegion.selectedOffset > abs(deltaXSamples)) {
-                                    regionView.selectedOffset -= deltaXSamples;
-                                }
-                                else {
-                                    regionView.selectedOffset =
-                                        regionView.offset > _earliestSelectedRegion.offset ?
-                                        regionView.offset - _earliestSelectedRegion.offset : 0;
-                                }
+                        foreach(regionView; _selectedRegions) {
+                            nframes_t deltaXSamples = abs(_mouseX - prevMouseX) * samplesPerPixel;
+                            if(_mouseX > prevMouseX) {
+                                regionView.selectedOffset += deltaXSamples;
+                            }
+                            else if(_earliestSelectedRegion.selectedOffset > abs(deltaXSamples)) {
+                                regionView.selectedOffset -= deltaXSamples;
+                            }
+                            else {
+                                regionView.selectedOffset =
+                                    regionView.offset > _earliestSelectedRegion.offset ?
+                                    regionView.offset - _earliestSelectedRegion.offset : 0;
                             }
                         }
                         redraw();
@@ -4161,15 +4158,13 @@ private:
                         break;
 
                     case Action.moveOnset:
-                        foreach(regionView; _regionViews) {
-                            if(regionView.selected) {
-                                nframes_t deltaXSamples = abs(_mouseX - prevMouseX) * samplesPerPixel;
-                                Direction direction = (_mouseX > prevMouseX) ? Direction.right : Direction.left;
-                                _moveOnsetFrameDest = regionView.moveOnset(_moveOnsetIndex,
-                                                                           deltaXSamples,
-                                                                           direction,
-                                                                           _moveOnsetChannel);
-                            }
+                        foreach(regionView; _selectedRegions) {
+                            nframes_t deltaXSamples = abs(_mouseX - prevMouseX) * samplesPerPixel;
+                            Direction direction = (_mouseX > prevMouseX) ? Direction.right : Direction.left;
+                            _moveOnsetFrameDest = regionView.moveOnset(_moveOnsetIndex,
+                                                                       deltaXSamples,
+                                                                       direction,
+                                                                       _moveOnsetChannel);
                         }
                         redraw();
                         break;
@@ -4224,10 +4219,9 @@ private:
                             case Mode.arrange:
                                 // detect if the mouse is over an audio region; if so, select that region
                                 bool mouseOverSelectedRegion;
-                                foreach(regionView; _regionViews) {
+                                foreach(regionView; _selectedRegions) {
                                     if(_mouseX >= regionView.boundingBox.x0 && _mouseX < regionView.boundingBox.x1 &&
-                                       _mouseY >= regionView.boundingBox.y0 && _mouseY < regionView.boundingBox.y1 &&
-                                       regionView.selected) {
+                                       _mouseY >= regionView.boundingBox.y0 && _mouseY < regionView.boundingBox.y1) {
                                         mouseOverSelectedRegion = true;
                                         break;
                                     }
@@ -4240,13 +4234,14 @@ private:
                                 else {
                                     // if shift is not currently pressed, deselect all regions
                                     if(!shiftPressed) {
-                                        foreach(regionView; _regionViews) {
+                                        foreach(regionView; _selectedRegions) {
                                             regionView.selected = false;
                                         }
                                         _earliestSelectedRegion = null;
                                     }
 
                                     bool mouseOverRegion;
+                                    _selectedRegionsApp.clear();
                                     foreach(regionView; _regionViews) {
                                         if(_mouseX >= regionView.boundingBox.x0 &&
                                            _mouseX < regionView.boundingBox.x1 &&
@@ -4260,6 +4255,13 @@ private:
                                             break;
                                         }
                                     }
+                                    foreach(regionView; _regionViews) {
+                                        if(regionView.selected) {
+                                            _selectedRegionsApp.put(regionView);
+                                        }
+                                    }
+
+                                    appendArrangeState(currentArrangeState());
                                 }
                                 break;
 
@@ -4367,7 +4369,7 @@ private:
                         _editRegion.subregionSelected =
                             !(_editRegion.subregionStartFrame == _editRegion.subregionEndFrame);
 
-                        _editRegion.appendState(_editRegion.currentState(false));
+                        _editRegion.appendEditState(_editRegion.currentEditState(false));
 
                         _setAction(Action.none);
                         redraw();
@@ -4377,25 +4379,39 @@ private:
                     case Action.selectBox:
                         if(_mode == Mode.arrange) {
                             BoundingBox selectBox = BoundingBox(_selectMouseX, _selectMouseY, _mouseX, _mouseY);
+                            bool regionFound;
                             foreach(regionView; _regionViews) {
-                                if(selectBox.intersect(regionView.boundingBox)) {
+                                if(selectBox.intersect(regionView.boundingBox) && !regionView.selected) {
+                                    regionFound = true;
                                     regionView.selected = true;
+                                    _selectedRegionsApp.put(regionView);
                                 }
+                            }
+
+                            if(regionFound) {
+                                appendArrangeState(currentArrangeState());
                             }
                         }
                         _setAction(Action.none);
                         redraw();
                         break;
 
-                    // move a region
+                    // move a region by setting its global frame offset
                     case Action.moveRegion:
                         _setAction(Action.none);
-                        foreach(regionView; _regionViews) {
-                            if(regionView.selected) {
-                                regionView.offset = regionView.selectedOffset;
-                                _mixer.resizeIfNecessary(regionView.offset + regionView.nframes);
+                        bool regionModified;
+                        foreach(regionView; _selectedRegions) {
+                            if(regionView.offset != regionView.selectedOffset) {
+                                regionModified = true;
                             }
+                            regionView.offset = regionView.selectedOffset;
+                            _mixer.resizeIfNecessary(regionView.offset + regionView.nframes);
                         }
+
+                        if(regionModified) {
+                            appendArrangeState(currentArrangeState());
+                        }
+
                         redraw();
                         break;
 
@@ -4633,7 +4649,7 @@ private:
 
                             _editRegion.subregionSelected = false;
 
-                            _editRegion.appendState(_editRegion.currentState(true));
+                            _editRegion.appendEditState(_editRegion.currentEditState(true));
 
                             redraw();
                         }
@@ -4671,9 +4687,8 @@ private:
                             // move the transport to the maximum length of all selected regions
                             nframes_t maxOffset = 0;
                             bool foundRegion;
-                            foreach(regionView; _regionViews) {
-                                if(regionView.selected &&
-                                   regionView.offset + regionView.nframes > maxOffset) {
+                            foreach(regionView; _selectedRegions) {
+                                if(regionView.offset + regionView.nframes > maxOffset) {
                                     maxOffset = regionView.offset + regionView.nframes;
                                     foundRegion = true;
                                 }
@@ -4744,10 +4759,8 @@ private:
                         }
                         // otherwise, mute selected regions
                         else if(_mode == Mode.arrange) {
-                            foreach(regionView; _regionViews) {
-                                if(regionView.selected) {
-                                    regionView.region.mute = !regionView.region.mute;
-                                }
+                            foreach(regionView; _selectedRegions) {
+                                regionView.region.mute = !regionView.region.mute;
                             }
                             redraw();
                         }
@@ -4769,7 +4782,7 @@ private:
                             _editRegion.subregionEndFrame = _editRegion.editPointOffset +
                                 cast(nframes_t)(_copyBuffer.length / _editRegion.nChannels);
 
-                            _editRegion.appendState(_editRegion.currentState(true));
+                            _editRegion.appendEditState(_editRegion.currentEditState(true));
 
                             redraw();
                         }
@@ -4785,14 +4798,18 @@ private:
 
                             _editRegion.subregionSelected = false;
 
-                            _editRegion.appendState(_editRegion.currentState(true));
+                            _editRegion.appendEditState(_editRegion.currentEditState(true));
 
                             redraw();
                         }
                         break;
 
                     case GdkKeysyms.GDK_y:
-                        if(_mode == Mode.editRegion) {
+                        if(_mode == Mode.arrange) {
+                            redoArrange();
+                            redraw();
+                        }
+                        else if(_mode == Mode.editRegion) {
                             // redo the last edit
                             _editRegion.redoEdit();
                             redraw();
@@ -4800,7 +4817,11 @@ private:
                         break;
 
                     case GdkKeysyms.GDK_z:
-                        if(_mode == Mode.editRegion) {
+                        if(_mode == Mode.arrange) {
+                            undoArrange();
+                            redraw();
+                        }
+                        else if(_mode == Mode.editRegion) {
                             // undo the last edit
                             _editRegion.undoEdit();
                             redraw();
@@ -4815,13 +4836,64 @@ private:
         }
     }
 
+    ArrangeState currentArrangeState() {
+        Appender!(RegionViewState[]) regionViewStates;
+        foreach(regionView; _selectedRegions) {
+            regionViewStates.put(RegionViewState(regionView, regionView.offset));
+        }
+        return ArrangeState(regionViewStates.data.dup);
+    }
+
+    void updateCurrentArrangeState() {
+        // clear the selection flag for all currently selected regions
+        foreach(regionView; _selectedRegions) {
+            regionView.selected = false;
+        }
+        _selectedRegionsApp.clear();
+
+        foreach(regionViewState; _arrangeStateHistory.currentState.selectedRegionStates) {
+            regionViewState.regionView.selected = true;
+            regionViewState.regionView.offset = regionViewState.offset;
+            _selectedRegionsApp.put(regionViewState.regionView);
+        }
+    }
+
+    void appendArrangeState(ArrangeState arrangeState) {
+        _arrangeStateHistory.appendState(arrangeState);
+    }
+
+    void undoArrange() {
+        if(_arrangeStateHistory.queryUndo()) {
+            _arrangeStateHistory.undo();
+            updateCurrentArrangeState();
+        }
+    }
+    void redoArrange() {
+        if(_arrangeStateHistory.queryRedo()) {
+            _arrangeStateHistory.redo();
+            updateCurrentArrangeState();
+        }
+    }
+
+    struct RegionViewState {
+        RegionView regionView;
+        nframes_t offset;
+    }
+    struct ArrangeState {
+        RegionViewState[] selectedRegionStates;
+    }
+    StateHistory!ArrangeState _arrangeStateHistory;
+
     Window _parentWindow;
 
     Mixer _mixer;
     TrackView[] _trackViews;
     RegionView[] _regionViews;
-    RegionView _editRegion;
+
+    Appender!(RegionView[]) _selectedRegionsApp;
+    @property RegionView[] _selectedRegions() { return _selectedRegionsApp.data; }
     RegionView _earliestSelectedRegion;
+    RegionView _editRegion;
 
     Marker[uint] _markers;
     Marker* _moveMarker;
