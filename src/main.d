@@ -1531,6 +1531,7 @@ public:
             remove(removeStartIndex, removeEndIndex).
             insert(AudioSegment(outputBuffer, nChannels), removeStartIndex);
         _audioSeq.appendToHistory(pieceTable);
+        _nframes = cast(nframes_t)(_audioSeq.length / nChannels);
     }
 
     // stretch the audio such that the frame at localSrcFrame becomes the frame at localDestFrame
@@ -1687,6 +1688,7 @@ public:
             remove(removeStartIndex, removeEndIndex).
             insert(AudioSegment(outputBuffer, nChannels), removeStartIndex);
         _audioSeq.appendToHistory(pieceTable);
+        _nframes = cast(nframes_t)(_audioSeq.length / nChannels);
     }
 
     // normalize subregion from startFrame to endFrame to the given maximum gain, in dBFS
@@ -4383,6 +4385,11 @@ private:
         bool onRefresh() {
             if(_mixer.playing) {
                 redraw();
+                _mixerPlaying = true;
+            }
+            else if(_mixerPlaying) {
+                _mixerPlaying = false;
+                redraw();
             }
             return true;
         }
@@ -5260,6 +5267,7 @@ private:
     Marker[uint] _markers;
     Marker* _moveMarker;
 
+    bool _mixerPlaying;
     Direction _subregionDirection;
 
     PgLayout _headerLabelLayout;
