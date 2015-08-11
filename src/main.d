@@ -230,7 +230,7 @@ public:
         alias BufferCache = Buffer*;
     }
 
-    alias T = typeof((Buffer.init)[size_t.init]);
+    alias Element = typeof((Buffer.init)[size_t.init]);
 
     // original buffer must not be empty
     this(Buffer originalBuffer) {
@@ -568,11 +568,15 @@ public:
         alias length = logicalLength;
         alias opDollar = length;
 
+        T opCast(T : bool)() {
+            return length > 0;
+        }
+
         @property bool empty() const {
             return _pos >= length;
         }
 
-        @property T front() {
+        @property auto ref front() {
             return this[_pos];
         }
 
@@ -584,8 +588,8 @@ public:
             return this;
         }
 
-        @property T[] toArray() const {
-            auto result = appender!(T[]);
+        @property Element[] toArray() {
+            auto result = appender!(Element[]);
             foreach(piece; table) {
                 for(auto i = 0; i < piece.length; ++i) {
                     result.put(piece.buffer[i]);
@@ -594,7 +598,7 @@ public:
             return result.data;
         }
 
-        @property string toString() const {
+        @property string toString() {
             return to!string(toArray);
         }
 
@@ -859,7 +863,7 @@ unittest {
     }
 }
 
-auto sliceMin(T)(T sourceData) if(isIterable!T && is(int : typeof(sourceData[size_t.init]))) {
+auto sliceMin(T)(T sourceData) if(isIterable!T && isNumeric!(typeof(sourceData[size_t.init]))) {
     alias BaseSampleType = typeof(sourceData[size_t.init]);
     static if(is(BaseSampleType == const(U), U)) {
         alias SampleType = U;
@@ -875,7 +879,7 @@ auto sliceMin(T)(T sourceData) if(isIterable!T && is(int : typeof(sourceData[siz
     return minSample;
 }
 
-auto sliceMax(T)(T sourceData) if(isIterable!T && is(int : typeof(sourceData[size_t.init]))) {
+auto sliceMax(T)(T sourceData) if(isIterable!T && isNumeric!(typeof(sourceData[size_t.init]))) {
     alias BaseSampleType = typeof(sourceData[size_t.init]);
     static if(is(BaseSampleType == const(U), U)) {
         alias SampleType = U;
@@ -1062,6 +1066,14 @@ struct AudioSegment {
 }
 
 alias AudioSequence = Sequence!(AudioSegment);
+
+struct Onset {
+    nframes_t onsetFrame;
+    AudioSequence.PieceTable leftSource;
+    AudioSequence.PieceTable rightSource;
+}
+
+alias OnsetSequence = Sequence!(Onset[]);
 
 class Region {
 public:
@@ -1254,8 +1266,8 @@ public:
 
     // returns an array of frames at which an onset occurs, with frames given locally for this region
     // all channels are summed before computing onsets
-    nframes_t[] getOnsetsLinkedChannels(ref const(OnsetParams) params,
-                                        ComputeOnsetsState.Callback progressCallback = null) {
+    Onset[] getOnsetsLinkedChannels(ref const(OnsetParams) params,
+                                    ComputeOnsetsState.Callback progressCallback = null) {
         return _getOnsets(params,
                           _audioSeq.currentPieceTable,
                           sampleRate,
@@ -1266,9 +1278,9 @@ public:
     }
 
     // returns an array of frames at which an onset occurs, with frames given locally for this region
-    nframes_t[] getOnsetsSingleChannel(ref const(OnsetParams) params,
-                                       channels_t channelIndex,
-                                       ComputeOnsetsState.Callback progressCallback = null) {
+    Onset[] getOnsetsSingleChannel(ref const(OnsetParams) params,
+                                   channels_t channelIndex,
+                                   ComputeOnsetsState.Callback progressCallback = null) {
         return _getOnsets(params,
                           _audioSeq.currentPieceTable,
                           sampleRate,
@@ -1278,14 +1290,13 @@ public:
                           progressCallback);
     }
 
-
-    // returns an array of frames at which an onset occurs, with frames given locally for the given piece table
+    // returns an array of frames at which an onset occurs in a given piece table, with frames given locally
     // all channels are summed before computing onsets
-    static nframes_t[] getOnsetsLinkedChannels(ref const(OnsetParams) params,
-                                               AudioSequence.PieceTable pieceTable,
-                                               nframes_t sampleRate,
-                                               channels_t nChannels,
-                                               ComputeOnsetsState.Callback progressCallback = null) {
+    static Onset[] getOnsetsLinkedChannels(ref const(OnsetParams) params,
+                                           AudioSequence.PieceTable pieceTable,
+                                           nframes_t sampleRate,
+                                           channels_t nChannels,
+                                           ComputeOnsetsState.Callback progressCallback = null) {
         return _getOnsets(params,
                           pieceTable,
                           sampleRate,
@@ -1295,13 +1306,13 @@ public:
                           progressCallback);
     }
 
-    // returns an array of frames at which an onset occurs, with frames given locally for the given piece table
-    static nframes_t[] getOnsetsSingleChannel(ref const(OnsetParams) params,
-                                              AudioSequence.PieceTable pieceTable,
-                                              nframes_t sampleRate,
-                                              channels_t nChannels,
-                                              channels_t channelIndex,
-                                              ComputeOnsetsState.Callback progressCallback = null) {
+    // returns an array of frames at which an onset occurs in a given piece table, with frames given locally
+    static Onset[] getOnsetsSingleChannel(ref const(OnsetParams) params,
+                                          AudioSequence.PieceTable pieceTable,
+                                          nframes_t sampleRate,
+                                          channels_t nChannels,
+                                          channels_t channelIndex,
+                                          ComputeOnsetsState.Callback progressCallback = null) {
         return _getOnsets(params,
                           pieceTable,
                           sampleRate,
@@ -1380,7 +1391,7 @@ public:
                            nframes_t localSrcFrame,
                            nframes_t localDestFrame,
                            nframes_t localEndFrame,
-                           bool linkChannels,
+                           bool linkChannels = false,
                            channels_t singleChannelIndex = 0) {
         immutable channels_t stretchNChannels = linkChannels ? nChannels : 1;
 
@@ -1510,15 +1521,171 @@ public:
             }
         }
 
-        auto removeStartIndex = clamp(localStartFrame * nChannels,
-                                      0,
-                                      _audioSeq.currentPieceTable.logicalLength);
-        auto removeEndIndex = clamp(localEndFrame * nChannels,
-                                    removeStartIndex,
-                                    _audioSeq.currentPieceTable.logicalLength);
+        auto immutable removeStartIndex = clamp(localStartFrame * nChannels,
+                                                0,
+                                                _audioSeq.currentPieceTable.logicalLength);
+        auto immutable removeEndIndex = clamp(localEndFrame * nChannels,
+                                              removeStartIndex,
+                                              _audioSeq.currentPieceTable.logicalLength);
         auto pieceTable = _audioSeq.currentPieceTable.
             remove(removeStartIndex, removeEndIndex).
-            insert(AudioSegment(outputBuffer, nChannels), localStartFrame * nChannels);
+            insert(AudioSegment(outputBuffer, nChannels), removeStartIndex);
+        _audioSeq.appendToHistory(pieceTable);
+    }
+
+    // stretch the audio such that the frame at localSrcFrame becomes the frame at localDestFrame
+    // if linkChannels is true, perform the stretch for all channels simultaneously, ignoring channelIndex
+    void stretchThreePointFromSource(nframes_t localStartFrame,
+                                     nframes_t localSrcFrame,
+                                     nframes_t localDestFrame,
+                                     nframes_t localEndFrame,
+                                     AudioSequence.PieceTable leftSource,
+                                     AudioSequence.PieceTable rightSource,
+                                     bool linkChannels = false,
+                                     channels_t singleChannelIndex = 0) {
+        immutable channels_t stretchNChannels = linkChannels ? nChannels : 1;
+
+        auto immutable removeStartIndex = clamp(localStartFrame * nChannels,
+                                                0,
+                                                _audioSeq.currentPieceTable.logicalLength);
+        auto immutable removeEndIndex = clamp(localEndFrame * nChannels,
+                                              removeStartIndex,
+                                              _audioSeq.currentPieceTable.logicalLength);
+
+        immutable double firstScaleFactor = (localSrcFrame > localStartFrame) ?
+            (cast(double)(localDestFrame - localStartFrame) /
+             cast(double)(leftSource.length / nChannels)) : 0;
+        immutable double secondScaleFactor = (localEndFrame > localSrcFrame) ?
+            (cast(double)(localEndFrame - localDestFrame) /
+             cast(double)(rightSource.length / nChannels)) : 0;
+
+        localStartFrame = 0;
+        localSrcFrame = (localStartFrame < localSrcFrame) ? localSrcFrame - localStartFrame : 0;
+        localDestFrame = (localStartFrame < localDestFrame) ? localDestFrame - localStartFrame : 0;
+        localEndFrame = (localStartFrame < localEndFrame) ? localEndFrame - localStartFrame : 0;
+
+        uint firstHalfLength = cast(uint)(leftSource.length / nChannels);
+        uint secondHalfLength = cast(uint)(rightSource.length / nChannels);
+        ScopedArray!(float[][]) firstHalfChannels = new float[][](stretchNChannels);
+        ScopedArray!(float[][]) secondHalfChannels = new float[][](stretchNChannels);
+        ScopedArray!(float*[]) firstHalfPtr = new float*[](stretchNChannels);
+        ScopedArray!(float*[]) secondHalfPtr = new float*[](stretchNChannels);
+        for(auto i = 0; i < stretchNChannels; ++i) {
+            float[] firstHalf = new float[](firstHalfLength);
+            float[] secondHalf = new float[](secondHalfLength);
+            firstHalfChannels[i] = firstHalf;
+            secondHalfChannels[i] = secondHalf;
+            firstHalfPtr[i] = firstHalf.ptr;
+            secondHalfPtr[i] = secondHalf.ptr;
+        }
+
+        if(linkChannels) {
+            foreach(channels_t channelIndex, channel; firstHalfChannels) {
+                foreach(i, ref sample; channel) {
+                    sample = leftSource[i * nChannels + channelIndex];
+                }
+            }
+            foreach(channels_t channelIndex, channel; secondHalfChannels) {
+                foreach(i, ref sample; channel) {
+                    sample = rightSource[i * nChannels + channelIndex];
+                }
+            }
+        }
+        else {
+            foreach(i, ref sample; firstHalfChannels[0]) {
+                sample = leftSource[i * nChannels + singleChannelIndex];
+            }
+            foreach(i, ref sample; secondHalfChannels[0]) {
+                sample = rightSource[i * nChannels + singleChannelIndex];
+            }
+        }
+
+        uint firstHalfOutputLength = cast(uint)(firstHalfLength * firstScaleFactor);
+        uint secondHalfOutputLength = cast(uint)(secondHalfLength * secondScaleFactor);
+        ScopedArray!(float[][]) firstHalfOutputChannels = new float[][](stretchNChannels);
+        ScopedArray!(float[][]) secondHalfOutputChannels = new float[][](stretchNChannels);
+        ScopedArray!(float*[]) firstHalfOutputPtr = new float*[](stretchNChannels);
+        ScopedArray!(float*[]) secondHalfOutputPtr = new float*[](stretchNChannels);
+        for(auto i = 0; i < stretchNChannels; ++i) {
+            float[] firstHalfOutput = new float[](firstHalfOutputLength);
+            float[] secondHalfOutput = new float[](secondHalfOutputLength);
+            firstHalfOutputChannels[i] = firstHalfOutput;
+            secondHalfOutputChannels[i] = secondHalfOutput;
+            firstHalfOutputPtr[i] = firstHalfOutput.ptr;
+            secondHalfOutputPtr[i] = secondHalfOutput.ptr;
+        }
+
+        RubberBandState rState = rubberband_new(sampleRate,
+                                                stretchNChannels,
+                                                RubberBandOption.RubberBandOptionProcessOffline,
+                                                firstScaleFactor,
+                                                1.0);
+        rubberband_set_max_process_size(rState, firstHalfLength);
+        rubberband_set_expected_input_duration(rState, firstHalfLength);
+        rubberband_study(rState, firstHalfPtr.ptr, firstHalfLength, 1);
+        rubberband_process(rState, firstHalfPtr.ptr, firstHalfLength, 1);
+        while(rubberband_available(rState) < firstHalfOutputLength) {}
+        rubberband_retrieve(rState, firstHalfOutputPtr.ptr, firstHalfOutputLength);
+        rubberband_delete(rState);
+
+        rState = rubberband_new(sampleRate,
+                                stretchNChannels,
+                                RubberBandOption.RubberBandOptionProcessOffline,
+                                secondScaleFactor,
+                                1.0);
+        rubberband_set_max_process_size(rState, secondHalfLength);
+        rubberband_set_expected_input_duration(rState, secondHalfLength);
+        rubberband_study(rState, secondHalfPtr.ptr, secondHalfLength, 1);
+        rubberband_process(rState, secondHalfPtr.ptr, secondHalfLength, 1);
+        while(rubberband_available(rState) < secondHalfOutputLength) {}
+        rubberband_retrieve(rState, secondHalfOutputPtr.ptr, secondHalfOutputLength);
+        rubberband_delete(rState);
+
+        sample_t[] outputBuffer = new sample_t[]((firstHalfOutputLength + secondHalfOutputLength) * nChannels);
+        if(linkChannels) {
+            foreach(channels_t channelIndex, channel; firstHalfOutputChannels) {
+                foreach(i, sample; channel) {
+                    outputBuffer[i * nChannels + channelIndex] = sample;
+                }
+            }
+            auto secondHalfOffset = firstHalfOutputLength * nChannels;
+            foreach(channels_t channelIndex, channel; secondHalfOutputChannels) {
+                foreach(i, sample; channel) {
+                    outputBuffer[secondHalfOffset + i * nChannels + channelIndex] = sample;
+                }
+            }
+        }
+        else {
+            auto firstHalfOffset = removeStartIndex;
+            foreach(i, sample; firstHalfOutputChannels[0]) {
+                for(channels_t channelIndex = 0; channelIndex < nChannels; ++channelIndex) {
+                    if(channelIndex == singleChannelIndex) {
+                        outputBuffer[i * nChannels + channelIndex] = sample;
+                    }
+                    else {
+                        outputBuffer[i * nChannels + channelIndex] =
+                            _audioSeq[firstHalfOffset + i * nChannels + channelIndex];
+                    }
+                }
+            }
+            auto secondHalfOutputOffset = firstHalfOutputLength * nChannels;
+            auto secondHalfOffset = firstHalfOffset + secondHalfOutputOffset;
+            foreach(i, sample; secondHalfOutputChannels[0]) {
+                for(channels_t channelIndex = 0; channelIndex < nChannels; ++channelIndex) {
+                    if(channelIndex == singleChannelIndex) {
+                        outputBuffer[secondHalfOutputOffset + i * nChannels + channelIndex] = sample;
+                    }
+                    else {
+                        outputBuffer[secondHalfOutputOffset + i * nChannels + channelIndex] =
+                            _audioSeq[secondHalfOffset + i * nChannels + channelIndex];
+                    }
+                }
+            }
+        }
+
+        auto pieceTable = _audioSeq.currentPieceTable.
+            remove(removeStartIndex, removeEndIndex).
+            insert(AudioSegment(outputBuffer, nChannels), removeStartIndex);
         _audioSeq.appendToHistory(pieceTable);
     }
 
@@ -1689,13 +1856,13 @@ package:
 
 private:
     // channelIndex is ignored when linkChannels == true
-    static nframes_t[] _getOnsets(ref const(OnsetParams) params,
-                                  AudioSequence.PieceTable pieceTable,
-                                  nframes_t sampleRate,
-                                  channels_t nChannels,
-                                  channels_t channelIndex,
-                                  bool linkChannels,
-                                  ComputeOnsetsState.Callback progressCallback = null) {
+    static Onset[] _getOnsets(ref const(OnsetParams) params,
+                              AudioSequence.PieceTable pieceTable,
+                              nframes_t sampleRate,
+                              channels_t nChannels,
+                              channels_t channelIndex,
+                              bool linkChannels,
+                              ComputeOnsetsState.Callback progressCallback = null) {
         immutable nframes_t nframes = cast(nframes_t)(pieceTable.length / nChannels);
         immutable nframes_t framesPerProgressStep =
             (nframes / ComputeOnsetsState.stepsPerStage) * (linkChannels ? 1 : nChannels);
@@ -1715,8 +1882,7 @@ private:
         fvec_t* onsetBuffer = new_fvec(1);
         fvec_t* hopBuffer = new_fvec(hopSize);
 
-        nframes_t[] onsets;
-        auto app = appender(onsets);
+        auto onsetsApp = appender!(Onset[]);
         aubio_onset_t* o = new_aubio_onset(cast(char*)(onsetMethod.toStringz()), windowSize, hopSize, sampleRate);
         aubio_onset_set_threshold(o, onsetThreshold);
         aubio_onset_set_silence(o, silenceThreshold);
@@ -1748,8 +1914,24 @@ private:
             if(onsetBuffer.data[0] != 0) {
                 auto lastOnset = aubio_onset_get_last(o);
                 if(lastOnset != 0) {
-                    app.put(lastOnset);
+                    if(onsetsApp.data.length > 0) {
+                        // compute the right source for the previous onset
+                        onsetsApp.data[$ - 1].rightSource =
+                            pieceTable[onsetsApp.data[$ - 1].onsetFrame * nChannels .. lastOnset * nChannels];
+                        // append the current onset and its left source
+                        onsetsApp.put(Onset(lastOnset, pieceTable[onsetsApp.data[$ - 1].onsetFrame * nChannels ..
+                                                                  lastOnset * nChannels]));
+                    }
+                    else {
+                        // append the leftmost onset
+                        onsetsApp.put(Onset(lastOnset, pieceTable[0 .. lastOnset * nChannels]));
+                    }
                 }
+            }
+            // compute the right source for the last onset
+            if(onsetsApp.data.length > 0) {
+                onsetsApp.data[$ - 1].rightSource =
+                    pieceTable[onsetsApp.data[$ - 1].onsetFrame .. pieceTable.length];
             }
 
             if((samplesRead > progressStep) && progressCallback) {
@@ -1771,7 +1953,7 @@ private:
         del_fvec(hopBuffer);
         aubio_cleanup();
 
-        return app.data;
+        return onsetsApp.data;
     }
 
     nframes_t _sampleRate; // sample rate of the audio data
@@ -2448,7 +2630,6 @@ public:
                 if(_region.showOnsets) {
                     _region.computeOnsets();
                 }
-
                 _region.appendEditState(_region.currentEditState(true));
 
                 _canvas.redraw();
@@ -2505,11 +2686,17 @@ public:
                                                      _region.subregionEndFrame,
                                                      cast(sample_t)(_normalizeGainAdjustment.getValue()),
                                                      progressCallback);
+                            if(_editRegion.showOnsets) {
+                                _editRegion.computeOnsets();
+                            }
                             _region.appendEditState(_region.currentEditState(true));
                         }
                         else if(entireRegion) {
                             _region.region.normalize(cast(sample_t)(_normalizeGainAdjustment.getValue()),
                                                      progressCallback);
+                            if(_editRegion.showOnsets) {
+                                _editRegion.computeOnsets();
+                            }
                             _region.appendEditState(_region.currentEditState(true));
                         }
                     });
@@ -2558,9 +2745,9 @@ public:
                     _onsets = [];
                     _onsets.reserve(region.nChannels);
                     for(channels_t channelIndex = 0; channelIndex < region.nChannels; ++channelIndex) {
-                        _onsets ~= (new Sequence!(nframes_t[])(region.getOnsetsSingleChannel(onsetParams,
-                                                                                             channelIndex,
-                                                                                             progressCallback)));
+                        _onsets ~= new OnsetSequence(region.getOnsetsSingleChannel(onsetParams,
+                                                                                   channelIndex,
+                                                                                   progressCallback));
                     }
 
                     progressCallback(Region.ComputeOnsetsState.complete, 1);
@@ -2578,8 +2765,8 @@ public:
             
                     // compute onsets for summed channels
                     if(region.nChannels > 1) {
-                        _onsetsLinked = new Sequence!(nframes_t[])(region.getOnsetsLinkedChannels(onsetParams,
-                                                                                                  progressCallback));
+                        _onsetsLinked = new OnsetSequence(region.getOnsetsLinkedChannels(onsetParams,
+                                                                                         progressCallback));
                     }
 
                     progressCallback(Region.ComputeOnsetsState.complete, 1);
@@ -2604,7 +2791,7 @@ public:
                       out nframes_t foundFrame,
                       out size_t foundIndex,
                       channels_t channelIndex = 0) {
-            Sequence!(nframes_t[]) onsets = linkChannels ? _onsetsLinked : _onsets[channelIndex];
+            OnsetSequence onsets = linkChannels ? _onsetsLinked : _onsets[channelIndex];
 
             // recursive binary search helper function
             bool getOnsetRec(nframes_t searchFrame,
@@ -2616,7 +2803,7 @@ public:
                 foundIndex = (leftIndex + rightIndex) / 2;
                 if(foundIndex >= onsets.length) return false;
 
-                foundFrame = onsets[foundIndex];
+                foundFrame = onsets[foundIndex].onsetFrame;
                 if(foundFrame >= searchFrame - searchRadius && foundFrame <= searchFrame + searchRadius) {
                     return true;
                 }
@@ -2657,12 +2844,12 @@ public:
                             nframes_t relativeSamples,
                             Direction direction,
                             channels_t channelIndex = 0) {
-            Sequence!(nframes_t[]) onsets = linkChannels ? _onsetsLinked : _onsets[channelIndex];
+            OnsetSequence onsets = linkChannels ? _onsetsLinked : _onsets[channelIndex];
             switch(direction) {
                 case Direction.left:
-                    nframes_t leftBound = (onsetIndex > 0) ? onsets[onsetIndex - 1] : 0;
-                    if(onsets[onsetIndex] > relativeSamples &&
-                       onsets[onsetIndex] - relativeSamples > leftBound) {
+                    nframes_t leftBound = (onsetIndex > 0) ? onsets[onsetIndex - 1].onsetFrame : 0;
+                    if(onsets[onsetIndex].onsetFrame > relativeSamples &&
+                       currentOnsetFrame - relativeSamples > leftBound) {
                         return currentOnsetFrame - relativeSamples;
                     }
                     else {
@@ -2671,8 +2858,8 @@ public:
 
                 case Direction.right:
                     nframes_t rightBound = (onsetIndex < onsets.length - 1) ?
-                        onsets[onsetIndex + 1] : region.nframes - 1;
-                    if(onsets[onsetIndex] + relativeSamples < rightBound) {
+                        onsets[onsetIndex + 1].onsetFrame : region.nframes - 1;
+                    if(currentOnsetFrame + relativeSamples < rightBound) {
                         return currentOnsetFrame + relativeSamples;
                     }
                     else {
@@ -2688,11 +2875,11 @@ public:
         // these functions return onset frames, locally indexed for this region
         nframes_t getPrevOnset(size_t onsetIndex, channels_t channelIndex = 0) {
             auto onsets = linkChannels ? _onsetsLinked : _onsets[channelIndex];
-            return (onsetIndex > 0) ? onsets[onsetIndex - 1] : 0;
+            return (onsetIndex > 0) ? onsets[onsetIndex - 1].onsetFrame : 0;
         }
         nframes_t getNextOnset(size_t onsetIndex, channels_t channelIndex = 0) {
             auto onsets = linkChannels ? _onsetsLinked : _onsets[channelIndex];
-            return (onsetIndex < onsets.length - 1) ? onsets[onsetIndex + 1] : region.nframes - 1;
+            return (onsetIndex < onsets.length - 1) ? onsets[onsetIndex + 1].onsetFrame : region.nframes - 1;
         }
 
         channels_t mouseOverChannel(pixels_t mouseY) const {
@@ -2764,7 +2951,7 @@ public:
                 }
 
                 if(_editStateHistory.currentState.onsetsEdited) {
-                    Sequence!(nframes_t[]) onsets = _editStateHistory.currentState.onsetsLinkChannels ?
+                    OnsetSequence onsets = _editStateHistory.currentState.onsetsLinkChannels ?
                         _onsetsLinked : _onsets[_editStateHistory.currentState.onsetsChannelIndex];
                     if(!onsets.queryUndo()) {
                         computeOnsets();
@@ -2772,6 +2959,9 @@ public:
                     else {
                         onsets.undo();
                     }
+                }
+                else if(showOnsets) {
+                    computeOnsets();
                 }
 
                 _editStateHistory.undo();
@@ -2786,7 +2976,7 @@ public:
                 }
 
                 if(_editStateHistory.currentState.onsetsEdited) {
-                    Sequence!(nframes_t[]) onsets = _editStateHistory.currentState.onsetsLinkChannels ?
+                    OnsetSequence onsets = _editStateHistory.currentState.onsetsLinkChannels ?
                         _onsetsLinked : _onsets[_editStateHistory.currentState.onsetsChannelIndex];
                     if(!onsets.queryRedo()) {
                         computeOnsets();
@@ -2794,6 +2984,9 @@ public:
                     else {
                         onsets.redo();
                     }
+                }
+                else if(showOnsets) {
+                    computeOnsets();
                 }
 
                 updateCurrentEditState();
@@ -3239,8 +3432,8 @@ public:
                     if(showOnsets) {
                         if(linkChannels) {
                             foreach(onsetIndex, onset; _onsetsLinked[].enumerate) {
-                                auto onsetFrame = (_action == Action.moveOnset &&
-                                                   onsetIndex == _moveOnsetIndex) ? _moveOnsetFrameDest : onset;
+                                auto onsetFrame = (_action == Action.moveOnset && onsetIndex == _moveOnsetIndex) ?
+                                    _moveOnsetFrameDest : onset.onsetFrame;
                                 if(onsetFrame + regionOffset >= viewOffset &&
                                    onsetFrame + regionOffset < viewOffset + viewWidthSamples) {
                                     cr.moveTo(xOffset + onsetFrame / samplesPerPixel - pixelsOffset,
@@ -3256,7 +3449,7 @@ public:
                                     auto onsetFrame = (_action == Action.moveOnset &&
                                                        channelIndex == _moveOnsetChannel &&
                                                        onsetIndex == _moveOnsetIndex) ?
-                                        _moveOnsetFrameDest : onset;
+                                        _moveOnsetFrameDest : onset.onsetFrame;
                                     if(onsetFrame + regionOffset >= viewOffset &&
                                        onsetFrame + regionOffset < viewOffset + viewWidthSamples) {
                                         cr.moveTo(xOffset + onsetFrame / samplesPerPixel - pixelsOffset,
@@ -3340,8 +3533,8 @@ public:
         bool _showOnsets;
         bool _linkChannels;
 
-        Sequence!(nframes_t[])[] _onsets; // indexed as [channel][onset]
-        Sequence!(nframes_t[]) _onsetsLinked; // indexed as [onset]
+        OnsetSequence[] _onsets; // indexed as [channel][onset]
+        OnsetSequence _onsetsLinked; // indexed as [onset]
 
         Color* _regionColor;
 
@@ -4563,17 +4756,31 @@ private:
                         immutable nframes_t onsetFrameEnd =
                             _editRegion.getNextOnset(_moveOnsetIndex, _moveOnsetChannel);
 
-                        _editRegion.region.stretchThreePoint(onsetFrameStart,
-                                                             _moveOnsetFrameSrc,
-                                                             _moveOnsetFrameDest,
-                                                             onsetFrameEnd,
-                                                             _editRegion.linkChannels,
-                                                             _moveOnsetChannel);
+                        OnsetSequence onsets = _editRegion.linkChannels ?
+                            _editRegion._onsetsLinked : _editRegion._onsets[_moveOnsetChannel];
+                        if(onsets[_moveOnsetIndex].leftSource && onsets[_moveOnsetIndex].rightSource) {
+                            _editRegion.region.stretchThreePointFromSource(onsetFrameStart,
+                                                                           _moveOnsetFrameSrc,
+                                                                           _moveOnsetFrameDest,
+                                                                           onsetFrameEnd,
+                                                                           onsets[_moveOnsetIndex].leftSource,
+                                                                           onsets[_moveOnsetIndex].rightSource,
+                                                                           _editRegion.linkChannels,
+                                                                           _moveOnsetChannel);
+                        }
+                        else {
+                            _editRegion.region.stretchThreePoint(onsetFrameStart,
+                                                                 _moveOnsetFrameSrc,
+                                                                 _moveOnsetFrameDest,
+                                                                 onsetFrameEnd,
+                                                                 _editRegion.linkChannels,
+                                                                 _moveOnsetChannel);
+                        }
 
-                        Sequence!(nframes_t[]) onsets = _editRegion.linkChannels ?
-                            _editRegion._onsetsLinked :
-                            _editRegion._onsets[_moveOnsetChannel];
-                        onsets.replace([_moveOnsetFrameDest], _moveOnsetIndex, _moveOnsetIndex + 1);
+                        onsets.replace([Onset(_moveOnsetFrameDest,
+                                              onsets[_moveOnsetIndex].leftSource,
+                                              onsets[_moveOnsetIndex].rightSource)],
+                                       _moveOnsetIndex, _moveOnsetIndex + 1);
 
                         _editRegion.appendEditState(_editRegion.currentEditState(true,
                                                                                  true,
@@ -4795,6 +5002,9 @@ private:
 
                             _editRegion.subregionSelected = false;
 
+                            if(_editRegion.showOnsets) {
+                                _editRegion.computeOnsets();
+                            }
                             _editRegion.appendEditState(_editRegion.currentEditState(true));
 
                             redraw();
@@ -4928,6 +5138,9 @@ private:
                             _editRegion.subregionEndFrame = _editRegion.editPointOffset +
                                 cast(nframes_t)(_copyBuffer.length / _editRegion.nChannels);
 
+                            if(_editRegion.showOnsets) {
+                                _editRegion.computeOnsets();
+                            }
                             _editRegion.appendEditState(_editRegion.currentEditState(true));
 
                             redraw();
@@ -4944,6 +5157,9 @@ private:
 
                             _editRegion.subregionSelected = false;
 
+                            if(_editRegion.showOnsets) {
+                                _editRegion.computeOnsets();
+                            }
                             _editRegion.appendEditState(_editRegion.currentEditState(true));
 
                             redraw();
