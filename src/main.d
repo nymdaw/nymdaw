@@ -1933,7 +1933,7 @@ private:
             // compute the right source for the last onset
             if(onsetsApp.data.length > 0) {
                 onsetsApp.data[$ - 1].rightSource =
-                    pieceTable[onsetsApp.data[$ - 1].onsetFrame .. pieceTable.length];
+                    pieceTable[onsetsApp.data[$ - 1].onsetFrame * nChannels .. pieceTable.length];
             }
 
             if((samplesRead > progressStep) && progressCallback) {
@@ -4784,10 +4784,24 @@ private:
                                                                  _moveOnsetChannel);
                         }
 
-                        onsets.replace([Onset(_moveOnsetFrameDest,
-                                              onsets[_moveOnsetIndex].leftSource,
-                                              onsets[_moveOnsetIndex].rightSource)],
-                                       _moveOnsetIndex, _moveOnsetIndex + 1);
+                        if(_moveOnsetFrameDest == onsetFrameStart) {
+                            if(_moveOnsetIndex > 0) {
+                                onsets[_moveOnsetIndex - 1].rightSource = onsets[_moveOnsetIndex].rightSource;
+                            }
+                            onsets.remove(_moveOnsetIndex, _moveOnsetIndex + 1);
+                        }
+                        else if(_moveOnsetFrameDest == onsetFrameEnd) {
+                            if(_moveOnsetIndex + 1 < onsets.length) {
+                                onsets[_moveOnsetIndex + 1].leftSource = onsets[_moveOnsetIndex].leftSource;
+                            }
+                            onsets.remove(_moveOnsetIndex, _moveOnsetIndex + 1);
+                        }
+                        else {
+                            onsets.replace([Onset(_moveOnsetFrameDest,
+                                                  onsets[_moveOnsetIndex].leftSource,
+                                                  onsets[_moveOnsetIndex].rightSource)],
+                                           _moveOnsetIndex, _moveOnsetIndex + 1);
+                        }
 
                         _editRegion.appendEditState(_editRegion.currentEditState(true,
                                                                                  true,
