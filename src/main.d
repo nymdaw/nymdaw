@@ -863,6 +863,58 @@ unittest {
     }
 }
 
+struct StageDesc {
+    string name;
+    string description;
+}
+
+template isStageDesc(alias T) {
+    enum isStageDesc = __traits(isSame, StageDesc, typeof(T));
+}
+
+struct ProgressState(Stages...) if(allSatisfy!(isStageDesc, Stages)) {
+public:
+    mixin("enum Stage : int { " ~ _enumString(Stages) ~ " complete }");
+    alias Stage this;
+    enum nStages = (EnumMembers!Stage).length - 1;
+    static immutable string[nStages] stageDescriptions = mixin(_createStageDescList(Stages));
+
+    enum stepsPerStage = 5;
+
+    alias Callback = void delegate(Stage stage, double stageFraction);
+
+    this(Stage stage, double stageFraction) {
+        this.stage = stage;
+        completionFraction = (stage == complete) ? 1.0 : (stage + stageFraction) / nStages;
+    }
+
+    Stage stage;
+    double completionFraction;
+
+private:
+    static string _enumString(T...)(T stageDescList) {
+        string result;
+        foreach(stageDesc; stageDescList) {
+            result ~= stageDesc.name ~ ", ";
+        }
+        return result;
+    }
+    static string _createStageDescList(T...)(T stageDescList) {
+        string result = "[ ";
+        foreach(stageDesc; stageDescList) {
+            result ~= "\"" ~ stageDesc.description ~ "\", ";
+        }
+        result ~= " ]";
+        return result;
+    }
+}
+
+alias LoadState = ProgressState!(StageDesc("read", "Loading file"),
+                                 StageDesc("resample", "Resampling"),
+                                 StageDesc("computeOverview", "Computing overview"));
+alias ComputeOnsetsState = ProgressState!(StageDesc("computeOnsets", "Computing onsets"));
+alias NormalizeState = ProgressState!(StageDesc("normalize", "Normalizing"));
+
 auto sliceMin(T)(T sourceData) if(isIterable!T && isNumeric!(typeof(sourceData[size_t.init]))) {
     alias BaseSampleType = typeof(sourceData[size_t.init]);
     static if(is(BaseSampleType == const(U), U)) {
@@ -893,6 +945,56 @@ auto sliceMax(T)(T sourceData) if(isIterable!T && isNumeric!(typeof(sourceData[s
         if(s > maxSample) maxSample = s;
     }
     return maxSample;
+}
+
+sample_t[] convertSampleRate(sample_t[] audioBuffer,
+                             channels_t nChannels,
+                             nframes_t oldSampleRate,
+                             nframes_t newSampleRate,
+                             LoadState.Callback progressCallback = null) {
+    if(newSampleRate != oldSampleRate && newSampleRate > 0) {
+        if(progressCallback) {
+            progressCallback(LoadState.resample, 0);
+        }
+
+        // constant indicating the algorithm to use for sample rate conversion
+        enum converter = SRC_SINC_MEDIUM_QUALITY; // TODO allow the user to specify this
+
+        // libsamplerate requires floats
+        static assert(is(sample_t == float));
+
+        // allocate audio buffers for input/output
+        ScopedArray!(float[]) dataIn = audioBuffer;
+        float[] dataOut = new float[](audioBuffer.length);
+
+        // compute the parameters for libsamplerate
+        double srcRatio = (1.0 * newSampleRate) / oldSampleRate;
+        if(!src_is_valid_ratio(srcRatio)) {
+            throw new AudioError("Invalid sample rate requested: " ~ to!string(newSampleRate));
+        }
+        SRC_DATA srcData;
+        srcData.data_in = dataIn.ptr;
+        srcData.data_out = dataOut.ptr;
+        auto immutable nframes = audioBuffer.length / nChannels;
+        srcData.input_frames = cast(typeof(srcData.input_frames))(nframes);
+        srcData.output_frames = cast(typeof(srcData.output_frames))(ceil(nframes * srcRatio));
+        srcData.src_ratio = srcRatio;
+
+        // compute the sample rate conversion
+        int error = src_simple(&srcData, converter, cast(int)(nChannels));
+        if(error) {
+            throw new AudioError("Sample rate conversion failed: " ~ to!string(src_strerror(error)));
+        }
+        dataOut.length = cast(size_t)(srcData.output_frames_gen);
+
+        if(progressCallback) {
+            progressCallback(LoadState.resample, 1);
+        }
+
+        return dataOut;
+    }
+
+    return audioBuffer;
 }
 
 // stores the min/max sample values of a single-channel waveform at a specified binning size
@@ -1065,72 +1167,20 @@ struct AudioSegment {
     WaveformCache waveformCache;
 }
 
-alias AudioSequence = Sequence!(AudioSegment);
-
-struct Onset {
-    nframes_t onsetFrame;
-    AudioSequence.PieceTable leftSource;
-    AudioSequence.PieceTable rightSource;
-}
-
-alias OnsetSequence = Sequence!(Onset[]);
-
-class Region {
+class AudioSequence {
 public:
-    struct StageDesc {
-        string name;
-        string description;
+    this(AudioSegment originalBuffer, nframes_t sampleRate, channels_t nChannels, string name) {
+        sequence = new Sequence!(AudioSegment)(originalBuffer);
+
+        _sampleRate = sampleRate;
+        _nChannels = nChannels;
+        _name = name;
     }
 
-    template isStageDesc(alias T) {
-        enum isStageDesc = __traits(isSame, StageDesc, typeof(T));
-    }
-
-    struct ProgressState(Stages...) if(allSatisfy!(isStageDesc, Stages)) {
-    public:
-        mixin("enum Stage : int { " ~ _enumString(Stages) ~ " complete }");
-        alias Stage this;
-        enum nStages = (EnumMembers!Stage).length - 1;
-        static immutable string[nStages] stageDescriptions = mixin(_createStageDescList(Stages));
-
-        enum stepsPerStage = 5;
-
-        alias Callback = void delegate(Stage stage, double stageFraction);
-
-        this(Stage stage, double stageFraction) {
-            this.stage = stage;
-            completionFraction = (stage == complete) ? 1.0 : (stage + stageFraction) / nStages;
-        }
-
-        Stage stage;
-        double completionFraction;
-
-    private:
-        static string _enumString(T...)(T stageDescList) {
-            string result;
-            foreach(stageDesc; stageDescList) {
-                result ~= stageDesc.name ~ ", ";
-            }
-            return result;
-        }
-        static string _createStageDescList(T...)(T stageDescList) {
-            string result = "[ ";
-            foreach(stageDesc; stageDescList) {
-                result ~= "\"" ~ stageDesc.description ~ "\", ";
-            }
-            result ~= " ]";
-            return result;
-        }
-    }
-
-    alias LoadState = ProgressState!(StageDesc("read", "Loading file"),
-                                     StageDesc("resample", "Resampling"),
-                                     StageDesc("computeOverview", "Computing overview"));
-    alias ComputeOnsetsState = ProgressState!(StageDesc("computeOnsets", "Computing onsets"));
-    alias NormalizeState = ProgressState!(StageDesc("normalize", "Normalizing"));
-
-    // create a region from a file, leaving the sample rate unaltered
-    static Region fromFile(string fileName, nframes_t sampleRate, LoadState.Callback progressCallback = null) {
+    // create a sequence from a file
+    static AudioSequence fromFile(string fileName,
+                                  nframes_t sampleRate,
+                                  LoadState.Callback progressCallback = null) {
         SNDFILE* infile;
         SF_INFO sfinfo;
 
@@ -1194,64 +1244,52 @@ public:
         if(progressCallback) {
             progressCallback(LoadState.computeOverview, 0);
         }
-        auto audioSegment = AudioSegment(audioBuffer, nChannels);
-        auto newRegion = new Region(sampleRate, nChannels, audioSegment, baseName(stripExtension(fileName)));
+        auto newSequence = new AudioSequence(AudioSegment(audioBuffer, nChannels),
+                                             sampleRate,
+                                             nChannels,
+                                             baseName(stripExtension(fileName)));
 
         if(progressCallback) {
             progressCallback(LoadState.complete, 1.0);
         }
 
-        return newRegion;
+        return newSequence;
     }
 
-    static sample_t[] convertSampleRate(sample_t[] audioBuffer,
-                                         channels_t nChannels,
-                                         nframes_t oldSampleRate,
-                                         nframes_t newSampleRate,
-                                         LoadState.Callback progressCallback = null) {
-        if(newSampleRate != oldSampleRate && newSampleRate > 0) {
-            if(progressCallback) {
-                progressCallback(LoadState.resample, 0);
-            }
+    Sequence!(AudioSegment) sequence;
+    alias sequence this;
 
-            // constant indicating the algorithm to use for sample rate conversion
-            enum converter = SRC_SINC_MEDIUM_QUALITY; // TODO allow the user to specify this
+    @property nframes_t nframes() { return cast(nframes_t)(sequence.length / nChannels); }
+    @property nframes_t sampleRate() const { return _sampleRate; }
+    @property channels_t nChannels() const { return _nChannels; }
+    @property string name() const { return _name; }
 
-            // libsamplerate requires floats
-            static assert(is(sample_t == float));
+private:
+    nframes_t _sampleRate;
+    channels_t _nChannels;
+    string _name;
+}
 
-            // allocate audio buffers for input/output
-            ScopedArray!(float[]) dataIn = audioBuffer;
-            float[] dataOut = new float[](audioBuffer.length);
+struct Onset {
+    nframes_t onsetFrame;
+    AudioSequence.PieceTable leftSource;
+    AudioSequence.PieceTable rightSource;
+}
 
-            // compute the parameters for libsamplerate
-            double srcRatio = (1.0 * newSampleRate) / oldSampleRate;
-            if(!src_is_valid_ratio(srcRatio)) {
-                throw new AudioError("Invalid sample rate requested: " ~ to!string(newSampleRate));
-            }
-            SRC_DATA srcData;
-            srcData.data_in = dataIn.ptr;
-            srcData.data_out = dataOut.ptr;
-            auto immutable nframes = audioBuffer.length / nChannels;
-            srcData.input_frames = cast(typeof(srcData.input_frames))(nframes);
-            srcData.output_frames = cast(typeof(srcData.output_frames))(ceil(nframes * srcRatio));
-            srcData.src_ratio = srcRatio;
+alias OnsetSequence = Sequence!(Onset[]);
 
-            // compute the sample rate conversion
-            int error = src_simple(&srcData, converter, cast(int)(nChannels));
-            if(error) {
-                throw new AudioError("Sample rate conversion failed: " ~ to!string(src_strerror(error)));
-            }
-            dataOut.length = cast(size_t)(srcData.output_frames_gen);
+class Region {
+public:
+    this(AudioSequence audioSeq, string name) {
+        _sampleRate = audioSeq.sampleRate;
+        _nChannels = audioSeq.nChannels;
+        _nframes = audioSeq.nframes;
+        _name = name;
 
-            if(progressCallback) {
-                progressCallback(LoadState.resample, 1);
-            }
-
-            return dataOut;
-        }
-
-        return audioBuffer;
+        _audioSeq = audioSeq;
+    }
+    this(AudioSequence audioSeq) {
+        this(audioSeq, audioSeq.name);
     }
 
     struct OnsetParams {
@@ -1498,31 +1536,35 @@ public:
             secondHalfOutputPtr[i] = secondHalfOutput.ptr;
         }
 
-        RubberBandState rState = rubberband_new(sampleRate,
-                                                stretchNChannels,
-                                                RubberBandOption.RubberBandOptionProcessOffline,
-                                                firstScaleFactor,
-                                                1.0);
-        rubberband_set_max_process_size(rState, firstHalfLength);
-        rubberband_set_expected_input_duration(rState, firstHalfLength);
-        rubberband_study(rState, firstHalfPtr.ptr, firstHalfLength, 1);
-        rubberband_process(rState, firstHalfPtr.ptr, firstHalfLength, 1);
-        while(rubberband_available(rState) < firstHalfOutputLength) {}
-        rubberband_retrieve(rState, firstHalfOutputPtr.ptr, firstHalfOutputLength);
-        rubberband_delete(rState);
+        if(firstScaleFactor > 0) {
+            RubberBandState rState = rubberband_new(sampleRate,
+                                                    stretchNChannels,
+                                                    RubberBandOption.RubberBandOptionProcessOffline,
+                                                    firstScaleFactor,
+                                                    1.0);
+            rubberband_set_max_process_size(rState, firstHalfLength);
+            rubberband_set_expected_input_duration(rState, firstHalfLength);
+            rubberband_study(rState, firstHalfPtr.ptr, firstHalfLength, 1);
+            rubberband_process(rState, firstHalfPtr.ptr, firstHalfLength, 1);
+            while(rubberband_available(rState) < firstHalfOutputLength) {}
+            rubberband_retrieve(rState, firstHalfOutputPtr.ptr, firstHalfOutputLength);
+            rubberband_delete(rState);
+        }
 
-        rState = rubberband_new(sampleRate,
-                                stretchNChannels,
-                                RubberBandOption.RubberBandOptionProcessOffline,
-                                secondScaleFactor,
-                                1.0);
-        rubberband_set_max_process_size(rState, secondHalfLength);
-        rubberband_set_expected_input_duration(rState, secondHalfLength);
-        rubberband_study(rState, secondHalfPtr.ptr, secondHalfLength, 1);
-        rubberband_process(rState, secondHalfPtr.ptr, secondHalfLength, 1);
-        while(rubberband_available(rState) < secondHalfOutputLength) {}
-        rubberband_retrieve(rState, secondHalfOutputPtr.ptr, secondHalfOutputLength);
-        rubberband_delete(rState);
+        if(secondScaleFactor > 0) {
+            RubberBandState rState = rubberband_new(sampleRate,
+                                                    stretchNChannels,
+                                                    RubberBandOption.RubberBandOptionProcessOffline,
+                                                    secondScaleFactor,
+                                                    1.0);
+            rubberband_set_max_process_size(rState, secondHalfLength);
+            rubberband_set_expected_input_duration(rState, secondHalfLength);
+            rubberband_study(rState, secondHalfPtr.ptr, secondHalfLength, 1);
+            rubberband_process(rState, secondHalfPtr.ptr, secondHalfLength, 1);
+            while(rubberband_available(rState) < secondHalfOutputLength) {}
+            rubberband_retrieve(rState, secondHalfOutputPtr.ptr, secondHalfOutputLength);
+            rubberband_delete(rState);
+        }
 
         sample_t[] outputBuffer = new sample_t[]((firstHalfOutputLength + secondHalfOutputLength) * nChannels);
         if(linkChannels) {
@@ -1723,19 +1765,6 @@ public:
     @property string name(string newName) { return (_name = newName); }
 
 package:
-    // this constructor only initializes data members
-    this(nframes_t sampleRate,
-         channels_t nChannels,
-         AudioSegment audioBuffer,
-         string name) {
-        _sampleRate = sampleRate;
-        _nChannels = nChannels;
-        _nframes = cast(nframes_t)(audioBuffer.length / nChannels);
-        _name = name;
-
-        _audioSeq = new AudioSequence(audioBuffer);
-    }
-
     ResizeDelegate resizeDelegate;
 
 private:
@@ -2561,7 +2590,7 @@ public:
             destroyDialog();
 
             if(_region !is null) {
-                auto progressCallback = progressTaskCallback!(Region.NormalizeState);
+                auto progressCallback = progressTaskCallback!(NormalizeState);
                 auto progressTask = progressTask(
                     _region.region.name,
                     delegate void() {
@@ -2584,7 +2613,7 @@ public:
                             _region.appendEditState(_region.currentEditState(true));
                         }
                     });
-                beginProgressTask!(Region.NormalizeState, DefaultProgressTask)(progressTask);
+                beginProgressTask!(NormalizeState, DefaultProgressTask)(progressTask);
                 _canvas.redraw();
             }
         }
@@ -2616,11 +2645,11 @@ public:
         }
 
         void computeOnsetsIndependentChannels() {
-            auto progressCallback = progressTaskCallback!(Region.ComputeOnsetsState);
+            auto progressCallback = progressTaskCallback!(ComputeOnsetsState);
             auto progressTask = progressTask(
                 region.name,
                 delegate void() {
-                    progressCallback(Region.ComputeOnsetsState.computeOnsets, 0);
+                    progressCallback(ComputeOnsetsState.computeOnsets, 0);
 
                     // compute onsets independently for each channel
                     if(_onsets !is null) {
@@ -2634,18 +2663,18 @@ public:
                                                                                    progressCallback));
                     }
 
-                    progressCallback(Region.ComputeOnsetsState.complete, 1);
+                    progressCallback(ComputeOnsetsState.complete, 1);
                 });
-            beginProgressTask!(Region.ComputeOnsetsState, DefaultProgressTask)(progressTask);
+            beginProgressTask!(ComputeOnsetsState, DefaultProgressTask)(progressTask);
             _canvas.redraw();
         }
 
         void computeOnsetsLinkedChannels() {
-            auto progressCallback = progressTaskCallback!(Region.ComputeOnsetsState);
+            auto progressCallback = progressTaskCallback!(ComputeOnsetsState);
             auto progressTask = progressTask(
                 region.name,
                 delegate void() {
-                    progressCallback(Region.ComputeOnsetsState.computeOnsets, 0);
+                    progressCallback(ComputeOnsetsState.computeOnsets, 0);
             
                     // compute onsets for summed channels
                     if(region.nChannels > 1) {
@@ -2653,9 +2682,9 @@ public:
                                                                                          progressCallback));
                     }
 
-                    progressCallback(Region.ComputeOnsetsState.complete, 1);
+                    progressCallback(ComputeOnsetsState.complete, 1);
                 });
-            beginProgressTask!(Region.ComputeOnsetsState, DefaultProgressTask)(progressTask);
+            beginProgressTask!(ComputeOnsetsState, DefaultProgressTask)(progressTask);
             _canvas.redraw();
         }
 
@@ -3509,9 +3538,10 @@ public:
     }
 
     void loadRegionsFromFiles(const(string[]) fileNames) {
-        auto progressCallback = progressTaskCallback!(Region.LoadState);
+        auto progressCallback = progressTaskCallback!(LoadState);
         void loadRegionTask(string fileName) {
-            Region newRegion = Region.fromFile(fileName, _mixer.sampleRate, progressCallback);
+            auto newSequence = AudioSequence.fromFile(fileName, _mixer.sampleRate, progressCallback);
+            Region newRegion = new Region(newSequence);
             if(newRegion is null) {
                 ErrorDialog.display(_parentWindow, "Could not load file " ~ baseName(fileName));
             }
@@ -3527,7 +3557,7 @@ public:
         }
 
         if(regionTaskList.data.length > 0) {
-            beginProgressTask!(Region.LoadState, RegionTask)(regionTaskList.data);
+            beginProgressTask!(LoadState, RegionTask)(regionTaskList.data);
             _canvas.redraw();
         }
     }
@@ -3640,7 +3670,7 @@ private:
         return ProgressTask!Task(name, task);
     }
 
-    auto progressTaskCallback(ProgressState)() if(__traits(isSame, TemplateOf!ProgressState, Region.ProgressState)) {
+    auto progressTaskCallback(ProgressState)() if(__traits(isSame, TemplateOf!ProgressState, .ProgressState)) {
         Tid callbackTid = thisTid;
         return delegate(ProgressState.Stage stage, double stageFraction) {
             send(callbackTid, ProgressState(stage, stageFraction));
@@ -3648,7 +3678,7 @@ private:
     }
 
     auto beginProgressTask(ProgressState, ProgressTask, bool cancelButton = true)(ProgressTask[] taskList)
-        if(__traits(isSame, TemplateOf!ProgressState, Region.ProgressState) &&
+        if(__traits(isSame, TemplateOf!ProgressState, .ProgressState) &&
            __traits(isSame, TemplateOf!ProgressTask, this.ProgressTask)) {
             enum progressRefreshRate = 10; // in Hz
             enum progressMessageTimeout = 10.msecs;
@@ -3673,7 +3703,7 @@ private:
 
             if(taskList.length > 0) {
                 setMaxMailboxSize(thisTid,
-                                  Region.LoadState.nStages * Region.LoadState.stepsPerStage,
+                                  LoadState.nStages * LoadState.stepsPerStage,
                                   OnCrowding.ignore);
 
                 size_t currentTaskIndex = 0;
