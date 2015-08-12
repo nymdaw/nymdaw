@@ -1258,6 +1258,7 @@ public:
 
     Sequence!(AudioSegment) sequence;
     alias sequence this;
+    alias PieceTable = Sequence!(AudioSegment).PieceTable;
 
     @property nframes_t nframes() { return cast(nframes_t)(sequence.length / nChannels); }
     @property nframes_t sampleRate() const { return _sampleRate; }
@@ -1283,10 +1284,12 @@ public:
     this(AudioSequence audioSeq, string name) {
         _sampleRate = audioSeq.sampleRate;
         _nChannels = audioSeq.nChannels;
-        _nframes = audioSeq.nframes;
         _name = name;
 
         _audioSeq = audioSeq;
+        _sliceStartFrame = 0;
+        _sliceEndFrame = audioSeq.nframes;
+        _audioSlice = audioSeq[_sliceStartFrame * nChannels .. _sliceEndFrame * nChannels];
     }
     this(AudioSequence audioSeq) {
         this(audioSeq, audioSeq.name);
@@ -1307,7 +1310,7 @@ public:
     Onset[] getOnsetsLinkedChannels(ref const(OnsetParams) params,
                                     ComputeOnsetsState.Callback progressCallback = null) {
         return _getOnsets(params,
-                          _audioSeq.currentPieceTable,
+                          _audioSlice,
                           sampleRate,
                           nChannels,
                           0,
@@ -1320,7 +1323,7 @@ public:
                                    channels_t channelIndex,
                                    ComputeOnsetsState.Callback progressCallback = null) {
         return _getOnsets(params,
-                          _audioSeq.currentPieceTable,
+                          _audioSlice,
                           sampleRate,
                           nChannels,
                           channelIndex,
@@ -1376,7 +1379,7 @@ public:
 
         foreach(channels_t channelIndex, channel; subregionChannels) {
             foreach(i, ref sample; channel) {
-                sample = _audioSeq[(localStartFrame + i) * this.nChannels + channelIndex];
+                sample = _audioSlice[(localStartFrame + i) * this.nChannels + channelIndex];
             }
         }
 
@@ -1409,16 +1412,13 @@ public:
             }
         }
 
+        auto immutable prevNFrames = _audioSeq.nframes;
         auto pieceTable = _audioSeq.currentPieceTable.
-            remove(localStartFrame * nChannels, localEndFrame * nChannels).
-            insert(AudioSegment(subregionOutput, nChannels), localStartFrame * nChannels);
+            remove((_sliceStartFrame + localStartFrame) * nChannels, (_sliceStartFrame + localEndFrame) * nChannels).
+            insert(AudioSegment(subregionOutput, nChannels), (_sliceStartFrame + localStartFrame) * nChannels);
         _audioSeq.appendToHistory(pieceTable);
-
-        _nframes = cast(nframes_t)(_audioSeq.length / nChannels);
-
-        if(resizeDelegate !is null) {
-            resizeDelegate(offset + nframes);
-        }
+        auto immutable newNFrames = _audioSeq.nframes;
+        _resizeSlice(prevNFrames, newNFrames);
 
         return localStartFrame + subregionOutputLength;
     }
@@ -1436,12 +1436,12 @@ public:
         immutable channels_t stretchNChannels = linkChannels ? nChannels : 1;
         immutable bool useSource = leftSource && rightSource;
 
-        auto immutable removeStartIndex = clamp(localStartFrame * nChannels,
+        auto immutable removeStartIndex = clamp((_sliceStartFrame + localStartFrame) * nChannels,
                                                 0,
-                                                _audioSeq.currentPieceTable.logicalLength);
-        auto immutable removeEndIndex = clamp(localEndFrame * nChannels,
+                                                _audioSeq.length);
+        auto immutable removeEndIndex = clamp((_sliceStartFrame + localEndFrame) * nChannels,
                                               removeStartIndex,
-                                              _audioSeq.currentPieceTable.logicalLength);
+                                              _audioSeq.length);
 
         immutable double firstScaleFactor = (localSrcFrame > localStartFrame) ?
             (cast(double)(localDestFrame - localStartFrame) /
@@ -1502,21 +1502,21 @@ public:
             if(linkChannels) {
                 foreach(channels_t channelIndex, channel; firstHalfChannels) {
                     foreach(i, ref sample; channel) {
-                        sample = _audioSeq[(localStartFrame + i) * nChannels + channelIndex];
+                        sample = _audioSlice[(localStartFrame + i) * nChannels + channelIndex];
                     }
                 }
                 foreach(channels_t channelIndex, channel; secondHalfChannels) {
                     foreach(i, ref sample; channel) {
-                        sample = _audioSeq[(localSrcFrame + i) * nChannels + channelIndex];
+                        sample = _audioSlice[(localSrcFrame + i) * nChannels + channelIndex];
                     }
                 }
             }
             else {
                 foreach(i, ref sample; firstHalfChannels[0]) {
-                    sample = _audioSeq[(localStartFrame + i) * nChannels + singleChannelIndex];
+                    sample = _audioSlice[(localStartFrame + i) * nChannels + singleChannelIndex];
                 }
                 foreach(i, ref sample; secondHalfChannels[0]) {
-                    sample = _audioSeq[(localSrcFrame + i) * nChannels + singleChannelIndex];
+                    sample = _audioSlice[(localSrcFrame + i) * nChannels + singleChannelIndex];
                 }
             }
         }
@@ -1581,7 +1581,7 @@ public:
             }
         }
         else {
-            auto firstHalfOffset = removeStartIndex;
+            auto firstHalfSourceOffset = removeStartIndex;
             foreach(i, sample; firstHalfOutputChannels[0]) {
                 for(channels_t channelIndex = 0; channelIndex < nChannels; ++channelIndex) {
                     if(channelIndex == singleChannelIndex) {
@@ -1589,12 +1589,12 @@ public:
                     }
                     else {
                         outputBuffer[i * nChannels + channelIndex] =
-                            _audioSeq[firstHalfOffset + i * nChannels + channelIndex];
+                            _audioSeq[firstHalfSourceOffset + i * nChannels + channelIndex];
                     }
                 }
             }
             auto secondHalfOutputOffset = firstHalfOutputLength * nChannels;
-            auto secondHalfOffset = firstHalfOffset + secondHalfOutputOffset;
+            auto secondHalfSourceOffset = firstHalfSourceOffset + secondHalfOutputOffset;
             foreach(i, sample; secondHalfOutputChannels[0]) {
                 for(channels_t channelIndex = 0; channelIndex < nChannels; ++channelIndex) {
                     if(channelIndex == singleChannelIndex) {
@@ -1602,17 +1602,19 @@ public:
                     }
                     else {
                         outputBuffer[secondHalfOutputOffset + i * nChannels + channelIndex] =
-                            _audioSeq[secondHalfOffset + i * nChannels + channelIndex];
+                            _audioSeq[secondHalfSourceOffset + i * nChannels + channelIndex];
                     }
                 }
             }
         }
 
+        auto immutable prevNFrames = _audioSeq.nframes;
         auto pieceTable = _audioSeq.currentPieceTable.
             remove(removeStartIndex, removeEndIndex).
             insert(AudioSegment(outputBuffer, nChannels), removeStartIndex);
         _audioSeq.appendToHistory(pieceTable);
-        _nframes = cast(nframes_t)(_audioSeq.length / nChannels);
+        auto immutable newNFrames = _audioSeq.nframes;
+        _resizeSlice(prevNFrames, newNFrames);
     }
 
     // normalize subregion from startFrame to endFrame to the given maximum gain, in dBFS
@@ -1624,7 +1626,7 @@ public:
             progressCallback(NormalizeState.normalize, 0);
         }
 
-        auto audioBuffer = _audioSeq[localStartFrame * nChannels .. localEndFrame * nChannels].toArray;
+        auto audioBuffer = _audioSlice[localStartFrame * nChannels .. localEndFrame * nChannels].toArray;
 
         // calculate the maximum sample
         sample_t minSample = 1;
@@ -1647,8 +1649,8 @@ public:
 
         // write the normalized selection to the audio sequence
         auto pieceTable = _audioSeq.currentPieceTable.
-            remove(localStartFrame * nChannels, localEndFrame * nChannels).
-            insert(AudioSegment(audioBuffer, nChannels), localStartFrame * nChannels);
+            remove((_sliceStartFrame + localStartFrame) * nChannels, (_sliceStartFrame + localEndFrame) * nChannels).
+            insert(AudioSegment(audioBuffer, nChannels), (_sliceStartFrame + localStartFrame) * nChannels);
         _audioSeq.appendToHistory(pieceTable);
 
         if(progressCallback !is null) {
@@ -1666,7 +1668,7 @@ public:
                     nframes_t binSize,
                     nframes_t sampleOffset) {
         auto immutable cacheSize = WaveformCache.cacheBinSizes[cacheIndex];
-        foreach(piece; _audioSeq.table) {
+        foreach(piece; _audioSlice.table) {
             auto immutable logicalStart = piece.logicalOffset / nChannels;
             auto immutable logicalEnd = (piece.logicalOffset + piece.length) / nChannels;
             if(sampleOffset * binSize >= logicalStart && sampleOffset * binSize < logicalEnd) {
@@ -1682,7 +1684,7 @@ public:
                     nframes_t binSize,
                     nframes_t sampleOffset) {
         auto immutable cacheSize = WaveformCache.cacheBinSizes[cacheIndex];
-        foreach(piece; _audioSeq.table) {
+        foreach(piece; _audioSlice.table) {
             auto immutable logicalStart = piece.logicalOffset / nChannels;
             auto immutable logicalEnd = (piece.logicalOffset + piece.length) / nChannels;
             if(sampleOffset * binSize >= logicalStart && sampleOffset * binSize < logicalEnd) {
@@ -1697,23 +1699,21 @@ public:
     // returns the sample value at a given channel and frame, globally indexed
     sample_t getSampleGlobal(channels_t channelIndex, nframes_t frame) @nogc nothrow {
         return frame >= offset ?
-            (frame < offset + nframes ? _audioSeq[(frame - offset) * nChannels + channelIndex] : 0) : 0;
+            (frame < offset + nframes ? _audioSlice[(frame - offset) * nChannels + channelIndex] : 0) : 0;
     }
 
     // returns a slice of the internal audio sequence, using local indexes as input
     AudioSequence.PieceTable getSliceLocal(nframes_t localFrameStart, nframes_t localFrameEnd) {
-        return _audioSeq[localFrameStart * nChannels .. localFrameEnd * nChannels];
+        return _audioSlice[localFrameStart * nChannels .. localFrameEnd * nChannels];
     }
 
     // insert a subregion at a local offset; does nothing if the offset is not within this region
     void insertLocal(AudioSequence.PieceTable insertSlice, nframes_t localFrameOffset) {
         if(localFrameOffset >= 0 && localFrameOffset < nframes) {
-            _audioSeq.insert(insertSlice, localFrameOffset * nChannels);
-
-            _nframes = cast(nframes_t)(_audioSeq.length / nChannels);
-            if(resizeDelegate !is null) {
-                resizeDelegate(offset + nframes);
-            }
+            auto immutable prevNFrames = _audioSeq.nframes;
+            _audioSeq.insert(insertSlice, (_sliceStartFrame + localFrameOffset) * nChannels);
+            auto immutable newNFrames = _audioSeq.nframes;
+            _resizeSlice(prevNFrames, newNFrames);
         }
     }
 
@@ -1723,39 +1723,115 @@ public:
         if(localFrameStart < localFrameEnd &&
            localFrameStart >= 0 && localFrameStart < nframes &&
            localFrameEnd >= 0 && localFrameEnd < nframes) {
-            _audioSeq.remove(localFrameStart * nChannels, localFrameEnd * nChannels);
-
-            _nframes = cast(nframes_t)(_audioSeq.length / nChannels);
-            if(resizeDelegate !is null) {
-                resizeDelegate(offset + nframes);
-            }
+            auto immutable prevNFrames = _audioSeq.nframes;
+            _audioSeq.remove((_sliceStartFrame + localFrameStart) * nChannels,
+                             (_sliceStartFrame + localFrameEnd) * nChannels);
+            auto immutable newNFrames = _audioSeq.nframes;
+            _resizeSlice(prevNFrames, newNFrames);
         }
     }
 
     // undo the last edit operation
     void undoEdit() {
+        auto immutable prevNFrames = _audioSeq.nframes;
         _audioSeq.undo();
-
-        _nframes = cast(nframes_t)(_audioSeq.length / nChannels);
-        if(resizeDelegate !is null) {
-            resizeDelegate(offset + nframes);
-        }
+        auto immutable newNFrames = _audioSeq.nframes;
+        _resizeSlice(prevNFrames, newNFrames);
     }
 
     // redo the last edit operation
     void redoEdit() {
+        auto immutable prevNFrames = _audioSeq.nframes;
         _audioSeq.redo();
+        auto immutable newNFrames = _audioSeq.nframes;
+        _resizeSlice(prevNFrames, newNFrames);
+    }
 
-        _nframes = cast(nframes_t)(_audioSeq.length / nChannels);
-        if(resizeDelegate !is null) {
-            resizeDelegate(offset + nframes);
+    // modifies (within limits) the start of the region, in global frames
+    void shrinkStart(nframes_t newStartFrameGlobal) {
+        if(newStartFrameGlobal < offset) {
+            auto immutable delta = offset - newStartFrameGlobal;
+            if(delta < _sliceStartFrame) {
+                _offset -= delta;
+                _sliceStartFrame -= delta;
+            }
+            else if(offset >= _sliceStartFrame) {
+                _offset -= _sliceStartFrame;
+                _sliceStartFrame = 0;
+            }
+            else {
+                return;
+            }
+        }
+        else if(newStartFrameGlobal > offset) {
+            auto immutable delta = newStartFrameGlobal - offset;
+            if(_sliceStartFrame + delta < _sliceEndFrame) {
+                _offset += delta;
+                _sliceStartFrame += delta;
+            }
+            else {
+                _offset += _sliceEndFrame - _sliceStartFrame;
+                _sliceStartFrame = _sliceEndFrame;
+            }
+        }
+        else {
+            return;
         }
 
+        _audioSlice = _audioSeq[_sliceStartFrame * nChannels .. _sliceEndFrame * nChannels];
     }
+    // modifies (within limits) the end of the region, in global frames
+    void shrinkEnd(nframes_t newEndFrameGlobal) {
+        auto immutable endFrameGlobal = _offset + cast(nframes_t)(_audioSlice.length / nChannels);
+        if(newEndFrameGlobal < endFrameGlobal) {
+            auto immutable delta = endFrameGlobal - newEndFrameGlobal;
+            if(_sliceEndFrame > _sliceStartFrame + delta) {
+                _sliceEndFrame -= delta;
+            }
+            else {
+                _sliceEndFrame = _sliceStartFrame;
+            }
+        }
+        else if(newEndFrameGlobal > endFrameGlobal) {
+            auto immutable delta = newEndFrameGlobal - endFrameGlobal;
+            if(_sliceEndFrame + delta <= _audioSeq.nframes) {
+                _sliceEndFrame += delta;
+                if(resizeDelegate !is null) {
+                    resizeDelegate(offset + nframes);
+                }
+            }
+            else {
+                _sliceEndFrame = _audioSeq.nframes;
+            }
+        }
+        else {
+            return;
+        }
+
+        _audioSlice = _audioSeq[_sliceStartFrame * nChannels .. _sliceEndFrame * nChannels];
+    }
+
+    @property nframes_t sliceStartFrame() const { return _sliceStartFrame; }
+    @property nframes_t sliceStartFrame(nframes_t newSliceStartFrame) {
+        _sliceStartFrame = min(newSliceStartFrame, _audioSeq.nframes - 1);
+        _audioSlice = _audioSeq[_sliceStartFrame * nChannels .. _sliceEndFrame * nChannels];
+        return _sliceStartFrame;
+    }
+    @property nframes_t sliceEndFrame() const { return _sliceEndFrame; }
+    @property nframes_t sliceEndFrame(nframes_t newSliceEndFrame) {
+        _sliceEndFrame = min(newSliceEndFrame, _audioSeq.nframes);
+        _audioSlice = _audioSeq[_sliceStartFrame * nChannels .. _sliceEndFrame * nChannels];
+        if(resizeDelegate !is null) {
+            resizeDelegate(offset + nframes);
+        }        
+        return _sliceEndFrame;
+    }
+
+    // number of frames in the audio data, where 1 frame contains 1 sample for each channel
+    @property nframes_t nframes() const @nogc nothrow { return _sliceEndFrame - _sliceStartFrame; }
 
     @property nframes_t sampleRate() const @nogc nothrow { return _sampleRate; }
     @property channels_t nChannels() const @nogc nothrow { return _nChannels; }
-    @property nframes_t nframes() const @nogc nothrow { return _nframes; }
     @property nframes_t offset() const @nogc nothrow { return _offset; }
     @property nframes_t offset(nframes_t newOffset) { return (_offset = newOffset); }
     @property bool mute() const @nogc nothrow { return _mute; }
@@ -1869,11 +1945,32 @@ private:
         return onsetsApp.data;
     }
 
+    // arguments are the total number of frames in the audio sequence before/after a modification
+    // adjusts the ending frame accordingly
+    void _resizeSlice(nframes_t prevNFrames, nframes_t newNFrames) {
+        if(newNFrames > prevNFrames) {
+            _sliceEndFrame += (newNFrames - prevNFrames);
+            if(resizeDelegate !is null) {
+                resizeDelegate(offset + nframes);
+            }
+        }
+        else if(newNFrames < prevNFrames) {
+            _sliceEndFrame = (_sliceEndFrame > prevNFrames - newNFrames) ?
+                _sliceEndFrame - (prevNFrames - newNFrames) : _sliceStartFrame;
+        }
+
+        _audioSlice = _audioSeq[_sliceStartFrame * nChannels .. _sliceEndFrame * nChannels];
+    }
+
     nframes_t _sampleRate; // sample rate of the audio data
     channels_t _nChannels; // number of channels in the audio data
-    nframes_t _nframes; // number of frames in the audio data, where 1 frame contains 1 sample for each channel
 
     AudioSequence _audioSeq; // sequence of interleaved audio data, for all channels
+    nframes_t _sliceStartFrame; // start frame for this region, relative to the start of the sequence
+    nframes_t _sliceEndFrame; // end frame for this region, relative to the end of the sequence
+
+    // current slice of the audio sequence, based on _sliceStartFrame and _sliceEndFrame
+    AudioSequence.PieceTable _audioSlice;
 
     nframes_t _offset; // the offset, in frames, for the start of this region
     bool _mute; // flag indicating whether to mute all audio in this region during playback
@@ -2274,7 +2371,9 @@ public:
     enum Action {
         none,
         selectRegion,
-        selectSubregion,        
+        shrinkRegionStart,
+        shrinkRegionEnd,
+        selectSubregion,
         selectBox,
         moveOnset,
         moveRegion,
@@ -2907,6 +3006,16 @@ public:
         }
 
         Region region;
+
+        @property nframes_t sliceStartFrame() const { return region.sliceStartFrame; }
+        @property nframes_t sliceStartFrame(nframes_t newSliceStartFrame) {
+            return (region.sliceStartFrame = newSliceStartFrame);
+        }
+        @property nframes_t sliceEndFrame() const { return region.sliceEndFrame; }
+        @property nframes_t sliceEndFrame(nframes_t newSliceEndFrame) {
+            return (region.sliceEndFrame = newSliceEndFrame);
+        }
+
         @property channels_t nChannels() const @nogc nothrow { return region.nChannels; }
         @property nframes_t nframes() const @nogc nothrow { return region.nframes; }
         @property nframes_t offset() const @nogc nothrow { return region.offset; }
@@ -3861,6 +3970,8 @@ private:
                 setCursorByType(cursorMoving, CursorType.FLEUR);
                 break;
 
+            case Action.shrinkRegionStart:
+            case Action.shrinkRegionEnd:
             case Action.moveOnset:
                 setCursorByType(cursorMovingOnset, CursorType.SB_H_DOUBLE_ARROW);
                 break;
@@ -4318,7 +4429,7 @@ private:
 
         void onSelectSubregion() {
             if(_editRegion && _mouseX >= 0 && _mouseX <= viewWidthPixels) {
-                nframes_t mouseFrame =
+                immutable nframes_t mouseFrame =
                     clamp(_mouseX, _editRegion.boundingBox.x0, _editRegion.boundingBox.x1) *
                     samplesPerPixel + viewOffset;
                 if(mouseFrame < _editRegion.subregionStartFrame + _editRegion.offset) {
@@ -4360,6 +4471,20 @@ private:
                         redraw();
                         break;
 
+                    case Action.shrinkRegionStart:
+                        immutable nframes_t mouseFrame = viewOffset + _mouseX * samplesPerPixel;
+                        immutable nframes_t minRegionWidth = RegionView.cornerRadius * 2 * samplesPerPixel;
+                        _shrinkRegion.region.shrinkStart(
+                            min(mouseFrame, _shrinkRegion.offset + _shrinkRegion.nframes - minRegionWidth));
+                        redraw();
+                        break;
+
+                    case Action.shrinkRegionEnd:
+                        immutable nframes_t mouseFrame = viewOffset + _mouseX * samplesPerPixel;
+                        _shrinkRegion.region.shrinkEnd(mouseFrame);
+                        redraw();
+                        break;
+
                     case Action.selectSubregion:
                         onSelectSubregion();
                         break;
@@ -4370,7 +4495,7 @@ private:
 
                     case Action.moveRegion:
                         foreach(regionView; _selectedRegions) {
-                            nframes_t deltaXSamples = abs(_mouseX - prevMouseX) * samplesPerPixel;
+                            immutable nframes_t deltaXSamples = abs(_mouseX - prevMouseX) * samplesPerPixel;
                             if(_mouseX > prevMouseX) {
                                 regionView.selectedOffset += deltaXSamples;
                             }
@@ -4387,7 +4512,7 @@ private:
                         break;
 
                     case Action.moveMarker:
-                        nframes_t deltaXSamples = abs(_mouseX - prevMouseX) * samplesPerPixel;
+                        immutable nframes_t deltaXSamples = abs(_mouseX - prevMouseX) * samplesPerPixel;
                         if(_mouseX > prevMouseX) {
                             if(_moveMarker.offset + deltaXSamples >= _mixer.lastFrame) {
                                 _moveMarker.offset = _mixer.lastFrame;
@@ -4406,8 +4531,8 @@ private:
                         break;
 
                     case Action.moveOnset:
-                        nframes_t deltaXSamples = abs(_mouseX - prevMouseX) * samplesPerPixel;
-                        Direction direction = (_mouseX > prevMouseX) ? Direction.right : Direction.left;
+                        immutable nframes_t deltaXSamples = abs(_mouseX - prevMouseX) * samplesPerPixel;
+                        immutable Direction direction = (_mouseX > prevMouseX) ? Direction.right : Direction.left;
                         _moveOnsetFrameDest = _editRegion.moveOnset(_moveOnsetIndex,
                                                                     _moveOnsetFrameDest,
                                                                     deltaXSamples,
@@ -4465,21 +4590,65 @@ private:
                         switch(_mode) {
                             // implement different behaviors for button presses depending on the current mode
                             case Mode.arrange:
-                                // detect if the mouse is over an audio region; if so, select that region
-                                bool mouseOverSelectedRegion;
-                                foreach(regionView; _selectedRegions) {
-                                    if(_mouseX >= regionView.boundingBox.x0 && _mouseX < regionView.boundingBox.x1 &&
-                                       _mouseY >= regionView.boundingBox.y0 && _mouseY < regionView.boundingBox.y1) {
-                                        mouseOverSelectedRegion = true;
-                                        break;
+                                // detect if the mouse is over an audio region
+                                RegionView mouseOverRegion;
+                                RegionView mouseOverRegionStart;
+                                RegionView mouseOverRegionEnd;
+                                foreach(regionView; _regionViews) {
+                                    if(_mouseY >= regionView.boundingBox.y0 &&
+                                       _mouseY < regionView.boundingBox.y1) {
+                                        if(_mouseY >= regionView.boundingBox.y0 + RegionView.headerHeight) {
+                                            if(_mouseX >= regionView.boundingBox.x0 - mouseOverThreshold &&
+                                               _mouseX <= regionView.boundingBox.x0 + mouseOverThreshold) {
+                                                mouseOverRegionStart = regionView;
+                                            }
+                                            else if(_mouseX >= regionView.boundingBox.x1 - mouseOverThreshold &&
+                                                    _mouseX <= regionView.boundingBox.x1 + mouseOverThreshold) {
+                                                mouseOverRegionEnd = regionView;
+                                            }
+                                        }
+
+                                        if(_mouseX >= regionView.boundingBox.x0 &&
+                                           _mouseX < regionView.boundingBox.x1) {
+                                            mouseOverRegion = regionView;
+                                            break;
+                                        }
                                     }
                                 }
 
-                                if(mouseOverSelectedRegion && !shiftPressed) {
+                                // detect if the mouse is near one of the endpoints of a region;
+                                // if so, begin adjusting that endpoint
+                                if(!shiftPressed) {
+                                    if(mouseOverRegionStart !is null) {
+                                        // select the region
+                                        mouseOverRegionStart.selected = true;
+                                        _selectedRegionsApp.clear();
+                                        _selectedRegionsApp.put(mouseOverRegionStart);
+
+                                        // begin shrinking the start of the region
+                                        _shrinkRegion = mouseOverRegionStart;
+                                        _setAction(Action.shrinkRegionStart);
+                                        newAction = true;
+                                    }
+                                    else if(mouseOverRegionEnd !is null) {
+                                        // select the region
+                                        mouseOverRegionEnd.selected = true;
+                                        _selectedRegionsApp.clear();
+                                        _selectedRegionsApp.put(mouseOverRegionEnd);
+
+                                        // begin shrinking the end of the region
+                                        _shrinkRegion = mouseOverRegionEnd;
+                                        _setAction(Action.shrinkRegionEnd);
+                                        newAction = true;
+                                    }
+                                }
+
+                                if(!newAction && mouseOverRegion !is null && mouseOverRegion.selected &&
+                                   !shiftPressed) {
                                     _setAction(Action.moveRegion);
                                     newAction = true;
                                 }
-                                else {
+                                else if(!newAction) {
                                     // if shift is not currently pressed, deselect all regions
                                     if(!shiftPressed) {
                                         foreach(regionView; _selectedRegions) {
@@ -4488,7 +4657,6 @@ private:
                                         _earliestSelectedRegion = null;
                                     }
 
-                                    bool mouseOverRegion;
                                     _selectedRegionsApp.clear();
                                     foreach(regionView; _regionViews) {
                                         if(_mouseX >= regionView.boundingBox.x0 &&
@@ -4497,7 +4665,6 @@ private:
                                            _mouseY < regionView.boundingBox.y1) {
                                             // if the region is already selected and shift is pressed, deselect it
                                             regionView.selected = !(regionView.selected && shiftPressed);
-                                            mouseOverRegion = true;
                                             _setAction(Action.selectRegion);
                                             newAction = true;
                                             break;
@@ -4610,6 +4777,12 @@ private:
                     case Action.selectRegion:
                         _setAction(Action.none);
                         redraw();
+                        break;
+
+                    case Action.shrinkRegionStart:
+                    case Action.shrinkRegionEnd:
+                        _setAction(Action.none);
+                        appendArrangeState(currentArrangeState());
                         break;
 
                     // select a subregion
@@ -5134,7 +5307,10 @@ private:
     ArrangeState currentArrangeState() {
         Appender!(RegionViewState[]) regionViewStates;
         foreach(regionView; _selectedRegions) {
-            regionViewStates.put(RegionViewState(regionView, regionView.offset));
+            regionViewStates.put(RegionViewState(regionView,
+                                                 regionView.offset,
+                                                 regionView.sliceStartFrame,
+                                                 regionView.sliceEndFrame));
         }
         return ArrangeState(regionViewStates.data.dup);
     }
@@ -5149,6 +5325,8 @@ private:
         foreach(regionViewState; _arrangeStateHistory.currentState.selectedRegionStates) {
             regionViewState.regionView.selected = true;
             regionViewState.regionView.offset = regionViewState.offset;
+            regionViewState.regionView.sliceStartFrame = regionViewState.sliceStartFrame;
+            regionViewState.regionView.sliceEndFrame = regionViewState.sliceEndFrame;
             _selectedRegionsApp.put(regionViewState.regionView);
         }
     }
@@ -5173,6 +5351,8 @@ private:
     struct RegionViewState {
         RegionView regionView;
         nframes_t offset;
+        nframes_t sliceStartFrame;
+        nframes_t sliceEndFrame;
     }
     struct ArrangeState {
         RegionViewState[] selectedRegionStates;
@@ -5188,6 +5368,7 @@ private:
     Appender!(RegionView[]) _selectedRegionsApp;
     @property RegionView[] _selectedRegions() { return _selectedRegionsApp.data; }
     RegionView _earliestSelectedRegion;
+    RegionView _shrinkRegion;
     RegionView _editRegion;
 
     Marker[uint] _markers;
