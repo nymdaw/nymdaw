@@ -52,6 +52,7 @@ import gtk.FileChooserDialog;
 import gtk.MessageDialog;
 import gtk.ProgressBar;
 import gtk.RadioButton;
+import gtk.Entry;
 
 import gtkc.gtktypes;
 
@@ -2444,6 +2445,10 @@ public:
     enum refreshRate = 50; // rate in hertz at which to redraw the view when the transport is playing
     enum mouseOverThreshold = 2; // threshold number of pixels in one direction for mouse over events
 
+    // convenience constants for GTK mouse buttons
+    enum leftButton = 1;
+    enum rightButton = 3;
+
     enum Mode {
         arrange,
         editRegion
@@ -2643,6 +2648,38 @@ public:
     private:
 
         Dialog _dialog;
+    }
+
+    final class RenameTrackDialog : ArrangeDialog {
+    protected:
+        override void populate(Box content) {
+            if(_selectedTrack !is null) {
+                _trackView = _selectedTrack;
+
+                auto box = new Box(Orientation.VERTICAL, 5);
+                box.packStart(new Label("Track Name"), false, false, 0);
+                _nameEntry = new Entry(_trackView.name);
+                box.packStart(_nameEntry, false, false, 0);
+                content.packStart(box, false, false, 10);
+            }
+        }
+
+        override void onOK(Button button) {
+            if(_trackView !is null) {
+                _trackView.name = _nameEntry.getText();
+                destroyDialog();
+
+                _trackStubs.redraw();
+            }
+            else {
+                destroyDialog();
+            }
+        }
+
+    private:
+        TrackView _trackView;
+
+        Entry _nameEntry;
     }
 
     final class OnsetDetectionDialog : ArrangeDialog {
@@ -3684,12 +3721,17 @@ public:
             }
         }
 
+        @property RegionView[] regionViews() { return _regionViews; }
+
         @property pixels_t heightPixels() const {
             return cast(pixels_t)(max(_baseHeightPixels * _verticalScaleFactor, RegionView.headerHeight));
         }
 
         @property string name() const { return _name; }
         @property string name(string newName) { return (_name = newName); }
+
+        BoundingBox boundingBox;
+        bool selected;
 
     private:
         this(Track track, pixels_t heightPixels, string name) {
@@ -3735,7 +3777,17 @@ public:
         synchronized {
             TrackView trackView;
             trackView = new TrackView(_mixer.createTrack(), defaultTrackHeightPixels, trackName);
+
+            // deselect current track
+            if(_selectedTrack !is null) {
+                _selectedTrack.selected = false;
+            }
+
+            // select the new track
+            trackView.selected = true;
+            _selectedTrack = trackView;
             _trackViews ~= trackView;
+
             _canvas.redraw();
             _trackStubs.redraw();
             return trackView;
@@ -3942,6 +3994,15 @@ private:
         beginProgressTask!(ProgressState, ProgressTask, cancelButton)(taskList);
     }
 
+    void _createTrackMenu() {
+        _trackMenu = new Menu();
+
+        _trackMenu.append(new MenuItem(delegate void(MenuItem) { new RenameTrackDialog(); },
+                                       "Rename Track..."));
+
+        _trackMenu.attachToWidget(this, null);
+    }
+
     void _createEditRegionMenu() {
         _editRegionMenu = new Menu();
 
@@ -4091,8 +4152,19 @@ private:
         _canvas.redraw();
     }
 
+    TrackView _mouseOverTrack() {
+        foreach(trackView; _trackViews) {
+            if(_mouseY >= trackView.boundingBox.y0 && _mouseY < trackView.boundingBox.y1) {
+                return trackView;
+            }
+        }
+
+        return null;
+    }
+
     class TrackStubs : DrawingArea {
     public:
+        enum labelPadding = 5; // general padding for track labels, in pixels
         enum labelFont = "Arial 12"; // font family and size to use for track labels
 
         this() {
@@ -4100,6 +4172,9 @@ private:
             setSizeRequest(_trackStubWidth, 0);
 
             addOnDraw(&drawCallback);
+            addOnMotionNotify(&onMotionNotify);
+            addOnButtonPress(&onButtonPress);
+            addOnButtonRelease(&onButtonRelease);
         }
 
         void redraw() {
@@ -4107,8 +4182,6 @@ private:
         }
 
         bool drawCallback(Scoped!Context cr, Widget widget) {
-            enum labelPadding = 5; // general padding for track labels, in pixels
-
             if(!_trackLabelLayout) {
                 PgFontDescription desc;
                 _trackLabelLayout = PgCairo.createLayout(cr);
@@ -4141,16 +4214,29 @@ private:
 
             // draw the track stubs
             foreach(trackIndex, trackView; _trackViews) {
-                cr.rectangle(0, yOffset, _trackStubWidth, trackView.heightPixels);
+                // compute the bounding box for this track
+                trackView.boundingBox.x0 = 0;
+                trackView.boundingBox.x1 = _trackStubWidth;
+                trackView.boundingBox.y0 = yOffset;
+                trackView.boundingBox.y1 = yOffset + trackView.heightPixels;
 
+                // draw the track stub background
+                cr.rectangle(0, yOffset, _trackStubWidth, trackView.heightPixels);
                 Pattern trackGradient = Pattern.createLinear(0, yOffset, 0, yOffset + trackView.heightPixels);
-                trackGradient.addColorStopRgb(0, 0.2, 0.2, 0.2);
-                trackGradient.addColorStopRgb(1, 0.1, 0.1, 0.1);
+                if(trackView.selected) {
+                    trackGradient.addColorStopRgb(0, 0.4, 0.4, 0.4);
+                    trackGradient.addColorStopRgb(1, 0.2, 0.2, 0.2);
+                }
+                else {
+                    trackGradient.addColorStopRgb(0, 0.15, 0.15, 0.15);
+                    trackGradient.addColorStopRgb(1, 0.1, 0.1, 0.1);
+                }
                 cr.setSource(trackGradient);
                 cr.fill();
 
                 cr.setSourceRgb(1.0, 1.0, 1.0);
 
+                // draw the numeric track index
                 cr.save();
                 {
                     _trackLabelLayout.setText(to!string(trackIndex + 1));
@@ -4163,18 +4249,20 @@ private:
                 }
                 cr.restore();
 
+                // draw the track label
                 cr.save();
                 {
                     _trackLabelLayout.setText(trackView.name);
                     int labelWidth, labelHeight;
                     _trackLabelLayout.getPixelSize(labelWidth, labelHeight);
-                    cr.translate((_trackStubWidth - trackNumberWidth) / 2 - labelWidth / 2,
+                    cr.translate(trackNumberWidth + labelPadding * 2,
                                  yOffset + trackView.heightPixels / 2 - labelHeight / 2);
                     PgCairo.updateLayout(cr, _trackLabelLayout);
                     PgCairo.showLayout(cr, _trackLabelLayout);
                 }
                 cr.restore();
 
+                // draw separators
                 cr.save();
                 {
                     cr.setSourceRgb(0.0, 0.0, 0.0);
@@ -4196,6 +4284,50 @@ private:
             }
 
             return true;
+        }
+
+        bool onMotionNotify(Event event, Widget widget) {
+            if(event.type == EventType.MOTION_NOTIFY) {
+                pixels_t prevMouseX = _mouseX;
+                pixels_t prevMouseY = _mouseY;
+                _mouseX = cast(typeof(_mouseX))(event.motion.x);
+                _mouseY = cast(typeof(_mouseX))(event.motion.y);
+            }
+            return true;
+        }
+
+        bool onButtonPress(Event event, Widget widget) {
+            if(event.type == EventType.BUTTON_PRESS && event.button.button == leftButton) {
+                TrackView trackView = _mouseOverTrack();
+                if(trackView !is null && trackView !is _selectedTrack) {
+                    // deselect the previously selected track
+                    if(_selectedTrack !is null) {
+                        _selectedTrack.selected = false;
+                    }
+
+                    // select the new track
+                    trackView.selected = true;
+                    _selectedTrack = trackView;
+
+                    redraw();
+                }
+            }
+            else if(event.type == EventType.BUTTON_PRESS && event.button.button == rightButton) {
+                auto buttonEvent = event.button;
+
+                if(_trackMenu is null) {
+                    _createTrackMenu();
+                }
+                _trackMenu.popup(buttonEvent.button, buttonEvent.time);
+                _trackMenu.showAll();
+            }
+            return false;
+        }
+
+        bool onButtonRelease(Event event, Widget widget) {
+            if(event.type == EventType.BUTTON_RELEASE && event.button.button == leftButton) {
+            }
+            return false;
         }
 
     private:
@@ -4640,7 +4772,7 @@ private:
                         break;
 
                     case Action.shrinkRegionStart:
-                        immutable nframes_t mouseFrame = viewOffset + _mouseX * samplesPerPixel;
+                        immutable nframes_t mouseFrame = viewOffset + max(_mouseX, 0) * samplesPerPixel;
                         immutable nframes_t minRegionWidth = RegionView.cornerRadius * 2 * samplesPerPixel;
                         _shrinkRegion.region.shrinkStart(
                             min(mouseFrame, _shrinkRegion.offset + _shrinkRegion.nframes - minRegionWidth));
@@ -4648,7 +4780,7 @@ private:
                         break;
 
                     case Action.shrinkRegionEnd:
-                        immutable nframes_t mouseFrame = viewOffset + _mouseX * samplesPerPixel;
+                        immutable nframes_t mouseFrame = viewOffset + max(_mouseX, 0) * samplesPerPixel;
                         _shrinkRegion.region.shrinkEnd(mouseFrame);
                         redraw();
                         break;
@@ -4723,9 +4855,6 @@ private:
         }
 
         bool onButtonPress(Event event, Widget widget) {
-            enum leftButton = 1;
-            enum rightButton = 3;
-
             GdkModifierType state;
             event.getState(state);
             auto shiftPressed = state & GdkModifierType.SHIFT_MASK;
@@ -4758,13 +4887,14 @@ private:
                         switch(_mode) {
                             // implement different behaviors for button presses depending on the current mode
                             case Mode.arrange:
-                                // detect if the mouse is over an audio region
-                                RegionView mouseOverRegion;
-                                RegionView mouseOverRegionStart;
-                                RegionView mouseOverRegionEnd;
-                                foreach(regionView; _regionViews) {
-                                    if(_mouseY >= regionView.boundingBox.y0 &&
-                                       _mouseY < regionView.boundingBox.y1) {
+                                TrackView trackView = _mouseOverTrack();
+                                if(trackView !is null) {
+                                    RegionView mouseOverRegion;
+                                    RegionView mouseOverRegionStart;
+                                    RegionView mouseOverRegionEnd;
+
+                                    // detect if the mouse is over an audio region
+                                    foreach(regionView; trackView.regionViews) {
                                         if(_mouseY >= regionView.boundingBox.y0 + RegionView.headerHeight) {
                                             if(_mouseX >= regionView.boundingBox.x0 - mouseOverThreshold &&
                                                _mouseX <= regionView.boundingBox.x0 + mouseOverThreshold) {
@@ -4782,41 +4912,42 @@ private:
                                             break;
                                         }
                                     }
-                                }
 
-                                // detect if the mouse is near one of the endpoints of a region;
-                                // if so, begin adjusting that endpoint
-                                if(!shiftPressed) {
-                                    if(mouseOverRegionStart !is null) {
-                                        // select the region
-                                        mouseOverRegionStart.selected = true;
-                                        _selectedRegionsApp.clear();
-                                        _selectedRegionsApp.put(mouseOverRegionStart);
+                                    // detect if the mouse is near one of the endpoints of a region;
+                                    // if so, begin adjusting that endpoint
+                                    if(!shiftPressed) {
+                                        if(mouseOverRegionStart !is null) {
+                                            // select the region
+                                            mouseOverRegionStart.selected = true;
+                                            _selectedRegionsApp.clear();
+                                            _selectedRegionsApp.put(mouseOverRegionStart);
 
-                                        // begin shrinking the start of the region
-                                        _shrinkRegion = mouseOverRegionStart;
-                                        _setAction(Action.shrinkRegionStart);
+                                            // begin shrinking the start of the region
+                                            _shrinkRegion = mouseOverRegionStart;
+                                            _setAction(Action.shrinkRegionStart);
+                                            newAction = true;
+                                        }
+                                        else if(mouseOverRegionEnd !is null) {
+                                            // select the region
+                                            mouseOverRegionEnd.selected = true;
+                                            _selectedRegionsApp.clear();
+                                            _selectedRegionsApp.put(mouseOverRegionEnd);
+
+                                            // begin shrinking the end of the region
+                                            _shrinkRegion = mouseOverRegionEnd;
+                                            _setAction(Action.shrinkRegionEnd);
+                                            newAction = true;
+                                        }
+                                    }
+
+                                    if(!newAction && mouseOverRegion !is null && mouseOverRegion.selected &&
+                                       !shiftPressed) {
+                                        _setAction(Action.moveRegion);
                                         newAction = true;
                                     }
-                                    else if(mouseOverRegionEnd !is null) {
-                                        // select the region
-                                        mouseOverRegionEnd.selected = true;
-                                        _selectedRegionsApp.clear();
-                                        _selectedRegionsApp.put(mouseOverRegionEnd);
-
-                                        // begin shrinking the end of the region
-                                        _shrinkRegion = mouseOverRegionEnd;
-                                        _setAction(Action.shrinkRegionEnd);
-                                        newAction = true;
-                                    }
                                 }
 
-                                if(!newAction && mouseOverRegion !is null && mouseOverRegion.selected &&
-                                   !shiftPressed) {
-                                    _setAction(Action.moveRegion);
-                                    newAction = true;
-                                }
-                                else if(!newAction) {
+                                if(!newAction) {
                                     // if shift is not currently pressed, deselect all regions
                                     if(!shiftPressed) {
                                         foreach(regionView; _selectedRegions) {
@@ -4939,7 +5070,7 @@ private:
         }
 
         bool onButtonRelease(Event event, Widget widget) {
-            if(event.type == EventType.BUTTON_RELEASE && event.button.button == 1) {
+            if(event.type == EventType.BUTTON_RELEASE && event.button.button == leftButton) {
                 switch(_action) {
                     // reset the cursor if necessary
                     case Action.selectRegion:
@@ -5533,6 +5664,7 @@ private:
     TrackView[] _trackViews;
     RegionView[] _regionViews;
 
+    TrackView _selectedTrack;
     Appender!(RegionView[]) _selectedRegionsApp;
     @property RegionView[] _selectedRegions() { return _selectedRegionsApp.data; }
     RegionView _earliestSelectedRegion;
@@ -5564,6 +5696,7 @@ private:
     Menu _arrangeMenu;
     FileChooserDialog _importFileChooser;
 
+    Menu _trackMenu;
     Menu _editRegionMenu;
     MenuItem _stretchSelectionMenuItem;
     CheckMenuItem _showOnsetsMenuItem;
