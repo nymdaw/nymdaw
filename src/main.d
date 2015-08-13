@@ -307,6 +307,21 @@ public:
             // construct a new piece table appender
             Appender!(PieceEntry[]) pieceTable;
 
+            // check if the existing table is empty
+            if(table.empty) {
+                // insert the new piece provided by the given argument
+                static if(is(T == Buffer)) {
+                    pieceTable.put(PieceEntry(buffer, 0));
+                }
+                else if(is(T == PieceTable)) {
+                    foreach(piece; buffer.table) {
+                        pieceTable.put(PieceEntry(piece.buffer, piece.logicalOffset));
+                    }
+                }
+
+                return PieceTable(pieceTable.data);
+            }
+
             // copy elements from the previous piece table until the insertion point is found
             size_t nCopied;
             foreach(ref piece; table) {
@@ -710,7 +725,6 @@ unittest {
 unittest {
     alias IntSeq = Sequence!(int[]);
 
-    version(none)
     {
         int[] intArray = [1];
         IntSeq intSeq = new IntSeq(intArray);
@@ -834,6 +848,14 @@ unittest {
         intSeq.replace([9, 10], 2, 4);
         assert(intSeq.toArray == [6, 7, 9, 10, 5]);
     }
+
+    {
+        int[] intArray = [1, 2];
+        IntSeq intSeq = new IntSeq(intArray);
+
+        intSeq.replace([3, 4], 0, 2);
+        assert(intSeq.toArray == [3, 4]);
+    }
 }
 
 // test sequence iteration
@@ -907,6 +929,45 @@ private:
         result ~= " ]";
         return result;
     }
+}
+
+template ProgressTask(Task)
+    if(is(Task == U delegate(), U) ||
+       (isPointer!Task && __traits(isSame, TemplateOf!(PointerTarget!Task), std.parallelism.Task)) ||
+       __traits(isSame, TemplateOf!Task, std.parallelism.Task)) {
+    struct ProgressTask {
+        string name;
+
+        static if(is(Task == U delegate(), U)) {
+            this(string name, Task task) {
+                this.name = name;
+                this.task = std.parallelism.task!Task(task);
+            }
+
+            typeof(std.parallelism.task!Task(delegate U() {})) task;
+        }
+        else {
+            this(string name, Task task) {
+                this.name = name;
+                this.task = task;
+            }
+
+            Task task;
+        }
+    }
+}
+
+alias DefaultProgressTask = ProgressTask!(void delegate());
+
+auto progressTask(Task)(string name, Task task) {
+    return ProgressTask!Task(name, task);
+}
+
+auto progressTaskCallback(ProgressState)() if(__traits(isSame, TemplateOf!ProgressState, .ProgressState)) {
+    Tid callbackTid = thisTid;
+    return delegate(ProgressState.Stage stage, double stageFraction) {
+        send(callbackTid, ProgressState(stage, stageFraction));
+    };
 }
 
 alias LoadState = ProgressState!(StageDesc("read", "Loading file"),
@@ -1413,10 +1474,9 @@ public:
         }
 
         auto immutable prevNFrames = _audioSeq.nframes;
-        auto pieceTable = _audioSeq.currentPieceTable.
-            remove((_sliceStartFrame + localStartFrame) * nChannels, (_sliceStartFrame + localEndFrame) * nChannels).
-            insert(AudioSegment(subregionOutput, nChannels), (_sliceStartFrame + localStartFrame) * nChannels);
-        _audioSeq.appendToHistory(pieceTable);
+        _audioSeq.replace(AudioSegment(subregionOutput, nChannels),
+                          (_sliceStartFrame + localStartFrame) * nChannels,
+                          (_sliceStartFrame + localEndFrame) * nChannels);
         auto immutable newNFrames = _audioSeq.nframes;
         _resizeSlice(prevNFrames, newNFrames);
 
@@ -1609,10 +1669,7 @@ public:
         }
 
         auto immutable prevNFrames = _audioSeq.nframes;
-        auto pieceTable = _audioSeq.currentPieceTable.
-            remove(removeStartIndex, removeEndIndex).
-            insert(AudioSegment(outputBuffer, nChannels), removeStartIndex);
-        _audioSeq.appendToHistory(pieceTable);
+        _audioSeq.replace(AudioSegment(outputBuffer, nChannels), removeStartIndex, removeEndIndex);
         auto immutable newNFrames = _audioSeq.nframes;
         _resizeSlice(prevNFrames, newNFrames);
     }
@@ -1626,41 +1683,40 @@ public:
             progressCallback(NormalizeState.normalize, 0);
         }
 
-        auto audioBuffer = _audioSlice[localStartFrame * nChannels .. localEndFrame * nChannels].toArray;
-
-        // calculate the maximum sample
-        sample_t minSample = 1;
-        sample_t maxSample = -1;
-        foreach(s; audioBuffer) {
-            if(s > maxSample) maxSample = s;
-            if(s < minSample) minSample = s;
-        }
-        maxSample = max(abs(minSample), abs(maxSample));
-
-        // normalize the selection
-        sample_t sampleFactor =  pow(10, (maxGain > 0 ? 0 : maxGain) / 20) / maxSample;
-        foreach(i, ref s; audioBuffer) {
-            s *= sampleFactor;
-
-            if(progressCallback !is null && i % (audioBuffer.length / NormalizeState.stepsPerStage) == 0) {
-                progressCallback(NormalizeState.normalize, cast(double)(i) / cast(double)(audioBuffer.length));
-            }
-        }
+        sample_t[] audioBuffer = _audioSlice[localStartFrame * nChannels .. localEndFrame * nChannels].toArray;
+        _normalizeBuffer(audioBuffer, maxGain);
 
         // write the normalized selection to the audio sequence
-        auto pieceTable = _audioSeq.currentPieceTable.
-            remove((_sliceStartFrame + localStartFrame) * nChannels, (_sliceStartFrame + localEndFrame) * nChannels).
-            insert(AudioSegment(audioBuffer, nChannels), (_sliceStartFrame + localStartFrame) * nChannels);
-        _audioSeq.appendToHistory(pieceTable);
+        auto immutable prevNFrames = _audioSeq.nframes;
+        _audioSeq.replace(AudioSegment(audioBuffer, nChannels),
+                          (_sliceStartFrame + localStartFrame) * nChannels,
+                          (_sliceStartFrame + localEndFrame) * nChannels);
+        auto immutable newNFrames = _audioSeq.nframes;
+        _resizeSlice(prevNFrames, newNFrames);
 
         if(progressCallback !is null) {
             progressCallback(NormalizeState.complete, 1);
         }
     }
 
-    // normalize region to the given maximum gain, in dBFS
+    // normalize entire region (including nonvisible pieces) to the given maximum gain, in dBFS
     void normalize(sample_t maxGain = -0.1f, NormalizeState.Callback progressCallback = null) {
-        normalize(0, nframes, maxGain, progressCallback);
+        if(progressCallback !is null) {
+            progressCallback(NormalizeState.normalize, 0);
+        }
+
+        sample_t[] audioBuffer = _audioSeq[].toArray;
+        _normalizeBuffer(audioBuffer, maxGain);
+
+        // write the normalized selection to the audio sequence
+        auto immutable prevNFrames = _audioSeq.nframes;
+        _audioSeq.replace(AudioSegment(audioBuffer, nChannels), 0, _audioSeq.length);
+        auto immutable newNFrames = _audioSeq.nframes;
+        _resizeSlice(prevNFrames, newNFrames);
+
+        if(progressCallback !is null) {
+            progressCallback(NormalizeState.complete, 1);
+        }
     }
 
     sample_t getMin(channels_t channelIndex,
@@ -1844,6 +1900,30 @@ package:
     ResizeDelegate resizeDelegate;
 
 private:
+    // normalize an audio buffer; note that this does not send a progress completion message
+    static void _normalizeBuffer(sample_t[] audioBuffer,
+                                 sample_t maxGain = 0.1f,
+                                 NormalizeState.Callback progressCallback = null) {
+        // calculate the maximum sample
+        sample_t minSample = 1;
+        sample_t maxSample = -1;
+        foreach(s; audioBuffer) {
+            if(s > maxSample) maxSample = s;
+            if(s < minSample) minSample = s;
+        }
+        maxSample = max(abs(minSample), abs(maxSample));
+
+        // normalize the selection
+        sample_t sampleFactor =  pow(10, (maxGain > 0 ? 0 : maxGain) / 20) / maxSample;
+        foreach(i, ref s; audioBuffer) {
+            s *= sampleFactor;
+
+            if(progressCallback !is null && i % (audioBuffer.length / NormalizeState.stepsPerStage) == 0) {
+                progressCallback(NormalizeState.normalize, cast(double)(i) / cast(double)(audioBuffer.length));
+            }
+        }
+    }
+
     // channelIndex is ignored when linkChannels == true
     static Onset[] _getOnsets(ref const(OnsetParams) params,
                               AudioSequence.PieceTable pieceTable,
@@ -2360,6 +2440,7 @@ class ArrangeView : Box {
 public:
     enum defaultSamplesPerPixel = 500; // default zoom level, in samples per pixel
     enum defaultTrackHeightPixels = 200; // default height in pixels of new tracks in the arrange view
+    enum defaultTrackStubWidth = 200; // default width in pixels for all track stubs
     enum refreshRate = 50; // rate in hertz at which to redraw the view when the transport is playing
     enum mouseOverThreshold = 2; // threshold number of pixels in one direction for mouse over events
 
@@ -3747,48 +3828,9 @@ private:
         loadRegionsFromFiles(fileNames.data);
     }
 
-    template ProgressTask(Task)
-        if(is(Task == U delegate(), U) ||
-           (isPointer!Task && __traits(isSame, TemplateOf!(PointerTarget!Task), std.parallelism.Task)) ||
-           __traits(isSame, TemplateOf!Task, std.parallelism.Task)) {
-        struct ProgressTask {
-            string name;
-
-            static if(is(Task == U delegate(), U)) {
-                this(string name, Task task) {
-                    this.name = name;
-                    this.task = std.parallelism.task!Task(task);
-                }
-
-                typeof(std.parallelism.task!Task(delegate U() {})) task;
-            }
-            else {
-                this(string name, Task task) {
-                    this.name = name;
-                    this.task = task;
-                }
-
-                Task task;
-            }
-        }
-    }
-
-    alias DefaultProgressTask = ProgressTask!(void delegate());
-
-    auto progressTask(Task)(string name, Task task) {
-        return ProgressTask!Task(name, task);
-    }
-
-    auto progressTaskCallback(ProgressState)() if(__traits(isSame, TemplateOf!ProgressState, .ProgressState)) {
-        Tid callbackTid = thisTid;
-        return delegate(ProgressState.Stage stage, double stageFraction) {
-            send(callbackTid, ProgressState(stage, stageFraction));
-        };
-    }
-
     auto beginProgressTask(ProgressState, ProgressTask, bool cancelButton = true)(ProgressTask[] taskList)
         if(__traits(isSame, TemplateOf!ProgressState, .ProgressState) &&
-           __traits(isSame, TemplateOf!ProgressTask, this.ProgressTask)) {
+           __traits(isSame, TemplateOf!ProgressTask, .ProgressTask)) {
             enum progressRefreshRate = 10; // in Hz
             enum progressMessageTimeout = 10.msecs;
 
@@ -4032,6 +4074,22 @@ private:
         _canvas.redraw();
     }
 
+    class TrackStubs : DrawingArea {
+        this() {
+            setCanFocus(true);
+
+            addOnDraw(&drawCallback);
+        }
+
+        bool drawCallback(Scoped!Context cr, Widget widget) {
+            cr.setSourceRgb(0.4, 0.4, 0.4);
+            cr.rectangle(0, 0, _trackStubWidth, _viewHeightPixels);
+            cr.fill();
+
+            return true;
+        }
+    }
+
     class Canvas : DrawingArea {
         enum timestripHeightPixels = 40;
 
@@ -4085,12 +4143,15 @@ private:
             cr.setSourceRgb(0.0, 0.0, 0.0);
             cr.paint();
 
-            drawBackground(cr);
-            drawTracks(cr);
-            drawMarkers(cr);
-            drawTimestrip(cr);
-            drawTransport(cr);
-            drawSelectBox(cr);
+            // draw the canvas; i.e., the visible area that contains the timeline and audio regions
+            {
+                drawBackground(cr);
+                drawTracks(cr);
+                drawMarkers(cr);
+                drawTimestrip(cr);
+                drawTransport(cr);
+                drawSelectBox(cr);
+            }
 
             return true;
         }
@@ -5389,6 +5450,8 @@ private:
     ArrangeHScroll _hScroll;
     ArrangeVScroll _vScroll;
     Timeout _refreshTimeout;
+
+    pixels_t _trackStubWidth = defaultTrackStubWidth;
 
     Menu _arrangeMenu;
     FileChooserDialog _importFileChooser;
