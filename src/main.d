@@ -2475,6 +2475,7 @@ public:
         _arrangeStateHistory = StateHistory!ArrangeState(ArrangeState());
 
         _canvas = new Canvas();
+        _trackStubs = new TrackStubs();
         _hScroll = new ArrangeHScroll();
         _vScroll = new ArrangeVScroll();
 
@@ -2482,7 +2483,14 @@ public:
         auto vBox = new Box(Orientation.VERTICAL, 0);
         vBox.packStart(_canvas, true, true, 0);
         vBox.packEnd(_hScroll, false, false, 0);
-        packStart(vBox, true, true, 0);
+
+        auto trackStubsBox = new Box(Orientation.VERTICAL, 0);
+        trackStubsBox.packStart(_trackStubs, true, true, 0);
+
+        auto hBox = new Box(Orientation.HORIZONTAL, 0);
+        hBox.packStart(trackStubsBox, false, false, 0);
+        hBox.packEnd(vBox, true, true, 0);
+        packStart(hBox, true, true, 0);
         packEnd(_vScroll, false, false, 0);
 
         showAll();
@@ -2546,6 +2554,7 @@ public:
         void onVScrollChanged(Adjustment adjustment) {
             _verticalPixelsOffset = cast(pixels_t)(_vAdjust.getValue());
             _canvas.redraw();
+            _trackStubs.redraw();
         }
 
         void reconfigure() {
@@ -3679,11 +3688,15 @@ public:
             return cast(pixels_t)(max(_baseHeightPixels * _verticalScaleFactor, RegionView.headerHeight));
         }
 
+        @property string name() const { return _name; }
+        @property string name(string newName) { return (_name = newName); }
+
     private:
-        this(Track track, pixels_t heightPixels) {
+        this(Track track, pixels_t heightPixels, string name) {
             _track = track;
             _baseHeightPixels = heightPixels;
             _trackColor = _newTrackColor();
+            _name = name;
         }
 
         static Color _newTrackColor() {
@@ -3710,6 +3723,7 @@ public:
         pixels_t _baseHeightPixels;
         RegionView[] _regionViews;
         Color _trackColor;
+        string _name;
     }
 
     struct Marker {
@@ -3717,12 +3731,13 @@ public:
         string name;
     }
 
-    TrackView createTrackView() {
+    TrackView createTrackView(string trackName) {
         synchronized {
             TrackView trackView;
-            trackView = new TrackView(_mixer.createTrack(), defaultTrackHeightPixels);
+            trackView = new TrackView(_mixer.createTrack(), defaultTrackHeightPixels, trackName);
             _trackViews ~= trackView;
             _canvas.redraw();
+            _trackStubs.redraw();
             return trackView;
         }
     }
@@ -3736,7 +3751,7 @@ public:
                 ErrorDialog.display(_parentWindow, "Could not load file " ~ baseName(fileName));
             }
             else {
-                auto newTrack = createTrackView();
+                auto newTrack = createTrackView(newRegion.name);
                 newTrack.addRegion(newRegion);
             }
         }
@@ -3984,11 +3999,13 @@ private:
     void _zoomInVertical() {
         _verticalScaleFactor = max(_verticalScaleFactor / _verticalZoomFactor, _verticalZoomFactorMin);
         _canvas.redraw();
+        _trackStubs.redraw();
         _vScroll.reconfigure();
     }
     void _zoomOutVertical() {
         _verticalScaleFactor = min(_verticalScaleFactor * _verticalZoomFactor, _verticalZoomFactorMax);
         _canvas.redraw();
+        _trackStubs.redraw();
         _vScroll.reconfigure();
     }
 
@@ -4075,19 +4092,114 @@ private:
     }
 
     class TrackStubs : DrawingArea {
+    public:
+        enum labelFont = "Arial 12"; // font family and size to use for track labels
+
         this() {
-            setCanFocus(true);
+            _trackStubWidth = defaultTrackStubWidth;
+            setSizeRequest(_trackStubWidth, 0);
 
             addOnDraw(&drawCallback);
         }
 
+        void redraw() {
+            queueDrawArea(0, 0, getWindow().getWidth(), getWindow().getHeight());
+        }
+
         bool drawCallback(Scoped!Context cr, Widget widget) {
-            cr.setSourceRgb(0.4, 0.4, 0.4);
-            cr.rectangle(0, 0, _trackStubWidth, _viewHeightPixels);
-            cr.fill();
+            enum labelPadding = 5; // general padding for track labels, in pixels
+
+            if(!_trackLabelLayout) {
+                PgFontDescription desc;
+                _trackLabelLayout = PgCairo.createLayout(cr);
+                desc = PgFontDescription.fromString(labelFont);
+                _trackLabelLayout.setFontDescription(desc);
+                desc.free();
+            }
+
+            cr.setAntialias(cairo_antialias_t.NONE);
+            cr.setLineWidth(1.0);
+
+            cr.setSourceRgb(0.1, 0.1, 0.1);
+            cr.paint();
+
+            // compute the width, in pixels, of the maximum track number
+            pixels_t trackNumberWidth;
+            {
+                _trackLabelLayout.setText(to!string(_trackViews.length));
+                int labelWidth, labelHeight;
+                _trackLabelLayout.getPixelSize(labelWidth, labelHeight);
+                trackNumberWidth = cast(pixels_t)(labelWidth) + labelPadding * 2;
+            }
+
+            // draw a separator above the first track
+            pixels_t yOffset = _canvas.firstTrackYOffset - _verticalPixelsOffset;
+            cr.moveTo(0, yOffset);
+            cr.lineTo(_trackStubWidth, yOffset);
+            cr.setSourceRgb(0.0, 0.0, 0.0);
+            cr.stroke();
+
+            // draw the track stubs
+            foreach(trackIndex, trackView; _trackViews) {
+                cr.rectangle(0, yOffset, _trackStubWidth, trackView.heightPixels);
+
+                Pattern trackGradient = Pattern.createLinear(0, yOffset, 0, yOffset + trackView.heightPixels);
+                trackGradient.addColorStopRgb(0, 0.2, 0.2, 0.2);
+                trackGradient.addColorStopRgb(1, 0.1, 0.1, 0.1);
+                cr.setSource(trackGradient);
+                cr.fill();
+
+                cr.setSourceRgb(1.0, 1.0, 1.0);
+
+                cr.save();
+                {
+                    _trackLabelLayout.setText(to!string(trackIndex + 1));
+                    int labelWidth, labelHeight;
+                    _trackLabelLayout.getPixelSize(labelWidth, labelHeight);
+                    cr.translate(trackNumberWidth / 2 - labelWidth / 2,
+                                 yOffset + trackView.heightPixels / 2 - labelHeight / 2);
+                    PgCairo.updateLayout(cr, _trackLabelLayout);
+                    PgCairo.showLayout(cr, _trackLabelLayout);
+                }
+                cr.restore();
+
+                cr.save();
+                {
+                    _trackLabelLayout.setText(trackView.name);
+                    int labelWidth, labelHeight;
+                    _trackLabelLayout.getPixelSize(labelWidth, labelHeight);
+                    cr.translate((_trackStubWidth - trackNumberWidth) / 2 - labelWidth / 2,
+                                 yOffset + trackView.heightPixels / 2 - labelHeight / 2);
+                    PgCairo.updateLayout(cr, _trackLabelLayout);
+                    PgCairo.showLayout(cr, _trackLabelLayout);
+                }
+                cr.restore();
+
+                cr.save();
+                {
+                    cr.setSourceRgb(0.0, 0.0, 0.0);
+
+                    //draw vertical separator
+                    cr.moveTo(trackNumberWidth, yOffset);
+                    cr.lineTo(trackNumberWidth, yOffset + trackView.heightPixels);
+
+                    // increment yOffset for the next track
+                    yOffset += trackView.heightPixels;
+
+                    // draw bottom horizontal separator
+                    cr.moveTo(0, yOffset);
+                    cr.lineTo(_trackStubWidth, yOffset);
+
+                    cr.stroke();
+                }
+                cr.restore();
+            }
 
             return true;
         }
+
+    private:
+        PgLayout _trackLabelLayout;
     }
 
     class Canvas : DrawingArea {
@@ -4331,9 +4443,9 @@ private:
 
         void drawTracks(ref Scoped!Context cr) {
             pixels_t yOffset = firstTrackYOffset - _verticalPixelsOffset;
-            foreach(t; _trackViews) {
-                t.draw(cr, yOffset);
-                yOffset += t.heightPixels;
+            foreach(trackView; _trackViews) {
+                trackView.draw(cr, yOffset);
+                yOffset += trackView.heightPixels;
             }
         }
 
@@ -4359,13 +4471,10 @@ private:
                 return;
             }
 
-            GtkAllocation size;
-            getAllocation(size);
-
             cr.setSourceRgb(1.0, 0.0, 0.0);
             cr.setLineWidth(1.0);
             cr.moveTo(_transportPixelsOffset, 0);
-            cr.lineTo(_transportPixelsOffset, size.height);
+            cr.lineTo(_transportPixelsOffset, _viewHeightPixels);
             cr.stroke();
 
             cr.moveTo(_transportPixelsOffset - transportHeadWidth / 2, 0);
@@ -4461,9 +4570,7 @@ private:
         }
 
         void redraw() {
-            GtkAllocation area;
-            getAllocation(area);
-            queueDrawArea(area.x, area.y, area.width, area.height);
+            queueDrawArea(0, 0, getWindow().getWidth(), getWindow().getHeight());
         }
 
         bool onRefresh() {
@@ -5451,7 +5558,8 @@ private:
     ArrangeVScroll _vScroll;
     Timeout _refreshTimeout;
 
-    pixels_t _trackStubWidth = defaultTrackStubWidth;
+    TrackStubs _trackStubs;
+    pixels_t _trackStubWidth;
 
     Menu _arrangeMenu;
     FileChooserDialog _importFileChooser;
