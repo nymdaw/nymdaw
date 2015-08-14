@@ -3270,8 +3270,8 @@ public:
                 if(rCorners) {
                     cr.arc(xOffset + width - cornerRadius, yOffset + cornerRadius,
                            cornerRadius, -90 * degrees, 0 * degrees);
-                    cr.arc(xOffset + width - cornerRadius, yOffset + height - cornerRadius, cornerRadius,
-                           0 * degrees, 90 * degrees);
+                    cr.arc(xOffset + width - cornerRadius, yOffset + height - cornerRadius,
+                           cornerRadius, 0 * degrees, 90 * degrees);
                 }
                 else {
                     cr.lineTo(xOffset + width + borderWidth, yOffset);
@@ -3359,11 +3359,11 @@ public:
                 }
 
                 // draw the region's label
-                if(!_headerLabelLayout) {
+                if(!_regionHeaderLabelLayout) {
                     PgFontDescription desc;
-                    _headerLabelLayout = PgCairo.createLayout(cr);
+                    _regionHeaderLabelLayout = PgCairo.createLayout(cr);
                     desc = PgFontDescription.fromString(headerFont);
-                    _headerLabelLayout.setFontDescription(desc);
+                    _regionHeaderLabelLayout.setFontDescription(desc);
                     desc.free();
                 }
 
@@ -3377,16 +3377,16 @@ public:
                     else {
                         cr.setSourceRgba(1.0, 1.0, 1.0, alpha);
                     }
-                    PgCairo.updateLayout(cr, _headerLabelLayout);
-                    PgCairo.showLayout(cr, _headerLabelLayout);
+                    PgCairo.updateLayout(cr, _regionHeaderLabelLayout);
+                    PgCairo.showLayout(cr, _regionHeaderLabelLayout);
                 }
 
                 cr.save();
                 enum labelPadding = borderWidth + 1;
                 int labelWidth, labelHeight;
                 labelWidth += labelPadding;
-                _headerLabelLayout.setText(region.mute ? region.name ~ " (muted)" : region.name);
-                _headerLabelLayout.getPixelSize(labelWidth, labelHeight);
+                _regionHeaderLabelLayout.setText(region.mute ? region.name ~ " (muted)" : region.name);
+                _regionHeaderLabelLayout.getPixelSize(labelWidth, labelHeight);
                 if(xOffset == 0 && regionOffset < viewOffset && labelWidth + labelPadding > width) {
                     cr.translate(xOffset - (labelWidth - width), yOffset);
                     drawRegionLabel();
@@ -3709,7 +3709,7 @@ public:
             addRegion(region, _mixer.sampleRate);
         }
 
-        void draw(ref Scoped!Context cr, pixels_t yOffset) {
+        void drawRegions(ref Scoped!Context cr, pixels_t yOffset) {
             foreach(regionView; _regionViews) {
                 Region r = regionView.region;
                 if(_action == Action.moveRegion && regionView.selected) {
@@ -3721,11 +3721,276 @@ public:
             }
         }
 
-        @property RegionView[] regionViews() { return _regionViews; }
+        void drawStub(ref Scoped!Context cr,
+                      pixels_t yOffset,
+                      size_t trackIndex,
+                      pixels_t trackNumberWidth) {
+            alias labelPadding = TrackStubs.labelPadding;
+
+            immutable Color selectedGradientTop = Color(0.5, 0.5, 0.5);
+            immutable Color selectedGradientBottom = Color(0.3, 0.3, 0.3);
+            immutable Color gradientTop = Color(0.2, 0.2, 0.2);
+            immutable Color gradientBottom = Color(0.15, 0.15, 0.15);
+
+            cr.save();
+            cr.setOperator(cairo_operator_t.OVER);
+
+            // compute the bounding box for this track
+            boundingBox.x0 = 0;
+            boundingBox.x1 = _trackStubWidth;
+            boundingBox.y0 = yOffset;
+            boundingBox.y1 = yOffset + heightPixels;
+
+            // draw the track stub background
+            cr.rectangle(0, yOffset, _trackStubWidth, heightPixels);
+            Pattern trackGradient = Pattern.createLinear(0, yOffset, 0, yOffset + heightPixels);
+            if(selected) {
+                trackGradient.addColorStopRgb(0,
+                                              selectedGradientTop.r,
+                                              selectedGradientTop.g,
+                                              selectedGradientTop.b);
+                trackGradient.addColorStopRgb(1,
+                                              selectedGradientBottom.r,
+                                              selectedGradientBottom.g,
+                                              selectedGradientBottom.b);
+            }
+            else {
+                trackGradient.addColorStopRgb(0,
+                                              gradientTop.r,
+                                              gradientTop.g,
+                                              gradientTop.b);
+                trackGradient.addColorStopRgb(1,
+                                              gradientBottom.r,
+                                              gradientBottom.g,
+                                              gradientBottom.b);
+            }
+            cr.setSource(trackGradient);
+            cr.fill();
+
+            cr.setSourceRgb(1.0, 1.0, 1.0);
+
+            // draw the numeric track index
+            cr.save();
+            {
+                _trackLabelLayout.setText(to!string(trackIndex + 1));
+                int labelWidth, labelHeight;
+                _trackLabelLayout.getPixelSize(labelWidth, labelHeight);
+                cr.translate(trackNumberWidth / 2 - labelWidth / 2,
+                             yOffset + heightPixels / 2 - labelHeight / 2);
+                PgCairo.updateLayout(cr, _trackLabelLayout);
+                PgCairo.showLayout(cr, _trackLabelLayout);
+            }
+            cr.restore();
+
+            immutable pixels_t xOffset = trackNumberWidth + labelPadding * 2;
+
+            // draw the track label
+            pixels_t trackLabelHeight;
+            cr.save();
+            {
+                _trackLabelLayout.setText(name);
+                int labelWidth, labelHeight;
+                _trackLabelLayout.getPixelSize(labelWidth, labelHeight);
+                trackLabelHeight = cast(pixels_t)(labelHeight);
+                cr.translate(xOffset, yOffset + heightPixels / 2 - labelHeight / 2);
+                PgCairo.updateLayout(cr, _trackLabelLayout);
+                PgCairo.showLayout(cr, _trackLabelLayout);
+            }
+            cr.restore();
+
+            // draw the mute/solo buttons
+            pixels_t buttonXOffset = xOffset;
+            pixels_t buttonYOffset = yOffset + heightPixels / 2 + trackLabelHeight / 2 + labelPadding * 2;
+            _trackButtonStrip.draw(cr, buttonXOffset, buttonYOffset);
+
+            // draw separators
+            cr.save();
+            {
+                // draw a separator above the first track
+                if(trackIndex == 0) {
+                    cr.moveTo(0, yOffset);
+                    cr.lineTo(_trackStubWidth, yOffset);
+                }
+
+                // draw vertical separator
+                cr.moveTo(trackNumberWidth, yOffset);
+                cr.lineTo(trackNumberWidth, yOffset + heightPixels);
+
+                // draw bottom horizontal separator
+                cr.moveTo(0, yOffset + heightPixels);
+                cr.lineTo(_trackStubWidth, yOffset + heightPixels);
+
+                cr.setSourceRgb(0.0, 0.0, 0.0);
+                cr.stroke();
+            }
+            cr.restore();
+
+            cr.restore();
+        }
+
+        abstract class TrackButton {
+        public:
+            enum buttonWidth = 20;
+            enum buttonHeight = 20;
+            enum cornerRadius = 4;
+
+            this(bool roundedLeftEdges = true, bool roundedRightEdges = true) {
+                this.roundedLeftEdges = roundedLeftEdges;
+                this.roundedRightEdges = roundedRightEdges;
+            }
+
+            final void draw(ref Scoped!Context cr, pixels_t xOffset, pixels_t yOffset) {
+                alias labelPadding = TrackStubs.labelPadding;
+
+                enum degrees = PI / 180.0;
+
+                immutable Color gradientTop = Color(0.5, 0.5, 0.5);
+                immutable Color gradientBottom = Color(0.2, 0.2, 0.2);
+                immutable Color pressedGradientTop = Color(0.2, 0.2, 0.2);
+                immutable Color pressedGradientBottom = Color(0.3, 0.3, 0.3);
+
+                boundingBox.x0 = xOffset;
+                boundingBox.y0 = yOffset;
+                boundingBox.x1 = xOffset + buttonWidth;
+                boundingBox.y1 = yOffset + buttonHeight;
+
+                cr.save();
+                cr.setAntialias(cairo_antialias_t.GOOD);
+                cr.setLineWidth(1.0);
+
+                // draw the button
+                // top left corner
+                if(roundedLeftEdges) {
+                    cr.arc(xOffset + cornerRadius, yOffset + cornerRadius,
+                           cornerRadius, 180 * degrees, 270 * degrees);
+                }
+                else {
+                    cr.moveTo(xOffset, yOffset);
+                    cr.lineTo(xOffset + buttonWidth + (roundedRightEdges ? -cornerRadius : 0), yOffset);
+                }
+
+                // right corners
+                if(roundedRightEdges) {
+                    cr.arc(xOffset + buttonWidth - cornerRadius, yOffset + cornerRadius,
+                           cornerRadius, -90 * degrees, 0 * degrees);
+                    cr.arc(xOffset + buttonWidth - cornerRadius, yOffset + buttonHeight - cornerRadius,
+                           cornerRadius, 0 * degrees, 90 * degrees);
+                }
+                else {
+                    cr.lineTo(xOffset + buttonWidth, yOffset);
+                    cr.lineTo(xOffset + buttonWidth, yOffset + buttonHeight);
+                }
+
+                // bottom left corner
+                if(roundedLeftEdges) {
+                    cr.arc(xOffset + cornerRadius, yOffset + buttonHeight - cornerRadius,
+                           cornerRadius, 90 * degrees, 180 * degrees);
+                }
+                else {
+                    cr.lineTo(xOffset, yOffset + buttonHeight);
+                }
+                cr.closePath();
+
+                Pattern buttonGradient = Pattern.createLinear(0, yOffset, 0, yOffset + buttonHeight);
+                if(pressed) {
+                    buttonGradient.addColorStopRgb(0,
+                                                   pressedGradientTop.r,
+                                                   pressedGradientTop.g,
+                                                   pressedGradientTop.b);
+                    buttonGradient.addColorStopRgb(1,
+                                                   pressedGradientBottom.r,
+                                                   pressedGradientBottom.g,
+                                                   pressedGradientBottom.b);
+                }
+                else {
+                    buttonGradient.addColorStopRgb(0,
+                                                   gradientTop.r,
+                                                   gradientTop.g,
+                                                   gradientTop.b);
+                    buttonGradient.addColorStopRgb(1,
+                                                   gradientBottom.r,
+                                                   gradientBottom.g,
+                                                   gradientBottom.b);
+                }
+                cr.setSource(buttonGradient);
+                cr.fillPreserve();
+
+                cr.setSourceRgb(0.15, 0.15, 0.15);
+                cr.stroke();
+
+                // draw the button's text
+                _trackButtonLayout.setText(buttonText);
+                int widthPixels, heightPixels;
+                _trackButtonLayout.getPixelSize(widthPixels, heightPixels);
+                cr.moveTo(xOffset + buttonWidth / 2 - widthPixels / 2,
+                          yOffset + buttonHeight / 2 - heightPixels / 2);
+                cr.setSourceRgb(1.0, 1.0, 1.0);
+                PgCairo.updateLayout(cr, _trackButtonLayout);
+                PgCairo.showLayout(cr, _trackButtonLayout);
+
+                cr.restore();
+            }
+
+            BoundingBox boundingBox;
+            bool pressed;
+            bool enabled;
+
+        protected:
+            @property string buttonText() const;
+
+            immutable bool roundedLeftEdges;
+            immutable bool roundedRightEdges;
+        }
+
+        final class MuteButton : TrackButton {
+        public:
+            this() {
+                super(true, false);
+            }
+
+        protected:
+            @property override string buttonText() const { return "M"; }
+        }
+
+        final class SoloButton : TrackButton {
+        public:
+            this() {
+                super(false, true);
+            }
+
+        protected:
+            @property override string buttonText() const { return "S"; }
+        }
+
+        class TrackButtonStrip {
+        public:
+            this() {
+                muteButton = new MuteButton();
+                soloButton = new SoloButton();
+            }
+
+            void draw(ref Scoped!Context cr, pixels_t xOffset, pixels_t yOffset) {
+                muteButton.draw(cr, xOffset, yOffset);
+                soloButton.draw(cr, xOffset + TrackButton.buttonWidth, yOffset);
+            }
+
+            @property TrackButton[] trackButtons() {
+                return [muteButton, soloButton];
+            }
+
+            MuteButton muteButton;
+            SoloButton soloButton;
+        }
+
+        @property TrackButton[] trackButtons() {
+            return _trackButtonStrip.trackButtons;
+        }
 
         @property pixels_t heightPixels() const {
             return cast(pixels_t)(max(_baseHeightPixels * _verticalScaleFactor, RegionView.headerHeight));
         }
+
+        @property RegionView[] regionViews() { return _regionViews; }
 
         @property string name() const { return _name; }
         @property string name(string newName) { return (_name = newName); }
@@ -3736,9 +4001,12 @@ public:
     private:
         this(Track track, pixels_t heightPixels, string name) {
             _track = track;
+
             _baseHeightPixels = heightPixels;
             _trackColor = _newTrackColor();
             _name = name;
+
+            _trackButtonStrip = new TrackButtonStrip();
         }
 
         static Color _newTrackColor() {
@@ -3760,12 +4028,15 @@ public:
 
             return color;
         }
-
+ 
         Track _track;
-        pixels_t _baseHeightPixels;
         RegionView[] _regionViews;
+
+        pixels_t _baseHeightPixels;
         Color _trackColor;
         string _name;
+
+        TrackButtonStrip _trackButtonStrip;
     }
 
     struct Marker {
@@ -4166,6 +4437,7 @@ private:
     public:
         enum labelPadding = 5; // general padding for track labels, in pixels
         enum labelFont = "Arial 12"; // font family and size to use for track labels
+        enum buttonFont = "Arial 9"; // font family for track stub buttons; e.g., mute/solo
 
         this() {
             _trackStubWidth = defaultTrackStubWidth;
@@ -4185,8 +4457,15 @@ private:
             if(!_trackLabelLayout) {
                 PgFontDescription desc;
                 _trackLabelLayout = PgCairo.createLayout(cr);
-                desc = PgFontDescription.fromString(labelFont);
+                desc = PgFontDescription.fromString(TrackStubs.labelFont);
                 _trackLabelLayout.setFontDescription(desc);
+                desc.free();
+            }
+            if(!_trackButtonLayout) {
+                PgFontDescription desc;
+                _trackButtonLayout = PgCairo.createLayout(cr);
+                desc = PgFontDescription.fromString(TrackStubs.buttonFont);
+                _trackButtonLayout.setFontDescription(desc);
                 desc.free();
             }
 
@@ -4205,82 +4484,13 @@ private:
                 trackNumberWidth = cast(pixels_t)(labelWidth) + labelPadding * 2;
             }
 
-            // draw a separator above the first track
+            // draw track stubs
             pixels_t yOffset = _canvas.firstTrackYOffset - _verticalPixelsOffset;
-            cr.moveTo(0, yOffset);
-            cr.lineTo(_trackStubWidth, yOffset);
-            cr.setSourceRgb(0.0, 0.0, 0.0);
-            cr.stroke();
-
-            // draw the track stubs
             foreach(trackIndex, trackView; _trackViews) {
-                // compute the bounding box for this track
-                trackView.boundingBox.x0 = 0;
-                trackView.boundingBox.x1 = _trackStubWidth;
-                trackView.boundingBox.y0 = yOffset;
-                trackView.boundingBox.y1 = yOffset + trackView.heightPixels;
+                trackView.drawStub(cr, yOffset, trackIndex, trackNumberWidth);
 
-                // draw the track stub background
-                cr.rectangle(0, yOffset, _trackStubWidth, trackView.heightPixels);
-                Pattern trackGradient = Pattern.createLinear(0, yOffset, 0, yOffset + trackView.heightPixels);
-                if(trackView.selected) {
-                    trackGradient.addColorStopRgb(0, 0.4, 0.4, 0.4);
-                    trackGradient.addColorStopRgb(1, 0.2, 0.2, 0.2);
-                }
-                else {
-                    trackGradient.addColorStopRgb(0, 0.15, 0.15, 0.15);
-                    trackGradient.addColorStopRgb(1, 0.1, 0.1, 0.1);
-                }
-                cr.setSource(trackGradient);
-                cr.fill();
-
-                cr.setSourceRgb(1.0, 1.0, 1.0);
-
-                // draw the numeric track index
-                cr.save();
-                {
-                    _trackLabelLayout.setText(to!string(trackIndex + 1));
-                    int labelWidth, labelHeight;
-                    _trackLabelLayout.getPixelSize(labelWidth, labelHeight);
-                    cr.translate(trackNumberWidth / 2 - labelWidth / 2,
-                                 yOffset + trackView.heightPixels / 2 - labelHeight / 2);
-                    PgCairo.updateLayout(cr, _trackLabelLayout);
-                    PgCairo.showLayout(cr, _trackLabelLayout);
-                }
-                cr.restore();
-
-                // draw the track label
-                cr.save();
-                {
-                    _trackLabelLayout.setText(trackView.name);
-                    int labelWidth, labelHeight;
-                    _trackLabelLayout.getPixelSize(labelWidth, labelHeight);
-                    cr.translate(trackNumberWidth + labelPadding * 2,
-                                 yOffset + trackView.heightPixels / 2 - labelHeight / 2);
-                    PgCairo.updateLayout(cr, _trackLabelLayout);
-                    PgCairo.showLayout(cr, _trackLabelLayout);
-                }
-                cr.restore();
-
-                // draw separators
-                cr.save();
-                {
-                    cr.setSourceRgb(0.0, 0.0, 0.0);
-
-                    //draw vertical separator
-                    cr.moveTo(trackNumberWidth, yOffset);
-                    cr.lineTo(trackNumberWidth, yOffset + trackView.heightPixels);
-
-                    // increment yOffset for the next track
-                    yOffset += trackView.heightPixels;
-
-                    // draw bottom horizontal separator
-                    cr.moveTo(0, yOffset);
-                    cr.lineTo(_trackStubWidth, yOffset);
-
-                    cr.stroke();
-                }
-                cr.restore();
+                // increment yOffset for the next track
+                yOffset += trackView.heightPixels;
             }
 
             return true;
@@ -4292,46 +4502,72 @@ private:
                 pixels_t prevMouseY = _mouseY;
                 _mouseX = cast(typeof(_mouseX))(event.motion.x);
                 _mouseY = cast(typeof(_mouseX))(event.motion.y);
+
+                if(_trackButtonPressed !is null &&
+                   !_trackButtonPressed.boundingBox.containsPoint(_mouseX, _mouseY)) {
+                    _trackButtonPressed.pressed = false;
+                    _trackButtonPressed = null;
+                }
             }
             return true;
         }
 
         bool onButtonPress(Event event, Widget widget) {
-            if(event.type == EventType.BUTTON_PRESS && event.button.button == leftButton) {
+            if(event.type == EventType.BUTTON_PRESS) {
                 TrackView trackView = _mouseOverTrack();
-                if(trackView !is null && trackView !is _selectedTrack) {
-                    // deselect the previously selected track
-                    if(_selectedTrack !is null) {
-                        _selectedTrack.selected = false;
+
+                if(event.button.button == leftButton) {
+                    if(trackView !is null) {
+                        // detect if the mouse is over a track button
+                        _trackButtonPressed = null;
+                        foreach(trackButton; trackView.trackButtons) {
+                            if(trackButton.boundingBox.containsPoint(_mouseX, _mouseY)) {
+                                trackButton.pressed = true;
+                                _trackButtonPressed = trackButton;
+                                redraw();
+                                break;
+                            }
+                        }
+
+                        if(_trackButtonPressed is null && trackView !is _selectedTrack) {
+                            // deselect the previously selected track
+                            if(_selectedTrack !is null) {
+                                _selectedTrack.selected = false;
+                            }
+
+                            // select the new track
+                            trackView.selected = true;
+                            _selectedTrack = trackView;
+
+                            redraw();
+                        }
                     }
-
-                    // select the new track
-                    trackView.selected = true;
-                    _selectedTrack = trackView;
-
-                    redraw();
                 }
-            }
-            else if(event.type == EventType.BUTTON_PRESS && event.button.button == rightButton) {
-                auto buttonEvent = event.button;
+                else if(event.button.button == rightButton && _selectedTrack !is null) {
+                    // show a context menu on right-click
+                    auto buttonEvent = event.button;
 
-                if(_trackMenu is null) {
-                    _createTrackMenu();
+                    if(_trackMenu is null) {
+                        _createTrackMenu();
+                    }
+                    _trackMenu.popup(buttonEvent.button, buttonEvent.time);
+                    _trackMenu.showAll();
                 }
-                _trackMenu.popup(buttonEvent.button, buttonEvent.time);
-                _trackMenu.showAll();
             }
             return false;
         }
 
         bool onButtonRelease(Event event, Widget widget) {
             if(event.type == EventType.BUTTON_RELEASE && event.button.button == leftButton) {
+                if(_trackButtonPressed !is null) {
+                    _trackButtonPressed.pressed = false;
+                    _trackButtonPressed.enabled = true;
+                    _trackButtonPressed = null;
+                    redraw();
+                }
             }
             return false;
         }
-
-    private:
-        PgLayout _trackLabelLayout;
     }
 
     class Canvas : DrawingArea {
@@ -4576,7 +4812,7 @@ private:
         void drawTracks(ref Scoped!Context cr) {
             pixels_t yOffset = firstTrackYOffset - _verticalPixelsOffset;
             foreach(trackView; _trackViews) {
-                trackView.draw(cr, yOffset);
+                trackView.drawRegions(cr, yOffset);
                 yOffset += trackView.heightPixels;
             }
         }
@@ -5677,7 +5913,9 @@ private:
     bool _mixerPlaying;
     Direction _subregionDirection;
 
-    PgLayout _headerLabelLayout;
+    PgLayout _trackLabelLayout;
+    PgLayout _trackButtonLayout;
+    PgLayout _regionHeaderLabelLayout;
     PgLayout _markerLabelLayout;
     PgLayout _timestripMarkerLayout;
     float _timestripScaleFactor = 1;
@@ -5692,6 +5930,7 @@ private:
 
     TrackStubs _trackStubs;
     pixels_t _trackStubWidth;
+    TrackView.TrackButton _trackButtonPressed;
 
     Menu _arrangeMenu;
     FileChooserDialog _importFileChooser;
