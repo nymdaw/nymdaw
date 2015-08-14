@@ -169,6 +169,13 @@ def build( ctx ):
                target = "dlang_aubio" )
     use_libs.extend( [ "aubio", "dlang_aubio" ] )
 
+    # Build meters
+    dlang_meters_dir = os.path.join( deps_dir, "meters" )
+    ctx.stlib( source = ctx.path.ant_glob( os.path.join( dlang_meters_dir, "**", "*.d" ) ),
+               includes = deps_dir,
+               target = "dlang_meters" )
+    use_libs.append( "dlang_meters" )
+
     # Build the executable
     ctx.program( name = APPNAME,
                  target = APPNAME.lower(),
