@@ -2070,17 +2070,24 @@ public:
 
     const(Region[]) regions() const { return _regions; }
 
+    @property bool mute() const @nogc nothrow { return _mute; }
+    @property bool mute(bool enable) { return (_mute = enable); }
+    @property bool solo() const @nogc nothrow { return _solo; }
+    @property bool solo(bool enable) { return (_solo = enable); }
+
 package:
     void mixStereoInterleaved(nframes_t offset,
                               nframes_t bufNFrames,
                               channels_t nChannels,
                               sample_t* mixBuf) @nogc nothrow {
-        for(auto i = 0, j = 0; i < bufNFrames; i += nChannels, ++j) {
-            foreach(r; _regions) {
-                if(!r.mute()) {
-                    mixBuf[i] += r.getSampleGlobal(0, offset + j);
-                    if(r.nChannels > 1) {
-                        mixBuf[i + 1] += r.getSampleGlobal(1, offset + j);
+        if(!_mute) {
+            for(auto i = 0, j = 0; i < bufNFrames; i += nChannels, ++j) {
+                foreach(r; _regions) {
+                    if(!r.mute()) {
+                        mixBuf[i] += r.getSampleGlobal(0, offset + j);
+                        if(r.nChannels > 1) {
+                            mixBuf[i + 1] += r.getSampleGlobal(1, offset + j);
+                        }
                     }
                 }
             }
@@ -2091,12 +2098,14 @@ package:
                                  nframes_t bufNFrames,
                                  sample_t* mixBuf1,
                                  sample_t* mixBuf2) @nogc nothrow {
-        for(auto i = 0; i < bufNFrames; ++i) {
-            foreach(r; _regions) {
-                if(!r.mute()) {
-                    mixBuf1[i] += r.getSampleGlobal(0, offset + i);
-                    if(r.nChannels > 1) {
-                        mixBuf2[i] += r.getSampleGlobal(1, offset + i);
+        if(!_mute) {
+            for(auto i = 0; i < bufNFrames; ++i) {
+                foreach(r; _regions) {
+                    if(!r.mute()) {
+                        mixBuf1[i] += r.getSampleGlobal(0, offset + i);
+                        if(r.nChannels > 1) {
+                            mixBuf2[i] += r.getSampleGlobal(1, offset + i);
+                        }
                     }
                 }
             }
@@ -2107,6 +2116,9 @@ package:
 
 private:
     Region[] _regions;
+
+    bool _mute;
+    bool _solo;
 }
 
 abstract class Mixer {
@@ -2172,6 +2184,9 @@ public:
         GC.enable(); // enable garbage collection while paused
     }
 
+    @property final bool soloTrack() const @nogc nothrow { return _soloTrack; }
+    @property final bool soloTrack(bool enable) @nogc nothrow { return (_soloTrack = enable); }
+
     @property final bool looping() const @nogc nothrow {
         return _looping;
     }
@@ -2191,8 +2206,17 @@ public:
 
         // mix all tracks down to stereo
         if(!_transportFinished() && _playing) {
-            foreach(t; _tracks) {
-                t.mixStereoInterleaved(_transportOffset, bufNFrames, nChannels, mixBuf);
+            if(_soloTrack) {
+                foreach(t; _tracks) {
+                    if(t.solo) {
+                        t.mixStereoInterleaved(_transportOffset, bufNFrames, nChannels, mixBuf);
+                    }
+                }
+            }
+            else {
+                foreach(t; _tracks) {
+                    t.mixStereoInterleaved(_transportOffset, bufNFrames, nChannels, mixBuf);
+                }
             }
 
             _transportOffset += bufNFrames / nChannels;
@@ -2211,6 +2235,13 @@ public:
 
         // mix all tracks down to stereo
         if(!_transportFinished() && _playing) {
+            if(_soloTrack) {
+                foreach(t; _tracks) {
+                    if(t.solo) {
+                        t.mixStereoNonInterleaved(_transportOffset, bufNFrames, mixBuf1, mixBuf2);
+                    }
+                }
+            }
             foreach(t; _tracks) {
                 t.mixStereoNonInterleaved(_transportOffset, bufNFrames, mixBuf1, mixBuf2);
             }
@@ -2245,6 +2276,7 @@ private:
     nframes_t _transportOffset;
     bool _playing;
     bool _looping;
+    bool _soloTrack;
     nframes_t _loopStart;
     nframes_t _loopEnd;
 }
@@ -2418,6 +2450,26 @@ struct Color {
     double r = 0;
     double g = 0;
     double b = 0;
+
+    template opBinary(T) {
+        Color opBinary(string op)(T rhs) if(isNumeric!T) {
+            static if(op == "+" || op == "-" || op == "*" || op == "/") {
+                return mixin("Color(r " ~ op ~ " rhs, g " ~ op ~ " rhs.g, b " ~ op ~" rhs.b)");
+            }
+            else {
+                static assert(0, "Operator " ~ op ~ " not implemented");
+            }
+        }
+    }
+
+    Color opBinary(string op)(Color rhs) {
+        static if(op == "+" || op == "-" || op == "*" || op == "/") {
+            return mixin("Color(r " ~ op ~ " rhs.r, g " ~ op ~ " rhs.g, b " ~ op ~ " rhs.b)");
+        }
+        else {
+            static assert(0, "Operator " ~ op ~ " not implemented");
+        }
+    }
 }
 
 class ErrorDialog : MessageDialog {
@@ -3892,26 +3944,20 @@ public:
                 cr.closePath();
 
                 Pattern buttonGradient = Pattern.createLinear(0, yOffset, 0, yOffset + buttonHeight);
-                if(pressed) {
-                    buttonGradient.addColorStopRgb(0,
-                                                   pressedGradientTop.r,
-                                                   pressedGradientTop.g,
-                                                   pressedGradientTop.b);
-                    buttonGradient.addColorStopRgb(1,
-                                                   pressedGradientBottom.r,
-                                                   pressedGradientBottom.g,
-                                                   pressedGradientBottom.b);
+                Color processedGradientTop = (pressed || enabled) ? pressedGradientTop : gradientTop;
+                Color processedGradientBottom = (pressed || enabled) ? pressedGradientBottom : gradientBottom;
+                if(pressed || enabled) {
+                    processedGradientTop = processedGradientTop * enabledColor;
+                    processedGradientBottom = processedGradientBottom * enabledColor;
                 }
-                else {
-                    buttonGradient.addColorStopRgb(0,
-                                                   gradientTop.r,
-                                                   gradientTop.g,
-                                                   gradientTop.b);
-                    buttonGradient.addColorStopRgb(1,
-                                                   gradientBottom.r,
-                                                   gradientBottom.g,
-                                                   gradientBottom.b);
-                }
+                buttonGradient.addColorStopRgb(0,
+                                               processedGradientTop.r,
+                                               processedGradientTop.g,
+                                               processedGradientTop.b);
+                buttonGradient.addColorStopRgb(1,
+                                               processedGradientBottom.r,
+                                               processedGradientBottom.g,
+                                               processedGradientBottom.b);
                 cr.setSource(buttonGradient);
                 cr.fillPreserve();
 
@@ -3933,13 +3979,25 @@ public:
 
             BoundingBox boundingBox;
             bool pressed;
-            bool enabled;
+            @property bool enabled() const { return _enabled; }
+            @property bool enabled(bool setEnabled) {
+                _enabled = setEnabled;
+                onEnabled(setEnabled);
+                return _enabled;
+            }
 
         protected:
+            void onEnabled(bool enabled) {
+            }
+
             @property string buttonText() const;
+            @property Color enabledColor() const { return Color(1.0, 1.0, 1.0); }
 
             immutable bool roundedLeftEdges;
             immutable bool roundedRightEdges;
+
+        private:
+            bool _enabled;
         }
 
         final class MuteButton : TrackButton {
@@ -3949,7 +4007,12 @@ public:
             }
 
         protected:
+            override void onEnabled(bool enabled) {
+                _track.mute = enabled;
+            }
+
             @property override string buttonText() const { return "M"; }
+            @property override Color enabledColor() const { return Color(0.0, 1.0, 1.0); }
         }
 
         final class SoloButton : TrackButton {
@@ -3959,7 +4022,23 @@ public:
             }
 
         protected:
+            override void onEnabled(bool enabled) {
+                _track.solo = enabled;
+                if(enabled) {
+                    _mixer.soloTrack = true;
+                }
+                else {
+                    foreach(trackView; _trackViews) {
+                        if(trackView.solo) {
+                            return;
+                        }
+                    }
+                    _mixer.soloTrack = false;
+                }
+            }
+
             @property override string buttonText() const { return "S"; }
+            @property override Color enabledColor() const { return Color(1.0, 1.0, 0.0); }
         }
 
         class TrackButtonStrip {
@@ -3985,6 +4064,9 @@ public:
         @property TrackButton[] trackButtons() {
             return _trackButtonStrip.trackButtons;
         }
+
+        @property bool mute() const { return _track.mute; }
+        @property bool solo() const { return _track.solo; }
 
         @property pixels_t heightPixels() const {
             return cast(pixels_t)(max(_baseHeightPixels * _verticalScaleFactor, RegionView.headerHeight));
@@ -4502,12 +4584,6 @@ private:
                 pixels_t prevMouseY = _mouseY;
                 _mouseX = cast(typeof(_mouseX))(event.motion.x);
                 _mouseY = cast(typeof(_mouseX))(event.motion.y);
-
-                if(_trackButtonPressed !is null &&
-                   !_trackButtonPressed.boundingBox.containsPoint(_mouseX, _mouseY)) {
-                    _trackButtonPressed.pressed = false;
-                    _trackButtonPressed = null;
-                }
             }
             return true;
         }
@@ -4560,8 +4636,14 @@ private:
         bool onButtonRelease(Event event, Widget widget) {
             if(event.type == EventType.BUTTON_RELEASE && event.button.button == leftButton) {
                 if(_trackButtonPressed !is null) {
-                    _trackButtonPressed.pressed = false;
-                    _trackButtonPressed.enabled = true;
+                    if(_trackButtonPressed.boundingBox.containsPoint(_mouseX, _mouseY)) {
+                        // toggle the pressed track button
+                        _trackButtonPressed.pressed = false;
+                        _trackButtonPressed.enabled = !_trackButtonPressed.enabled;
+                    }
+                    else {
+                        _trackButtonPressed.pressed = false;
+                    }
                     _trackButtonPressed = null;
                     redraw();
                 }
