@@ -31,6 +31,7 @@ import sndfile;
 import samplerate;
 import aubio;
 import rubberband;
+import meters;
 
 import gtk.Window;
 import gtk.MainWindow;
@@ -2494,6 +2495,7 @@ public:
     enum defaultSamplesPerPixel = 500; // default zoom level, in samples per pixel
     enum defaultTrackHeightPixels = 200; // default height in pixels of new tracks in the arrange view
     enum defaultTrackStubWidth = 200; // default width in pixels for all track stubs
+    enum defaultChannelStripWidth = 100; // default width in pixels for the channel strip
     enum refreshRate = 50; // rate in hertz at which to redraw the view when the transport is playing
     enum mouseOverThreshold = 2; // threshold number of pixels in one direction for mouse over events
 
@@ -2532,6 +2534,7 @@ public:
         _arrangeStateHistory = StateHistory!ArrangeState(ArrangeState());
 
         _canvas = new Canvas();
+        _channelStrip = new ChannelStrip();
         _trackStubs = new TrackStubs();
         _hScroll = new ArrangeHScroll();
         _vScroll = new ArrangeVScroll();
@@ -2541,10 +2544,14 @@ public:
         vBox.packStart(_canvas, true, true, 0);
         vBox.packEnd(_hScroll, false, false, 0);
 
+        auto channelStripBox = new Box(Orientation.VERTICAL, 0);
+        channelStripBox.packStart(_channelStrip, true, true, 0);
+
         auto trackStubsBox = new Box(Orientation.VERTICAL, 0);
         trackStubsBox.packStart(_trackStubs, true, true, 0);
 
         auto hBox = new Box(Orientation.HORIZONTAL, 0);
+        hBox.packStart(channelStripBox, false, false, 0);
         hBox.packStart(trackStubsBox, false, false, 0);
         hBox.packEnd(vBox, true, true, 0);
         packStart(hBox, true, true, 0);
@@ -4510,6 +4517,30 @@ private:
         return null;
     }
 
+    class ChannelStrip : DrawingArea {
+    public:
+        this() {
+            _channelStripWidth = defaultChannelStripWidth;
+            setSizeRequest(_channelStripWidth, 0);
+
+            addOnDraw(&drawCallback);
+        }
+
+        void redraw() {
+            queueDrawArea(0, 0, getWindow().getWidth(), getWindow().getHeight());
+        }
+
+        bool drawCallback(Scoped!Context cr, Widget widget) {
+            cr.setSourceRgb(0.0, 0.0, 0.0);
+            cr.paint();
+
+            return true;
+        }
+
+    private:
+        pixels_t _channelStripWidth;
+    }
+
     class TrackStubs : DrawingArea {
     public:
         enum labelPadding = 5; // general padding for track labels, in pixels
@@ -4648,7 +4679,7 @@ private:
     }
 
     class Canvas : DrawingArea {
-        enum timestripHeightPixels = 40;
+        enum timeStripHeightPixels = 40;
 
         enum markerHeightPixels = 20;
         enum markerHeadWidthPixels = 16;
@@ -4676,7 +4707,7 @@ private:
         }
 
         @property pixels_t markerYOffset() {
-            return timestripHeightPixels;
+            return timeStripHeightPixels;
         }
 
         @property pixels_t firstTrackYOffset() {
@@ -4705,7 +4736,7 @@ private:
                 drawBackground(cr);
                 drawTracks(cr);
                 drawMarkers(cr);
-                drawTimestrip(cr);
+                drawTimeStrip(cr);
                 drawTransport(cr);
                 drawSelectBox(cr);
             }
@@ -4717,7 +4748,7 @@ private:
             cr.save();
 
             nframes_t secondsDistanceSamples = _mixer.sampleRate;
-            nframes_t tickDistanceSamples = cast(nframes_t)(secondsDistanceSamples * _timestripScaleFactor);
+            nframes_t tickDistanceSamples = cast(nframes_t)(secondsDistanceSamples * _timeStripScaleFactor);
             pixels_t tickDistancePixels = tickDistanceSamples / samplesPerPixel;
 
             // draw all currently visible arrange ticks
@@ -4747,25 +4778,25 @@ private:
             cr.restore();            
         }
 
-        void drawTimestrip(ref Scoped!Context cr) {
+        void drawTimeStrip(ref Scoped!Context cr) {
             enum primaryTickHeightFactor = 0.5;
             enum secondaryTickHeightFactor = 0.35;
             enum tertiaryTickHeightFactor = 0.2;
 
-            enum timestripBackgroundPadding = 2;
+            enum timeStripBackgroundPadding = 2;
 
             cr.save();
 
-            // draw a black background for the timestrip
-            cr.rectangle(0, 0, viewWidthPixels, timestripHeightPixels - timestripBackgroundPadding);
+            // draw a black background for the timeStrip
+            cr.rectangle(0, 0, viewWidthPixels, timeStripHeightPixels - timeStripBackgroundPadding);
             cr.setSourceRgb(0.0, 0.0, 0.0);
             cr.fill();
 
-            if(!_timestripMarkerLayout) {
+            if(!_timeStripMarkerLayout) {
                 PgFontDescription desc;
-                _timestripMarkerLayout = PgCairo.createLayout(cr);
+                _timeStripMarkerLayout = PgCairo.createLayout(cr);
                 desc = PgFontDescription.fromString(timeMarkerFont);
-                _timestripMarkerLayout.setFontDescription(desc);
+                _timeStripMarkerLayout.setFontDescription(desc);
                 desc.free();
             }
 
@@ -4776,13 +4807,13 @@ private:
             pixels_t secondsDistancePixels = secondsDistanceSamples / samplesPerPixel;
 
             void autoScale() {
-                nframes_t tickDistanceSamples = cast(nframes_t)(secondsDistanceSamples * _timestripScaleFactor);
+                nframes_t tickDistanceSamples = cast(nframes_t)(secondsDistanceSamples * _timeStripScaleFactor);
                 pixels_t tickDistancePixels = tickDistanceSamples / samplesPerPixel;
                 if(tickDistancePixels > 200) {
-                    _timestripScaleFactor *= 0.5f;
+                    _timeStripScaleFactor *= 0.5f;
                 }
                 else if(tickDistancePixels < 100) {
-                    _timestripScaleFactor *= 2.0f;
+                    _timeStripScaleFactor *= 2.0f;
                 }
             }
 
@@ -4790,25 +4821,25 @@ private:
                 autoScale();
             }
             else if(secondsDistancePixels > 60) {
-                _timestripScaleFactor = 1;
+                _timeStripScaleFactor = 1;
             }
             else if(secondsDistancePixels > 25) {
-                _timestripScaleFactor = 2;
+                _timeStripScaleFactor = 2;
             }
             else if(secondsDistancePixels > 15) {
-                _timestripScaleFactor = 5;
+                _timeStripScaleFactor = 5;
             }
             else if(secondsDistancePixels > 10) {
-                _timestripScaleFactor = 10;
+                _timeStripScaleFactor = 10;
             }
             else if(secondsDistancePixels > 3) {
-                _timestripScaleFactor = 15;
+                _timeStripScaleFactor = 15;
             }
             else {
                 autoScale();
             }
 
-            nframes_t tickDistanceSamples = cast(nframes_t)(secondsDistanceSamples * _timestripScaleFactor);
+            nframes_t tickDistanceSamples = cast(nframes_t)(secondsDistanceSamples * _timeStripScaleFactor);
             pixels_t tickDistancePixels = tickDistanceSamples / samplesPerPixel;
 
             auto decDigits = 1;
@@ -4837,19 +4868,19 @@ private:
                     cast(pixels_t)(((i >= viewOffset) ?
                                     cast(long)(i - viewOffset) : -cast(long)(viewOffset - i)) / samplesPerPixel);
 
-                // draw primary timestrip tick
+                // draw primary timeStrip tick
                 cr.moveTo(xOffset, 0);
-                cr.lineTo(xOffset, timestripHeightPixels * primaryTickHeightFactor);
+                cr.lineTo(xOffset, timeStripHeightPixels * primaryTickHeightFactor);
 
-                // draw one secondary timestrip tick
+                // draw one secondary timeStrip tick
                 cr.moveTo(xOffset + tickDistancePixels / 2, 0);
-                cr.lineTo(xOffset + tickDistancePixels / 2, timestripHeightPixels * secondaryTickHeightFactor);
+                cr.lineTo(xOffset + tickDistancePixels / 2, timeStripHeightPixels * secondaryTickHeightFactor);
 
-                // draw two tertiary timestrip ticks
+                // draw two tertiary timeStrip ticks
                 cr.moveTo(xOffset + tickDistancePixels / 4, 0);
-                cr.lineTo(xOffset + tickDistancePixels / 4, timestripHeightPixels * tertiaryTickHeightFactor);
+                cr.lineTo(xOffset + tickDistancePixels / 4, timeStripHeightPixels * tertiaryTickHeightFactor);
                 cr.moveTo(xOffset + (tickDistancePixels / 4) * 3, 0);
-                cr.lineTo(xOffset + (tickDistancePixels / 4) * 3, timestripHeightPixels * tertiaryTickHeightFactor);
+                cr.lineTo(xOffset + (tickDistancePixels / 4) * 3, timeStripHeightPixels * tertiaryTickHeightFactor);
 
                 pixels_t timeMarkerXOffset;
                 auto timeString = appender!string();
@@ -4870,17 +4901,17 @@ private:
                     }
 
                     int widthPixels, heightPixels;
-                    _timestripMarkerLayout.getPixelSize(widthPixels, heightPixels);
+                    _timeStripMarkerLayout.getPixelSize(widthPixels, heightPixels);
                     timeMarkerXOffset = xOffset - widthPixels / 2;
                 }
 
                 cr.setSourceRgb(1.0, 1.0, 1.0);
                 cr.stroke();
 
-                _timestripMarkerLayout.setText(timeString.data);
-                cr.moveTo(timeMarkerXOffset, timestripHeightPixels * 0.5);
-                PgCairo.updateLayout(cr, _timestripMarkerLayout);
-                PgCairo.showLayout(cr, _timestripMarkerLayout);
+                _timeStripMarkerLayout.setText(timeString.data);
+                cr.moveTo(timeMarkerXOffset, timeStripHeightPixels * 0.5);
+                PgCairo.updateLayout(cr, _timeStripMarkerLayout);
+                PgCairo.showLayout(cr, _timeStripMarkerLayout);
             }
 
             cr.restore();
@@ -5193,8 +5224,8 @@ private:
 
                 // if the mouse was not over a marker
                 if(_action != Action.moveMarker) {
-                    // if the mouse is over the timestrip, move the transport
-                    if(_mouseY >= 0 && _mouseY < timestripHeightPixels + markerHeightPixels) {
+                    // if the mouse is over the time strip, move the transport
+                    if(_mouseY >= 0 && _mouseY < timeStripHeightPixels + markerHeightPixels) {
                         _setAction(Action.moveTransport);
                     }
                     else {
@@ -6045,20 +6076,22 @@ private:
     PgLayout _trackButtonLayout;
     PgLayout _regionHeaderLabelLayout;
     PgLayout _markerLabelLayout;
-    PgLayout _timestripMarkerLayout;
-    float _timestripScaleFactor = 1;
+    PgLayout _timeStripMarkerLayout;
+    float _timeStripScaleFactor = 1;
 
     nframes_t _samplesPerPixel;
     nframes_t _viewOffset;
+
+    ChannelStrip _channelStrip;
+
+    TrackStubs _trackStubs;
+    pixels_t _trackStubWidth;
+    TrackView.TrackButton _trackButtonPressed;
 
     Canvas _canvas;
     ArrangeHScroll _hScroll;
     ArrangeVScroll _vScroll;
     Timeout _refreshTimeout;
-
-    TrackStubs _trackStubs;
-    pixels_t _trackStubWidth;
-    TrackView.TrackButton _trackButtonPressed;
 
     Menu _arrangeMenu;
     FileChooserDialog _importFileChooser;
