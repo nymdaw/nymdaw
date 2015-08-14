@@ -3898,8 +3898,8 @@ public:
 
                 immutable Color gradientTop = Color(0.5, 0.5, 0.5);
                 immutable Color gradientBottom = Color(0.2, 0.2, 0.2);
-                immutable Color pressedGradientTop = Color(0.2, 0.2, 0.2);
-                immutable Color pressedGradientBottom = Color(0.3, 0.3, 0.3);
+                immutable Color pressedGradientTop = Color(0.4, 0.4, 0.4);
+                immutable Color pressedGradientBottom = Color(0.6, 0.6, 0.6);
 
                 boundingBox.x0 = xOffset;
                 boundingBox.y0 = yOffset;
@@ -4456,23 +4456,6 @@ private:
     }
 
     void _setAction(Action action) {
-        switch(action) {
-            case Action.selectRegion:
-            case Action.moveRegion:
-                _earliestSelectedRegion = null;
-                nframes_t minOffset = nframes_t.max;
-                foreach(regionView; _selectedRegions) {
-                    regionView.selectedOffset = regionView.offset;
-                    if(regionView.offset < minOffset) {
-                        minOffset = regionView.offset;
-                        _earliestSelectedRegion = regionView;
-                    }
-                }
-                break;
-
-            default:
-                break;
-        }
         _action = action;
         _setCursor();
     }
@@ -4503,6 +4486,18 @@ private:
 
         _mode = mode;
         _canvas.redraw();
+    }
+
+    void _computeEarliestSelectedRegion() {
+        _earliestSelectedRegion = null;
+        nframes_t minOffset = nframes_t.max;
+        foreach(regionView; _selectedRegions) {
+            regionView.selectedOffset = regionView.offset;
+            if(regionView.offset < minOffset) {
+                minOffset = regionView.offset;
+                _earliestSelectedRegion = regionView;
+            }
+        }
     }
 
     TrackView _mouseOverTrack() {
@@ -5085,8 +5080,10 @@ private:
 
                 switch(_action) {
                     case Action.selectRegion:
-                        _setAction(Action.moveRegion);
-                        redraw();
+                        if(!_selectedRegions.empty) {
+                            _setAction(Action.moveRegion);
+                            redraw();
+                        }
                         break;
 
                     case Action.shrinkRegionStart:
@@ -5239,6 +5236,7 @@ private:
                                             mouseOverRegionStart.selected = true;
                                             _selectedRegionsApp.clear();
                                             _selectedRegionsApp.put(mouseOverRegionStart);
+                                            _earliestSelectedRegion = mouseOverRegionStart;
 
                                             // begin shrinking the start of the region
                                             _shrinkRegion = mouseOverRegionStart;
@@ -5250,18 +5248,20 @@ private:
                                             mouseOverRegionEnd.selected = true;
                                             _selectedRegionsApp.clear();
                                             _selectedRegionsApp.put(mouseOverRegionEnd);
+                                            _earliestSelectedRegion = mouseOverRegionEnd;
 
                                             // begin shrinking the end of the region
                                             _shrinkRegion = mouseOverRegionEnd;
                                             _setAction(Action.shrinkRegionEnd);
                                             newAction = true;
                                         }
-                                    }
-
-                                    if(!newAction && mouseOverRegion !is null && mouseOverRegion.selected &&
-                                       !shiftPressed) {
-                                        _setAction(Action.moveRegion);
-                                        newAction = true;
+                                        else if(mouseOverRegion !is null &&
+                                                mouseOverRegion.selected &&
+                                                !shiftPressed) {
+                                            _computeEarliestSelectedRegion();
+                                            _setAction(Action.selectRegion);
+                                            newAction = true;
+                                        }
                                     }
                                 }
 
@@ -5282,7 +5282,6 @@ private:
                                            _mouseY < regionView.boundingBox.y1) {
                                             // if the region is already selected and shift is pressed, deselect it
                                             regionView.selected = !(regionView.selected && shiftPressed);
-                                            _setAction(Action.selectRegion);
                                             newAction = true;
                                             break;
                                         }
@@ -5292,6 +5291,8 @@ private:
                                             _selectedRegionsApp.put(regionView);
                                         }
                                     }
+                                    _computeEarliestSelectedRegion();
+                                    _setAction(Action.selectRegion);
 
                                     appendArrangeState(currentArrangeState());
                                 }
@@ -5425,6 +5426,7 @@ private:
                                     _selectedRegionsApp.put(regionView);
                                 }
                             }
+                            _computeEarliestSelectedRegion();
 
                             if(regionFound) {
                                 appendArrangeState(currentArrangeState());
@@ -5687,14 +5689,16 @@ private:
                         redraw();
                         break;
 
-                    case GdkKeysyms.GDK_Aring:
+                    // Shift + Alt + <
+                    case GdkKeysyms.GDK_macron:
                         // move the transport and view to the beginning of the project
                         _mixer.transportOffset = 0;
                         _viewOffset = viewMinSamples;
                         redraw();
                         break;
 
-                    case GdkKeysyms.GDK_acute:
+                    // Shift + Alt + >
+                    case GdkKeysyms.GDK_breve:
                         // move the transport to end of the project and center the view on the transport
                         _mixer.transportOffset = _mixer.lastFrame;
                         if(viewMaxSamples >= (viewWidthSamples / 2) * 3) {
@@ -5703,6 +5707,7 @@ private:
                         redraw();
                         break;
 
+                    // Alt + f
                     case GdkKeysyms.GDK_function:
                         // seek the transport forward (large increment)
                         _mixer.transportOffset = min(_mixer.lastFrame,
@@ -5710,6 +5715,7 @@ private:
                         redraw();
                         break;
 
+                    // Alt + b
                     case GdkKeysyms.GDK_integral:
                         // seek the transport backward (large increment)
                         _mixer.transportOffset = _mixer.transportOffset > largeSeekIncrement ?
@@ -5788,6 +5794,45 @@ private:
                             // seek the transport forward (small increment)
                             _mixer.transportOffset = min(_mixer.lastFrame,
                                                          _mixer.transportOffset + smallSeekIncrement);
+                            redraw();
+                        }
+                        break;
+
+                    case GdkKeysyms.GDK_h:
+                        if(controlPressed) {
+                            if(_mode == Mode.arrange) {
+                                if(_selectedRegions.length == _regionViews.length) {
+                                    // deselect all regions
+                                    foreach(regionView; _selectedRegions) {
+                                        regionView.selected = false;
+                                    }
+                                    _earliestSelectedRegion = null;
+                                    _selectedRegionsApp.clear();
+                                }
+                                else {
+                                    // select all regions
+                                    _selectedRegionsApp.clear();
+                                    foreach(regionView; _regionViews) {
+                                        regionView.selected = true;
+                                        _selectedRegionsApp.put(regionView);
+                                    }
+                                    _computeEarliestSelectedRegion();
+                                }
+                            }
+                            else if(_mode == Mode.editRegion && _editRegion !is null) {
+                                if(_editRegion.subregionSelected &&
+                                   _editRegion.subregionStartFrame == 0 &&
+                                   _editRegion.subregionEndFrame == _editRegion.nframes) {
+                                    // deselect the entire region
+                                    _editRegion.subregionSelected = false;
+                                }
+                                else {
+                                    // select the entire region
+                                    _editRegion.subregionSelected = true;
+                                    _editRegion.subregionStartFrame = 0;
+                                    _editRegion.subregionEndFrame = _editRegion.nframes;
+                                }
+                            }
                             redraw();
                         }
                         break;
@@ -5945,6 +5990,7 @@ private:
             regionViewState.regionView.sliceStartFrame = regionViewState.sliceStartFrame;
             regionViewState.regionView.sliceEndFrame = regionViewState.sliceEndFrame;
             _selectedRegionsApp.put(regionViewState.regionView);
+            _computeEarliestSelectedRegion();
         }
     }
 
