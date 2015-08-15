@@ -19,7 +19,7 @@ module meters.JmeterDSP;
 
 abstract class JmeterDSP {
 public:
-    void process(float* p, int n);
-    float read();
-    void reset() {}
+    void process(float* p, int n) @nogc nothrow;
+    float read() @nogc nothrow;
+    void reset() @nogc nothrow {}
 }

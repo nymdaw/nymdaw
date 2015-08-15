@@ -24,7 +24,7 @@ import core.stdc.stdlib;
 import core.stdc.stdio;
 import core.stdc.string;
 
-private uint gcd(uint a, uint b) {
+private uint gcd(uint a, uint b) @nogc nothrow {
     if(a == 0) return b;
     if(b == 0) return a;
     while(true) {
@@ -41,7 +41,7 @@ private uint gcd(uint a, uint b) {
     }    
 }
 
-private double sinc(double x) {
+private double sinc(double x) @nogc nothrow {
     x = fabs(x);
     if(x < 1e-6) return 1.0;
     x *= PI;
@@ -49,7 +49,7 @@ private double sinc(double x) {
 }
 
 
-private double wind(double x) {
+private double wind(double x) @nogc nothrow {
     x = fabs (x);
     if(x >= 1.0) return 0.0f;
     x *= PI;
@@ -69,6 +69,10 @@ public:
     }
 
 private:
+    static this() {
+        _mutex = new ResamplerMutex();
+    }
+
     this(double fr, uint hl, uint np) {
         _fr = fr;
         _hl = hl;
@@ -151,7 +155,7 @@ private:
 
     static ResamplerTable _list;
 
-    class ResamplerMutex {}
+    static class ResamplerMutex {}
     static ResamplerMutex _mutex;
 }
 
@@ -228,7 +232,7 @@ public:
         reset();
     }
 
-    int reset() {
+    int reset() @nogc nothrow {
         if(!_table) return 1;
 
         inp_count = 0;
@@ -246,19 +250,19 @@ public:
         return 1;
     }
 
-    int nchan() const { return _nchan; }
+    int nchan() const @nogc nothrow { return _nchan; }
 
-    int inpsize() const {
+    int inpsize() const @nogc nothrow {
         if(!_table) return 0;
         return 2 * _table._hl;
     }
 
-    double inpdist() const {
+    double inpdist() const @nogc nothrow {
         if(!_table) return 0;
         return cast(int)(_table._hl + 1 - _nread) - cast(double)(_phase) / _table._np;
     }
 
-    int process() {
+    int process() @nogc nothrow {
         uint hl, ph, np, dp, index, nr, nz, i, n, c;
         float* p1, p2;
 

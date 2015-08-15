@@ -92,6 +92,8 @@ else {
     alias sample_t = float;
 }
 alias channels_t = uint;
+enum maxBufferLength = 8192;
+
 alias ResizeDelegate = bool delegate(nframes_t);
 
 alias pixels_t = int;
@@ -2076,22 +2078,46 @@ public:
     @property bool solo() const @nogc nothrow { return _solo; }
     @property bool solo(bool enable) { return (_solo = enable); }
 
+    @property ref const(sample_t[2]) level() const { return _level; }
+    @property ref const(sample_t[2]) peakMax() const { return _peakMax; }
+
 package:
+    this(nframes_t sampleRate) {
+        _sampleRate = sampleRate;
+
+        _meter[0] = new TruePeakDSP();
+        _meter[1] = new TruePeakDSP();
+        _meter[0].init(_sampleRate);
+        _meter[1].init(_sampleRate);
+
+        _rlGain = pow(10.0f, 0.05f * 18.0f);
+    }
+
     void mixStereoInterleaved(nframes_t offset,
                               nframes_t bufNFrames,
                               channels_t nChannels,
                               sample_t* mixBuf) @nogc nothrow {
         if(!_mute) {
+            sample_t tempSample;
             for(auto i = 0, j = 0; i < bufNFrames; i += nChannels, ++j) {
                 foreach(r; _regions) {
                     if(!r.mute()) {
-                        mixBuf[i] += r.getSampleGlobal(0, offset + j);
+                        tempSample = r.getSampleGlobal(0, offset + j);
+                        mixBuf[i] += tempSample;
+                        _buffer[0][j] = tempSample;
                         if(r.nChannels > 1) {
-                            mixBuf[i + 1] += r.getSampleGlobal(1, offset + j);
+                            tempSample = r.getSampleGlobal(1, offset + j);
+                            mixBuf[i + 1] += tempSample;
+                            _buffer[1][j] = tempSample;
+                        }
+                        else {
+                            _buffer[1][j] = 0;
                         }
                     }
                 }
             }
+            _processMeter(0, _buffer[0].ptr, bufNFrames);
+            _processMeter(1, _buffer[1].ptr, bufNFrames);
         }
     }
 
@@ -2100,26 +2126,54 @@ package:
                                  sample_t* mixBuf1,
                                  sample_t* mixBuf2) @nogc nothrow {
         if(!_mute) {
+            sample_t tempSample;
             for(auto i = 0; i < bufNFrames; ++i) {
                 foreach(r; _regions) {
                     if(!r.mute()) {
-                        mixBuf1[i] += r.getSampleGlobal(0, offset + i);
+                        tempSample = r.getSampleGlobal(0, offset + i);
+                        mixBuf1[i] += tempSample;
+                        _buffer[0][i] = tempSample;
                         if(r.nChannels > 1) {
-                            mixBuf2[i] += r.getSampleGlobal(1, offset + i);
+                            tempSample = r.getSampleGlobal(1, offset + i);
+                            mixBuf2[i] += tempSample;
+                            _buffer[1][i] = tempSample;
+                        }
+                        else {
+                            _buffer[1][i] = 0;
                         }
                     }
                 }
             }
+            _processMeter(0, _buffer[0].ptr, bufNFrames);
+            _processMeter(1, _buffer[1].ptr, bufNFrames);
         }
     }
 
     ResizeDelegate resizeDelegate;
 
 private:
+    void _processMeter(channels_t channelIndex, sample_t* buffer, nframes_t nframes) @nogc nothrow {
+        _meter[channelIndex].process(buffer, nframes);
+
+        float m, p;
+        _meter[channelIndex].read(m, p);
+        _level[channelIndex] = _rlGain * m;
+        if(_peakMax[channelIndex] < _rlGain * p) {
+            _peakMax[channelIndex] = _rlGain * p;
+        }
+    }
+
     Region[] _regions;
 
     bool _mute;
     bool _solo;
+
+    nframes_t _sampleRate;
+    sample_t[maxBufferLength][2] _buffer;
+    TruePeakDSP[2] _meter;
+    const(sample_t) _rlGain;
+    sample_t[2] _peakMax = 0;
+    sample_t[2] _level = 0;
 }
 
 abstract class Mixer {
@@ -2135,7 +2189,7 @@ public:
     }
 
     final Track createTrack() {
-        Track track = new Track();
+        Track track = new Track(sampleRate);
         track.resizeDelegate = &resizeIfNecessary;
         _tracks ~= track;
         return track;
@@ -4078,6 +4132,9 @@ public:
         @property bool mute() const { return _track.mute; }
         @property bool solo() const { return _track.solo; }
 
+        @property ref const(sample_t[2]) level() const { return _track.level; }
+        @property ref const(sample_t[2]) peakMax() const { return _track.peakMax; }
+
         bool validZoom(float verticalScaleFactor) {
             return cast(pixels_t)(max(_baseHeightPixels * verticalScaleFactor, RegionView.headerHeight)) >=
                 minHeightPixels;
@@ -4550,8 +4607,29 @@ private:
         }
 
         bool drawCallback(Scoped!Context cr, Widget widget) {
+            if(_channelStripRefresh is null) {
+                _channelStripRefresh = new Timeout(cast(uint)(1.0 / refreshRate * 1000), &onRefresh, false);
+            }
+
             cr.setSourceRgb(0.0, 0.0, 0.0);
             cr.paint();
+
+            if(_selectedTrack !is null) {
+                immutable pixels_t windowWidth = cast(pixels_t)(getWindow().getWidth());
+                immutable pixels_t windowHeight = cast(pixels_t)(getWindow().getHeight());
+
+                cr.rectangle(10, windowHeight - 200, 40, windowHeight);
+                cr.setSourceRgb(0.0, 1.0, 0.0);
+                cr.fill();
+            }
+
+            return true;
+        }
+
+        bool onRefresh() {
+            if(_mixer.playing) {
+                redraw();
+            }
 
             return true;
         }
@@ -4742,8 +4820,8 @@ private:
         }
 
         bool drawCallback(Scoped!Context cr, Widget widget) {
-            if(_refreshTimeout is null) {
-                _refreshTimeout = new Timeout(cast(uint)(1.0 / refreshRate * 1000), &onRefresh, false);
+            if(_canvasRefresh is null) {
+                _canvasRefresh = new Timeout(cast(uint)(1.0 / refreshRate * 1000), &onRefresh, false);
             }
 
             cr.setOperator(cairo_operator_t.SOURCE);
@@ -6102,6 +6180,7 @@ private:
     nframes_t _viewOffset;
 
     ChannelStrip _channelStrip;
+    Timeout _channelStripRefresh;
 
     TrackStubs _trackStubs;
     pixels_t _trackStubWidth;
@@ -6110,7 +6189,7 @@ private:
     Canvas _canvas;
     ArrangeHScroll _hScroll;
     ArrangeVScroll _vScroll;
-    Timeout _refreshTimeout;
+    Timeout _canvasRefresh;
 
     Menu _arrangeMenu;
     FileChooserDialog _importFileChooser;

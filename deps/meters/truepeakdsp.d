@@ -23,18 +23,18 @@ private import core.stdc.stdlib;
 import meters.JmeterDSP;
 private import meters.resampler;
 
-class TruePeakdsp : JmeterDSP {
+class TruePeakDSP : JmeterDSP {
 public:
     enum maxDataLength = 8192;
 
     this() {
-        _res = true;
+        _src = new Resampler();
     }
     ~this() {
         free(_buf);
     }
 
-    override void process(float* data, int n) {
+    override void process(float* data, int n) @nogc nothrow {
         assert(n > 0);
         assert(n <= maxDataLength);
         _src.inp_count = n;
@@ -94,7 +94,7 @@ public:
         }
     }
 
-    void process_max(float* data, int n) {
+    void process_max(float* data, int n) @nogc nothrow {
         assert(n <= maxDataLength);
         _src.inp_count = n;
         _src.inp_data = data;
@@ -118,18 +118,18 @@ public:
         _m = m;
     }
 
-    override float read() {
+    override float read() @nogc nothrow {
         _res = true;
         return _m;
     }
 
-    void read(out float m, out float p) {
+    void read(out float m, out float p) @nogc nothrow {
         _res = true;
         m = _m;
         p = _p;
     }
 
-    override void reset() {
+    override void reset() @nogc nothrow {
         _res = true;
         _m = 0;
         _p = 0;
