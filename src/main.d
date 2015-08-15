@@ -3844,6 +3844,7 @@ public:
             immutable pixels_t xOffset = trackNumberWidth + labelPadding * 2;
 
             // draw the track label
+            _minHeightPixels = 0;
             pixels_t trackLabelHeight;
             cr.save();
             {
@@ -3851,7 +3852,8 @@ public:
                 int labelWidth, labelHeight;
                 _trackLabelLayout.getPixelSize(labelWidth, labelHeight);
                 trackLabelHeight = cast(pixels_t)(labelHeight);
-                cr.translate(xOffset, yOffset + heightPixels / 2 - labelHeight / 2);
+                _minHeightPixels += labelHeight + (labelPadding / 2);
+                cr.translate(xOffset, yOffset + heightPixels / 2 - (labelHeight + labelPadding / 2));
                 PgCairo.updateLayout(cr, _trackLabelLayout);
                 PgCairo.showLayout(cr, _trackLabelLayout);
             }
@@ -3859,8 +3861,9 @@ public:
 
             // draw the mute/solo buttons
             pixels_t buttonXOffset = xOffset;
-            pixels_t buttonYOffset = yOffset + heightPixels / 2 + trackLabelHeight / 2 + labelPadding * 2;
+            pixels_t buttonYOffset = yOffset + heightPixels / 2 + labelPadding / 2;
             _trackButtonStrip.draw(cr, buttonXOffset, buttonYOffset);
+            _minHeightPixels += TrackView.TrackButton.buttonWidth + (labelPadding / 2);
 
             // draw separators
             cr.save();
@@ -4075,9 +4078,14 @@ public:
         @property bool mute() const { return _track.mute; }
         @property bool solo() const { return _track.solo; }
 
+        bool validZoom(float verticalScaleFactor) {
+            return cast(pixels_t)(max(_baseHeightPixels * verticalScaleFactor, RegionView.headerHeight)) >=
+                minHeightPixels;
+        }
         @property pixels_t heightPixels() const {
             return cast(pixels_t)(max(_baseHeightPixels * _verticalScaleFactor, RegionView.headerHeight));
         }
+        @property pixels_t minHeightPixels() const { return _minHeightPixels; }
 
         @property RegionView[] regionViews() { return _regionViews; }
 
@@ -4122,6 +4130,7 @@ public:
         RegionView[] _regionViews;
 
         pixels_t _baseHeightPixels;
+        pixels_t _minHeightPixels;
         Color _trackColor;
         string _name;
 
@@ -4418,10 +4427,20 @@ private:
     }
 
     void _zoomInVertical() {
-        _verticalScaleFactor = max(_verticalScaleFactor / _verticalZoomFactor, _verticalZoomFactorMin);
-        _canvas.redraw();
-        _trackStubs.redraw();
-        _vScroll.reconfigure();
+        auto newVerticalScaleFactor = max(_verticalScaleFactor / _verticalZoomFactor, _verticalZoomFactorMin);
+        bool validZoom = true;
+        foreach(trackView; _trackViews) {
+            if(!trackView.validZoom(newVerticalScaleFactor)) {
+                validZoom = false;
+                break;
+            }
+        }
+        if(validZoom) {
+            _verticalScaleFactor = newVerticalScaleFactor;
+            _canvas.redraw();
+            _trackStubs.redraw();
+            _vScroll.reconfigure();
+        }
     }
     void _zoomOutVertical() {
         _verticalScaleFactor = min(_verticalScaleFactor * _verticalZoomFactor, _verticalZoomFactorMax);
