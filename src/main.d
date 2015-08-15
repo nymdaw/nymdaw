@@ -2071,6 +2071,12 @@ public:
         }
     }
 
+    void processSilence(nframes_t bufferLength) @nogc nothrow {
+        for(channels_t channelIndex = 0; channelIndex < 2; ++channelIndex) {
+            _processMeter(channelIndex, _zeroBuffer.ptr, min(bufferLength, _zeroBuffer.length));
+        }
+    }
+
     const(Region[]) regions() const { return _regions; }
 
     @property bool mute() const @nogc nothrow { return _mute; }
@@ -2089,8 +2095,6 @@ package:
         _meter[1] = new TruePeakDSP();
         _meter[0].init(_sampleRate);
         _meter[1].init(_sampleRate);
-
-        _rlGain = pow(10.0f, 0.05f * 18.0f);
     }
 
     void mixStereoInterleaved(nframes_t offset,
@@ -2157,9 +2161,9 @@ private:
 
         float m, p;
         _meter[channelIndex].read(m, p);
-        _level[channelIndex] = _rlGain * m;
-        if(_peakMax[channelIndex] < _rlGain * p) {
-            _peakMax[channelIndex] = _rlGain * p;
+        _level[channelIndex] = m;
+        if(_peakMax[channelIndex] < p) {
+            _peakMax[channelIndex] = p;
         }
     }
 
@@ -2170,8 +2174,8 @@ private:
 
     nframes_t _sampleRate;
     sample_t[maxBufferLength][2] _buffer;
+    sample_t[maxBufferLength] _zeroBuffer = 0;
     TruePeakDSP[2] _meter;
-    const(sample_t) _rlGain;
     sample_t[2] _peakMax = 0;
     sample_t[2] _level = 0;
 }
@@ -2550,7 +2554,7 @@ public:
     enum defaultTrackHeightPixels = 200; // default height in pixels of new tracks in the arrange view
     enum defaultTrackStubWidth = 200; // default width in pixels for all track stubs
     enum defaultChannelStripWidth = 100; // default width in pixels for the channel strip
-    enum refreshRate = 50; // rate in hertz at which to redraw the view when the transport is playing
+    enum refreshRate = 60; // rate in hertz at which to redraw the view when the transport is playing
     enum mouseOverThreshold = 2; // threshold number of pixels in one direction for mouse over events
 
     // convenience constants for GTK mouse buttons
@@ -4132,6 +4136,7 @@ public:
         @property bool mute() const { return _track.mute; }
         @property bool solo() const { return _track.solo; }
 
+        void processSilence(nframes_t bufferLength) { _track.processSilence(bufferLength); }
         @property ref const(sample_t[2]) level() const { return _track.level; }
         @property ref const(sample_t[2]) peakMax() const { return _track.peakMax; }
 
@@ -4618,7 +4623,9 @@ private:
                 immutable pixels_t windowWidth = cast(pixels_t)(getWindow().getWidth());
                 immutable pixels_t windowHeight = cast(pixels_t)(getWindow().getHeight());
 
-                cr.rectangle(10, windowHeight - 200, 40, windowHeight);
+                pixels_t meterHeightPixels = cast(pixels_t)(_selectedTrack.level[0] * 200);
+
+                cr.rectangle(10, windowHeight - meterHeightPixels, 40, windowHeight);
                 cr.setSourceRgb(0.0, 1.0, 0.0);
                 cr.fill();
             }
@@ -4628,6 +4635,25 @@ private:
 
         bool onRefresh() {
             if(_mixer.playing) {
+                _mixerPlaying = true;
+                redraw();
+                return true;
+            }
+            else if(_mixerPlaying) {
+                _mixerPlaying = false;
+                _processSilence = true;
+                _lastRefresh = MonoTime.currTime;
+            }
+
+            if(_processSilence) {
+                auto elapsed = (MonoTime.currTime - _lastRefresh).split!("msecs").msecs;
+                _lastRefresh = MonoTime.currTime;
+
+                // this check is required for the meter implementation
+                if(elapsed > 0) {
+                    _selectedTrack.processSilence(cast(nframes_t)(_mixer.sampleRate / 1000 * elapsed));
+                }
+
                 redraw();
             }
 
@@ -4636,6 +4662,10 @@ private:
 
     private:
         pixels_t _channelStripWidth;
+
+        bool _mixerPlaying;
+        bool _processSilence;
+        MonoTime _lastRefresh;
     }
 
     class TrackStubs : DrawingArea {

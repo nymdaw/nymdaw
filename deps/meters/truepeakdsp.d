@@ -146,8 +146,7 @@ public:
         _g = 0.502f;
 
         /* q/d initialize */
-        float[maxDataLength] zero;
-        zero[] = 0.0;
+        float[maxDataLength] zero = 0;
         _src.inp_count = maxDataLength;
         _src.inp_data = zero.ptr;
         _src.out_count = maxDataLength * 4;
