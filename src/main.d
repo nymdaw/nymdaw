@@ -2112,11 +2112,8 @@ package:
                         if(r.nChannels > 1) {
                             tempSample = r.getSampleGlobal(1, offset + j);
                             mixBuf[i + 1] += tempSample;
-                            _buffer[1][j] = tempSample;
                         }
-                        else {
-                            _buffer[1][j] = 0;
-                        }
+                        _buffer[1][j] = tempSample;
                     }
                 }
             }
@@ -2140,11 +2137,8 @@ package:
                         if(r.nChannels > 1) {
                             tempSample = r.getSampleGlobal(1, offset + i);
                             mixBuf2[i] += tempSample;
-                            _buffer[1][i] = tempSample;
                         }
-                        else {
-                            _buffer[1][i] = 0;
-                        }
+                        _buffer[1][i] = tempSample;
                     }
                 }
             }
@@ -4600,6 +4594,8 @@ private:
 
     class ChannelStrip : DrawingArea {
     public:
+        enum _meterHeightPixels = 300;
+
         this() {
             _channelStripWidth = defaultChannelStripWidth;
             setSizeRequest(_channelStripWidth, 0);
@@ -4619,23 +4615,99 @@ private:
             cr.setSourceRgb(0.0, 0.0, 0.0);
             cr.paint();
 
+            drawMeter(cr);
+
+            return true;
+        }
+
+        void drawMeter(ref Scoped!Context cr) {
             if(_selectedTrack !is null) {
                 immutable pixels_t windowWidth = cast(pixels_t)(getWindow().getWidth());
                 immutable pixels_t windowHeight = cast(pixels_t)(getWindow().getHeight());
 
-                pixels_t meterHeightPixels = cast(pixels_t)(_selectedTrack.level[0] * 200);
+                static float deflect(float db) {
+                    float def = 0.0f;
+                    if(db < -70.0f) {
+                        def = 0.0f;
+                    }
+                    else if(db < -60.0f) {
+                        def = (db + 70.0f) * 0.25f;
+                    }
+                    else if(db < -50.0f) {
+                        def = (db + 60.0f) * 0.5f + 2.5f;
+                    }
+                    else if(db < -40.0f) {
+                        def = (db + 50.0f) * 0.75f + 7.5f;
+                    }
+                    else if(db < -30.0f) {
+                        def = (db + 40.0f) * 1.5f + 15.0f;
+                    }
+                    else if(db < -20.0f) {
+                        def = (db + 30.0f) * 2.0f + 30.0f;
+                    }
+                    else if(db < 6.0f) {
+                        def = (db + 20.0f) * 2.5f + 50.0f;
+                    }
+                    else {
+                        def = 115.0f;
+                    }
+                    return def / 115.0f;
+                }
 
-                cr.rectangle(10, windowHeight - meterHeightPixels, 40, windowHeight);
-                cr.setSourceRgb(0.0, 1.0, 0.0);
+                if(_meterGradient is null) {
+                    immutable double pad1 = 1.0 / cast(double)(_meterHeightPixels);
+                    immutable double pad2 = 2.0 / cast(double)(_meterHeightPixels);
+                    _meterGradient = Pattern.createLinear(0, windowHeight - _meterHeightPixels, 0, windowHeight);
+
+                    // clip
+                    _meterGradient.addColorStopRgb(pad1, 1.0, 0.0, 0.0);
+
+                    // 0 dB
+                    _meterGradient.addColorStopRgb(deflect(0) / _meterHeightPixels - pad2,
+                                                   1.0, 0.0, 0.0);
+                    _meterGradient.addColorStopRgb(deflect(0) / _meterHeightPixels + pad2,
+                                                   1.0, 0.5, 0.0);
+
+                    // -3 dB
+                    _meterGradient.addColorStopRgb(deflect(-3) / _meterHeightPixels - pad2,
+                                                   1.0, 0.5, 0.0);
+                    _meterGradient.addColorStopRgb(deflect(-3) / _meterHeightPixels + pad2,
+                                                   1.0, 0.95, 0.0);
+
+                    // -9 dB
+                    _meterGradient.addColorStopRgb(deflect(-9) / _meterHeightPixels - pad2,
+                                                   1.0, 0.95, 0.0);
+                    _meterGradient.addColorStopRgb(deflect(-9) / _meterHeightPixels + pad2,
+                                                   0.0, 1.0, 0.0);
+
+                    // -18 dB
+                    _meterGradient.addColorStopRgb(deflect(-18) / _meterHeightPixels - pad2,
+                                                   0.0, 1.0, 0.0);
+                    _meterGradient.addColorStopRgb(deflect(-18) / _meterHeightPixels + pad2,
+                                                   0.0, 0.75, 0.0);
+
+                    // -40 dB
+                    _meterGradient.addColorStopRgb(deflect(-40) / _meterHeightPixels - pad2,
+                                                   0.0, 0.65, 0.0);
+                    _meterGradient.addColorStopRgb(deflect(-40) / _meterHeightPixels + pad2,
+                                                   0.0, 0.6, 0.15);
+
+                    // -inf
+                    _meterGradient.addColorStopRgb(1 - pad2 * 3, 0.0, 0.65, 0.2);
+                }
+
+                pixels_t levelHeightPixels = cast(pixels_t)(_selectedTrack.level[0] * _meterHeightPixels);
+
+                cr.rectangle(10, windowHeight - levelHeightPixels, 40, windowHeight);
+                cr.setSource(_meterGradient);
                 cr.fill();
             }
-
-            return true;
         }
 
         bool onRefresh() {
             if(_mixer.playing) {
                 _mixerPlaying = true;
+                _processSilence = false;
                 redraw();
                 return true;
             }
@@ -4662,6 +4734,7 @@ private:
 
     private:
         pixels_t _channelStripWidth;
+        Pattern _meterGradient;
 
         bool _mixerPlaying;
         bool _processSilence;
