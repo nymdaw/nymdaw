@@ -1871,6 +1871,7 @@ public:
         _audioSlice = _audioSeq[_sliceStartFrame * nChannels .. _sliceEndFrame * nChannels];
     }
 
+    // slice start and end frames are relative to start of sequence
     @property nframes_t sliceStartFrame() const { return _sliceStartFrame; }
     @property nframes_t sliceStartFrame(nframes_t newSliceStartFrame) {
         _sliceStartFrame = min(newSliceStartFrame, _audioSeq.nframes - 1);
@@ -3314,8 +3315,12 @@ public:
         void updateCurrentEditState() {
             subregionSelected = _editStateHistory.currentState.subregionSelected;
             if(subregionSelected) {
-                subregionStartFrame = _editStateHistory.currentState.subregionStartFrame;
-                subregionEndFrame = _editStateHistory.currentState.subregionEndFrame;
+                subregionStartFrame = clamp(_editStateHistory.currentState.subregionStartFrame, 0, nframes);
+                subregionEndFrame = clamp(_editStateHistory.currentState.subregionEndFrame,
+                                          subregionStartFrame, nframes);
+                if(subregionStartFrame == subregionEndFrame) {
+                    subregionSelected = false;
+                }
 
                 editPointOffset = subregionStartFrame;
             }
@@ -3374,8 +3379,16 @@ public:
             }
         }
 
-        Region region;
+        void shrinkStart(nframes_t newStartFrameGlobal) {
+            _sliceChanged = true;
+            region.shrinkStart(newStartFrameGlobal);
+        }
+        void shrinkEnd(nframes_t newEndFrameGlobal) {
+            _sliceChanged = true;
+            region.shrinkEnd(newEndFrameGlobal);
+        }
 
+        // slice start and end frames are relative to start of sequence
         @property nframes_t sliceStartFrame() const { return region.sliceStartFrame; }
         @property nframes_t sliceStartFrame(nframes_t newSliceStartFrame) {
             return (region.sliceStartFrame = newSliceStartFrame);
@@ -3402,7 +3415,18 @@ public:
         nframes_t subregionEndFrame;
 
         @property bool editMode() const { return _editMode; }
-        @property bool editMode(bool enable) { return (_editMode = enable); }
+        @property bool editMode(bool enable) {
+            if(!enable) {
+                _sliceChanged = false;
+            }
+            else if(_sliceChanged) {
+                if(showOnsets) {
+                    computeOnsets();
+                }
+                updateCurrentEditState();
+            }
+            return (_editMode = enable);
+        }
 
         @property bool showOnsets() const { return _showOnsets; }
         @property bool showOnsets(bool enable) {
@@ -3427,6 +3451,9 @@ public:
             }
             return (_linkChannels = enable);
         }
+
+    protected:
+        Region region;
 
     private:
         this(Region region, Color* color) {
@@ -3921,6 +3948,7 @@ public:
         StateHistory!EditState _editStateHistory;
 
         bool _editMode;
+        bool _sliceChanged;
         bool _showOnsets;
         bool _linkChannels;
 
@@ -4873,7 +4901,7 @@ private:
                 }
 
                 if(_meterGradient is null || _backgroundGradient is null) {
-                    Color[] colorMap = [
+                    immutable Color[] colorMap = [
                         Color(1.0, 0.0, 0.0),
                         Color(1.0, 0.5, 0.0),
                         Color(1.0, 0.95, 0.0),
@@ -4921,12 +4949,16 @@ private:
                 immutable pixels_t meterXOffset1 = meterXOffset + 1;
                 immutable pixels_t meterXOffset2 = meterXOffset1 + 2 + _meterChannelWidthPixels;
 
+                // draw the meter background
                 cr.rectangle(meterXOffset, windowHeight - _meterHeightPixels,
                              _meterWidthPixels, windowHeight);
                 cr.setSourceRgb(0.0, 0.0, 0.0);
                 cr.strokePreserve();
                 cr.setSource(_backgroundGradient);
                 cr.fill();
+
+                // draw the meter marks
+                
 
                 pixels_t levelHeight1 = cast(pixels_t)(_selectedTrack.level[0] * _meterHeightPixels);
                 pixels_t levelHeight2 = cast(pixels_t)(_selectedTrack.level[1] * _meterHeightPixels);
@@ -5567,14 +5599,14 @@ private:
                     case Action.shrinkRegionStart:
                         immutable nframes_t mouseFrame = viewOffset + max(_mouseX, 0) * samplesPerPixel;
                         immutable nframes_t minRegionWidth = RegionView.cornerRadius * 2 * samplesPerPixel;
-                        _shrinkRegion.region.shrinkStart(
+                        _shrinkRegion.shrinkStart(
                             min(mouseFrame, _shrinkRegion.offset + _shrinkRegion.nframes - minRegionWidth));
                         redraw();
                         break;
 
                     case Action.shrinkRegionEnd:
                         immutable nframes_t mouseFrame = viewOffset + max(_mouseX, 0) * samplesPerPixel;
-                        _shrinkRegion.region.shrinkEnd(mouseFrame);
+                        _shrinkRegion.shrinkEnd(mouseFrame);
                         redraw();
                         break;
 
