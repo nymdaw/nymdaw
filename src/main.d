@@ -2084,6 +2084,21 @@ public:
     @property bool solo() const @nogc nothrow { return _solo; }
     @property bool solo(bool enable) { return (_solo = enable); }
 
+    @property bool leftSolo() const @nogc nothrow { return _leftSolo; }
+    @property bool leftSolo(bool enable) {
+        if(enable && _rightSolo) {
+            _rightSolo = false;
+        }
+        return (_leftSolo = enable);
+    }
+    @property bool rightSolo() const @nogc nothrow { return _rightSolo; }
+    @property bool rightSolo(bool enable) {
+        if(enable && _leftSolo) {
+            _leftSolo = false;
+        }
+        return (_rightSolo = enable);
+    }
+
     @property ref const(sample_t[2]) level() const { return _level; }
     @property ref const(sample_t[2]) peakMax() const { return _peakMax; }
 
@@ -2106,14 +2121,94 @@ package:
             for(auto i = 0, j = 0; i < bufNFrames; i += nChannels, ++j) {
                 foreach(r; _regions) {
                     if(!r.mute()) {
-                        tempSample = r.getSampleGlobal(0, offset + j);
-                        mixBuf[i] += tempSample;
-                        _buffer[0][j] = tempSample;
-                        if(r.nChannels > 1) {
-                            tempSample = r.getSampleGlobal(1, offset + j);
-                            mixBuf[i + 1] += tempSample;
+                        // mono buffer
+                        if(nChannels == 1) {
+                            // mono region
+                            if(r.nChannels == 1) {
+                                auto sample = r.getSampleGlobal(0, offset + j);
+
+                                mixBuf[i] += sample;
+                                if(leftSolo) {
+                                    _buffer[0][j] = sample;
+                                    _buffer[1][j] = 0;
+                                }
+                                else if(rightSolo) {
+                                    _buffer[0][j] = 0;
+                                    _buffer[1][j] = sample;
+                                }
+                                else {
+                                    _buffer[0][j] = sample;
+                                    _buffer[1][j] = sample;
+                                }
+                            }
+                            // stereo region
+                            else if(r.nChannels >= 2) {
+                                auto sample1 = r.getSampleGlobal(0, offset + j);
+                                auto sample2 = r.getSampleGlobal(1, offset + j);
+
+                                if(leftSolo) {
+                                    mixBuf[i] += sample1;
+                                    _buffer[0][j] = sample1;
+                                    _buffer[1][j] = 0;
+                                }
+                                else if(rightSolo) {
+                                    mixBuf[i] += sample2;
+                                    _buffer[0][j] = 0;
+                                    _buffer[1][j] = sample2;
+                                }
+                                else {
+                                    mixBuf[i] += sample1 + sample2;
+                                    _buffer[0][j] = sample1;
+                                    _buffer[1][j] = sample2;
+                                }
+                            }
                         }
-                        _buffer[1][j] = tempSample;
+                        // stereo buffer
+                        else if(nChannels >= 2) {
+                            // mono region
+                            if(r.nChannels == 1) {
+                                auto sample = r.getSampleGlobal(0, offset + j);
+
+                                if(leftSolo) {
+                                    mixBuf[i] += sample;
+                                    _buffer[0][j] = sample;
+                                    _buffer[1][j] = 0;
+                                }
+                                else if(rightSolo) {
+                                    mixBuf[i + 1] += sample;
+                                    _buffer[0][j] = 0;
+                                    _buffer[1][j] = sample;
+                                }
+                                else {
+                                    mixBuf[i] += sample;
+                                    mixBuf[i + 1] += sample;
+                                    _buffer[0][j] = sample;
+                                    _buffer[1][j] = sample;
+                                }
+                            }
+                            // stereo region
+                            else if(r.nChannels >= 2) {
+                                auto sample1 = r.getSampleGlobal(0, offset + j);
+                                auto sample2 = r.getSampleGlobal(1, offset + j);
+
+                                if(leftSolo) {
+                                    mixBuf[i] += sample1;
+                                    _buffer[0][j] = sample1;
+                                    _buffer[1][j] = 0;
+                                }
+                                else if(rightSolo) {
+                                    mixBuf[i + 1] += sample2;
+                                    _buffer[0][j] = 0;
+                                    _buffer[1][j] = sample2;
+                                }
+                                else {
+                                    mixBuf[i] += sample1;
+                                    mixBuf[i + 1] += sample2;
+                                    _buffer[0][j] = sample1;
+                                    _buffer[1][j] = sample2;
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -2131,14 +2226,49 @@ package:
             for(auto i = 0; i < bufNFrames; ++i) {
                 foreach(r; _regions) {
                     if(!r.mute()) {
-                        tempSample = r.getSampleGlobal(0, offset + i);
-                        mixBuf1[i] += tempSample;
-                        _buffer[0][i] = tempSample;
-                        if(r.nChannels > 1) {
-                            tempSample = r.getSampleGlobal(1, offset + i);
-                            mixBuf2[i] += tempSample;
+                        // mono region
+                        if(r.nChannels == 1) {
+                            auto sample = r.getSampleGlobal(0, offset + i);
+
+                            if(leftSolo) {
+                                mixBuf1[i] += sample;
+                                _buffer[0][i] = sample;
+                                _buffer[1][i] = 0;
+                            }
+                            else if(rightSolo) {
+                                mixBuf2[i] += sample;
+                                _buffer[0][i] = 0;
+                                _buffer[1][i] = sample;
+                            }
+                            else {
+                                mixBuf1[i] += sample;
+                                mixBuf2[i] += sample;
+                                _buffer[0][i] = sample;
+                                _buffer[1][i] = sample;
+                            }
                         }
-                        _buffer[1][i] = tempSample;
+                        // stereo region
+                        else if(r.nChannels >= 2) {
+                            auto sample1 = r.getSampleGlobal(0, offset + i);
+                            auto sample2 = r.getSampleGlobal(1, offset + i);
+
+                            if(leftSolo) {
+                                mixBuf1[i] += sample1;
+                                _buffer[0][i] = sample1;
+                                _buffer[1][i] = 0;
+                            }
+                            else if(rightSolo) {
+                                mixBuf2[i] += sample2;
+                                _buffer[0][i] = 0;
+                                _buffer[1][i] = sample2;
+                            }
+                            else {
+                                mixBuf1[i] += sample1;
+                                mixBuf2[i] += sample2;
+                                _buffer[0][i] = sample1;
+                                _buffer[1][i] = sample2;
+                            }
+                        }
                     }
                 }
             }
@@ -2165,6 +2295,9 @@ private:
 
     bool _mute;
     bool _solo;
+
+    bool _leftSolo;
+    bool _rightSolo;
 
     nframes_t _sampleRate;
     sample_t[maxBufferLength][2] _buffer;
@@ -3971,6 +4104,7 @@ public:
                 cr.setLineWidth(1.0);
 
                 // draw the button
+                cr.newSubPath();
                 // top left corner
                 if(roundedLeftEdges) {
                     cr.arc(xOffset + cornerRadius, yOffset + cornerRadius,
@@ -4038,7 +4172,10 @@ public:
             }
 
             BoundingBox boundingBox;
-            bool pressed;
+
+            @property bool pressed() const { return _pressed; }
+            @property bool pressed(bool setPressed) { return (_pressed = setPressed); }
+
             @property bool enabled() const { return _enabled; }
             @property bool enabled(bool setEnabled) {
                 _enabled = setEnabled;
@@ -4046,8 +4183,16 @@ public:
                 return _enabled;
             }
 
+            final void otherEnabled() {
+                _enabled = false;
+                onOtherEnabled();
+            }
+
         protected:
             void onEnabled(bool enabled) {
+            }
+
+            void onOtherEnabled() {
             }
 
             @property string buttonText() const;
@@ -4057,6 +4202,7 @@ public:
             immutable bool roundedRightEdges;
 
         private:
+            bool _pressed;
             bool _enabled;
         }
 
@@ -4101,24 +4247,90 @@ public:
             @property override Color enabledColor() const { return Color(1.0, 1.0, 0.0); }
         }
 
+        final class LeftButton : TrackButton {
+        public:
+            this() {
+                super(true, false);
+            }
+
+            TrackButton other;
+
+        protected:
+            override void onEnabled(bool enabled) {
+                _track.leftSolo = enabled;
+                if(other !is null) {
+                    other.otherEnabled();
+                }
+            }
+
+            override void onOtherEnabled() {
+                _track.leftSolo = false;
+            }
+
+            @property override string buttonText() const { return "L"; }
+            @property override Color enabledColor() const { return Color(1.0, 0.65, 0.0); }
+
+        private:
+        }
+
+        final class RightButton : TrackButton {
+        public:
+            this() {
+                super(false, true);
+            }
+
+            TrackButton other;
+
+        protected:
+            override void onEnabled(bool enabled) {
+                _track.rightSolo = enabled;
+                if(other !is null) {
+                    other.otherEnabled();
+                }
+            }
+
+            override void onOtherEnabled() {
+                _track.rightSolo = false;
+            }
+
+            @property override string buttonText() const { return "R"; }
+            @property override Color enabledColor() const { return Color(1.0, 0.65, 0.0); }
+        }
+
         class TrackButtonStrip {
         public:
             this() {
                 muteButton = new MuteButton();
                 soloButton = new SoloButton();
+
+                leftButton = new LeftButton();
+                rightButton = new RightButton();
+                leftButton.other = rightButton;
+                rightButton.other = leftButton;
             }
 
             void draw(ref Scoped!Context cr, pixels_t xOffset, pixels_t yOffset) {
+                enum buttonGroupSeparation = 15;
+
                 muteButton.draw(cr, xOffset, yOffset);
-                soloButton.draw(cr, xOffset + TrackButton.buttonWidth, yOffset);
+                xOffset += TrackButton.buttonWidth;
+                soloButton.draw(cr, xOffset, yOffset);
+                xOffset += TrackButton.buttonWidth + buttonGroupSeparation;
+
+                leftButton.draw(cr, xOffset, yOffset);
+                xOffset += TrackButton.buttonWidth;
+                rightButton.draw(cr, xOffset, yOffset);
             }
 
             @property TrackButton[] trackButtons() {
-                return [muteButton, soloButton];
+                return [muteButton, soloButton, leftButton, rightButton];
             }
 
             MuteButton muteButton;
             SoloButton soloButton;
+
+            LeftButton leftButton;
+            RightButton rightButton;
         }
 
         @property TrackButton[] trackButtons() {
@@ -4746,7 +4958,7 @@ private:
                 _lastRefresh = MonoTime.currTime;
             }
 
-            if(_processSilence) {
+            if(_processSilence && _selectedTrack !is null) {
                 auto elapsed = (MonoTime.currTime - _lastRefresh).split!("msecs").msecs;
                 _lastRefresh = MonoTime.currTime;
 
@@ -4756,6 +4968,11 @@ private:
                 }
 
                 redraw();
+
+                if(cast(pixels_t)(_selectedTrack.level[0] * _meterHeightPixels) == 0 &&
+                   cast(pixels_t)(_selectedTrack.level[1] * _meterHeightPixels) == 0) {
+                    _processSilence = false;
+                }
             }
 
             return true;
