@@ -2504,14 +2504,12 @@ struct Color {
     double g = 0;
     double b = 0;
 
-    template opBinary(T) {
-        Color opBinary(string op)(T rhs) if(isNumeric!T) {
-            static if(op == "+" || op == "-" || op == "*" || op == "/") {
-                return mixin("Color(r " ~ op ~ " rhs, g " ~ op ~ " rhs.g, b " ~ op ~" rhs.b)");
-            }
-            else {
-                static assert(0, "Operator " ~ op ~ " not implemented");
-            }
+    Color opBinary(string op, T)(T rhs) if(isNumeric!T) {
+        static if(op == "+" || op == "-" || op == "*" || op == "/") {
+            return mixin("Color(r " ~ op ~ " rhs, g " ~ op ~ " rhs, b " ~ op ~ " rhs)");
+        }
+        else {
+            static assert(0, "Operator " ~ op ~ " not implemented");
         }
     }
 
@@ -3316,7 +3314,7 @@ public:
             cr.save();
 
             cr.setOperator(cairo_operator_t.SOURCE);
-            cr.setAntialias(cairo_antialias_t.GOOD);
+            cr.setAntialias(cairo_antialias_t.FAST);
 
             // check that this region is in the visible area of the arrange view
             if((regionOffset >= viewOffset && regionOffset < viewOffset + viewWidthSamples) ||
@@ -3969,7 +3967,7 @@ public:
                 boundingBox.y1 = yOffset + buttonHeight;
 
                 cr.save();
-                cr.setAntialias(cairo_antialias_t.GOOD);
+                cr.setAntialias(cairo_antialias_t.GRAY);
                 cr.setLineWidth(1.0);
 
                 // draw the button
@@ -4595,6 +4593,8 @@ private:
     class ChannelStrip : DrawingArea {
     public:
         enum _meterHeightPixels = 300;
+        enum _meterChannelWidthPixels = 8;
+        enum _meterWidthPixels = _meterChannelWidthPixels * 2 + 4;
 
         this() {
             _channelStripWidth = defaultChannelStripWidth;
@@ -4612,7 +4612,7 @@ private:
                 _channelStripRefresh = new Timeout(cast(uint)(1.0 / refreshRate * 1000), &onRefresh, false);
             }
 
-            cr.setSourceRgb(0.0, 0.0, 0.0);
+            cr.setSourceRgb(0.1, 0.1, 0.1);
             cr.paint();
 
             drawMeter(cr);
@@ -4622,6 +4622,12 @@ private:
 
         void drawMeter(ref Scoped!Context cr) {
             if(_selectedTrack !is null) {
+                cr.save();
+
+                cr.setOperator(cairo_operator_t.OVER);
+                cr.setAntialias(cairo_antialias_t.GRAY);
+                cr.setLineWidth(1.0);
+
                 immutable pixels_t windowWidth = cast(pixels_t)(getWindow().getWidth());
                 immutable pixels_t windowHeight = cast(pixels_t)(getWindow().getHeight());
 
@@ -4654,53 +4660,76 @@ private:
                     return def / 115.0f;
                 }
 
-                if(_meterGradient is null) {
-                    immutable double pad1 = 1.0 / cast(double)(_meterHeightPixels);
-                    immutable double pad2 = 2.0 / cast(double)(_meterHeightPixels);
-                    _meterGradient = Pattern.createLinear(0, windowHeight - _meterHeightPixels, 0, windowHeight);
+                if(_meterGradient is null || _backgroundGradient is null) {
+                    Color[] colorMap = [
+                        Color(1.0, 0.0, 0.0),
+                        Color(1.0, 0.5, 0.0),
+                        Color(1.0, 0.95, 0.0),
+                        Color(0.0, 1.0, 0.0),
+                        Color(0.0, 0.75, 0.0),
+                        Color(0.0, 0.6, 0.1),
+                        Color(0.0, 0.4, 0.25),
+                        Color(0.0, 0.1, 0.5)
+                    ];
 
-                    // clip
-                    _meterGradient.addColorStopRgb(pad1, 1.0, 0.0, 0.0);
+                    static void addMeterColorStops(T)(Pattern pattern, T colorMap) {
+                        // clip
+                        pattern.addColorStopRgb(1.0, colorMap[0].r, colorMap[0].g, colorMap[0].b);
 
-                    // 0 dB
-                    _meterGradient.addColorStopRgb(deflect(0) / _meterHeightPixels - pad2,
-                                                   1.0, 0.0, 0.0);
-                    _meterGradient.addColorStopRgb(deflect(0) / _meterHeightPixels + pad2,
-                                                   1.0, 0.5, 0.0);
+                        // 0 dB
+                        pattern.addColorStopRgb(deflect(0), colorMap[1].r, colorMap[1].g, colorMap[1].b);
 
-                    // -3 dB
-                    _meterGradient.addColorStopRgb(deflect(-3) / _meterHeightPixels - pad2,
-                                                   1.0, 0.5, 0.0);
-                    _meterGradient.addColorStopRgb(deflect(-3) / _meterHeightPixels + pad2,
-                                                   1.0, 0.95, 0.0);
+                        // -3 dB
+                        pattern.addColorStopRgb(deflect(-3), colorMap[2].r, colorMap[2].g, colorMap[2].b);
 
-                    // -9 dB
-                    _meterGradient.addColorStopRgb(deflect(-9) / _meterHeightPixels - pad2,
-                                                   1.0, 0.95, 0.0);
-                    _meterGradient.addColorStopRgb(deflect(-9) / _meterHeightPixels + pad2,
-                                                   0.0, 1.0, 0.0);
+                        // -9 dB
+                        pattern.addColorStopRgb(deflect(-9), colorMap[3].r, colorMap[3].g, colorMap[3].b);
 
-                    // -18 dB
-                    _meterGradient.addColorStopRgb(deflect(-18) / _meterHeightPixels - pad2,
-                                                   0.0, 1.0, 0.0);
-                    _meterGradient.addColorStopRgb(deflect(-18) / _meterHeightPixels + pad2,
-                                                   0.0, 0.75, 0.0);
+                        // -18 dB
+                        pattern.addColorStopRgb(deflect(-18), colorMap[4].r, colorMap[4].g, colorMap[4].b);
 
-                    // -40 dB
-                    _meterGradient.addColorStopRgb(deflect(-40) / _meterHeightPixels - pad2,
-                                                   0.0, 0.65, 0.0);
-                    _meterGradient.addColorStopRgb(deflect(-40) / _meterHeightPixels + pad2,
-                                                   0.0, 0.6, 0.15);
+                        // -40 dB
+                        pattern.addColorStopRgb(deflect(-40), colorMap[6].r, colorMap[6].g, colorMap[6].b);
 
-                    // -inf
-                    _meterGradient.addColorStopRgb(1 - pad2 * 3, 0.0, 0.65, 0.2);
+                        // -inf
+                        pattern.addColorStopRgb(0.0, colorMap[7].r, colorMap[7].g, colorMap[7].b);
+                    }
+
+                    _meterGradient =
+                        Pattern.createLinear(0, windowHeight, 0, windowHeight - _meterHeightPixels);
+                    addMeterColorStops(_meterGradient, colorMap);
+                    
+                    _backgroundGradient =
+                        Pattern.createLinear(0, windowHeight, 0, windowHeight - _meterHeightPixels);
+                    addMeterColorStops(_backgroundGradient,
+                                       std.algorithm.map!((Color color) => color / 10)(colorMap));
                 }
 
-                pixels_t levelHeightPixels = cast(pixels_t)(_selectedTrack.level[0] * _meterHeightPixels);
+                immutable pixels_t meterXOffset = 10;
+                immutable pixels_t meterXOffset1 = meterXOffset + 1;
+                immutable pixels_t meterXOffset2 = meterXOffset1 + 2 + _meterChannelWidthPixels;
 
-                cr.rectangle(10, windowHeight - levelHeightPixels, 40, windowHeight);
+                cr.rectangle(meterXOffset, windowHeight - _meterHeightPixels,
+                             _meterWidthPixels, windowHeight);
+                cr.setSourceRgb(0.0, 0.0, 0.0);
+                cr.strokePreserve();
+                cr.setSource(_backgroundGradient);
+                cr.fill();
+
+                pixels_t levelHeight1 = cast(pixels_t)(_selectedTrack.level[0] * _meterHeightPixels);
+                pixels_t levelHeight2 = cast(pixels_t)(_selectedTrack.level[1] * _meterHeightPixels);
+
+                cr.rectangle(meterXOffset1, windowHeight - levelHeight1,
+                             _meterChannelWidthPixels, windowHeight);
                 cr.setSource(_meterGradient);
                 cr.fill();
+
+                cr.rectangle(meterXOffset2, windowHeight - levelHeight2,
+                             _meterChannelWidthPixels, windowHeight);
+                cr.setSource(_meterGradient);
+                cr.fill();
+
+                cr.restore();
             }
         }
 
@@ -4735,6 +4764,7 @@ private:
     private:
         pixels_t _channelStripWidth;
         Pattern _meterGradient;
+        Pattern _backgroundGradient;
 
         bool _mixerPlaying;
         bool _processSilence;
@@ -5202,7 +5232,7 @@ private:
                 if(marker.offset >= viewOffset && marker.offset < viewOffset + viewWidthSamples) {
                     pixels_t xOffset = (marker.offset - viewOffset) / samplesPerPixel;
 
-                    cr.setAntialias(cairo_antialias_t.GOOD);
+                    cr.setAntialias(cairo_antialias_t.FAST);
                     cr.moveTo(xOffset, yOffset + markerHeightPixels);
                     cr.lineTo(xOffset - markerHeadWidthPixels / 2, yOffset + markerHeightPixels * taperFactor);
                     cr.lineTo(xOffset - markerHeadWidthPixels / 2, yOffset);
