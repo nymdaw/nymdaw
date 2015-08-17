@@ -3012,7 +3012,7 @@ public:
                 if(_region.showOnsets) {
                     _region.computeOnsets();
                 }
-                _region.appendEditState(_region.currentEditState(true));
+                _region.appendEditState(_region.currentEditState(true, true));
 
                 _canvas.redraw();
             }
@@ -3272,6 +3272,7 @@ public:
 
         struct EditState {
             this(bool audioEdited,
+                 bool recomputeOnsets,
                  bool onsetsEdited,
                  bool onsetsLinkChannels,
                  channels_t onsetsChannelIndex,
@@ -3280,6 +3281,7 @@ public:
                  nframes_t subregionEndFrame = 0) {
                 this.audioEdited = audioEdited;
 
+                this.recomputeOnsets = recomputeOnsets;
                 this.onsetsEdited = onsetsEdited;
                 this.onsetsLinkChannels = onsetsLinkChannels;
                 this.onsetsChannelIndex = onsetsChannelIndex;
@@ -3290,6 +3292,7 @@ public:
             }
             const(bool) audioEdited;
 
+            const(bool) recomputeOnsets;
             const(bool) onsetsEdited;
             const(bool) onsetsLinkChannels;
             const(channels_t) onsetsChannelIndex;
@@ -3300,12 +3303,13 @@ public:
         }
 
         EditState currentEditState(bool audioEdited,
+                                   bool recomputeOnsets = false,
                                    bool onsetsEdited = false,
-                                   bool onsetsLinkChannels = false,
                                    channels_t onsetsChannelIndex = 0) {
             return EditState(audioEdited,
+                             recomputeOnsets,
                              onsetsEdited,
-                             onsetsLinkChannels,
+                             linkChannels,
                              onsetsChannelIndex,
                              subregionSelected,
                              _subregionStartFrame,
@@ -3347,7 +3351,7 @@ public:
                         onsets.undo();
                     }
                 }
-                else if(showOnsets) {
+                else if(_editStateHistory.currentState.recomputeOnsets) {
                     computeOnsets();
                 }
 
@@ -3372,7 +3376,7 @@ public:
                         onsets.redo();
                     }
                 }
-                else if(showOnsets) {
+                else if(_editStateHistory.currentState.recomputeOnsets) {
                     computeOnsets();
                 }
 
@@ -6033,7 +6037,7 @@ private:
 
                         _editRegion.appendEditState(_editRegion.currentEditState(true,
                                                                                  true,
-                                                                                 _editRegion.linkChannels,
+                                                                                 true,
                                                                                  _moveOnsetChannel));
 
                         redraw();
@@ -6258,7 +6262,7 @@ private:
                             if(_editRegion.showOnsets) {
                                 _editRegion.computeOnsets();
                             }
-                            _editRegion.appendEditState(_editRegion.currentEditState(true));
+                            _editRegion.appendEditState(_editRegion.currentEditState(true, true));
 
                             redraw();
                         }
@@ -6433,7 +6437,7 @@ private:
                             if(_editRegion.showOnsets) {
                                 _editRegion.computeOnsets();
                             }
-                            _editRegion.appendEditState(_editRegion.currentEditState(true));
+                            _editRegion.appendEditState(_editRegion.currentEditState(true, true));
 
                             redraw();
                         }
@@ -6452,7 +6456,7 @@ private:
                             if(_editRegion.showOnsets) {
                                 _editRegion.computeOnsets();
                             }
-                            _editRegion.appendEditState(_editRegion.currentEditState(true));
+                            _editRegion.appendEditState(_editRegion.currentEditState(true, true));
 
                             redraw();
                         }
