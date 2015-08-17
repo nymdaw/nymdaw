@@ -3308,17 +3308,18 @@ public:
                              onsetsLinkChannels,
                              onsetsChannelIndex,
                              subregionSelected,
-                             subregionStartFrame,
-                             subregionEndFrame);
+                             _subregionStartFrame,
+                             _subregionEndFrame);
         }
 
         void updateCurrentEditState() {
             subregionSelected = _editStateHistory.currentState.subregionSelected;
             if(subregionSelected) {
-                subregionStartFrame = clamp(_editStateHistory.currentState.subregionStartFrame, 0, nframes);
-                subregionEndFrame = clamp(_editStateHistory.currentState.subregionEndFrame,
-                                          subregionStartFrame, nframes);
-                if(subregionStartFrame == subregionEndFrame) {
+                _subregionStartFrame = clamp(_editStateHistory.currentState.subregionStartFrame,
+                                             sliceStartFrame, sliceEndFrame);
+                _subregionEndFrame = clamp(_editStateHistory.currentState.subregionEndFrame,
+                                           _subregionStartFrame, sliceEndFrame);
+                if(_subregionStartFrame == _subregionEndFrame) {
                     subregionSelected = false;
                 }
 
@@ -3411,8 +3412,18 @@ public:
         nframes_t editPointOffset; // locally indexed for this region
 
         bool subregionSelected;
-        nframes_t subregionStartFrame;
-        nframes_t subregionEndFrame;
+        @property nframes_t subregionStartFrame() const {
+            return _subregionStartFrame - sliceStartFrame;
+        }
+        @property nframes_t subregionStartFrame(nframes_t newSubregionStartFrame) {
+            return (_subregionStartFrame = newSubregionStartFrame + sliceStartFrame);
+        }
+        @property nframes_t subregionEndFrame() const {
+            return _subregionEndFrame - sliceStartFrame;
+        }
+        @property nframes_t subregionEndFrame(nframes_t newSubregionEndFrame) {
+            return (_subregionEndFrame = newSubregionEndFrame + sliceStartFrame);
+        }
 
         @property bool editMode() const { return _editMode; }
         @property bool editMode(bool enable) {
@@ -3951,6 +3962,9 @@ public:
         bool _sliceChanged;
         bool _showOnsets;
         bool _linkChannels;
+
+        nframes_t _subregionStartFrame; // start frame when sliceStart == 0
+        nframes_t _subregionEndFrame; // end frame when sliceStart == 0
 
         OnsetSequence[] _onsets; // indexed as [channel][onset]
         OnsetSequence _onsetsLinked; // indexed as [onset]
@@ -5834,11 +5848,11 @@ private:
                                         }
                                         else {
                                             // move the edit point and start selecting a subregion
-                                            _editRegion.subregionStartFrame =
-                                                _editRegion.subregionEndFrame =
-                                                _editRegion.editPointOffset =
+                                            _editRegion.editPointOffset =
                                                 cast(nframes_t)(_mouseX * samplesPerPixel) + viewOffset -
                                                 _editRegion.offset;
+                                            _editRegion.subregionStartFrame = _editRegion.editPointOffset;
+                                            _editRegion.subregionEndFrame = _editRegion.editPointOffset;
                                             _setAction(Action.selectSubregion);
                                             newAction = true;
                                         }
