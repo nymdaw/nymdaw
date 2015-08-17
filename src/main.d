@@ -4850,9 +4850,10 @@ private:
 
     class ChannelStrip : DrawingArea {
     public:
-        enum _meterHeightPixels = 300;
-        enum _meterChannelWidthPixels = 8;
-        enum _meterWidthPixels = _meterChannelWidthPixels * 2 + 4;
+        enum meterHeightPixels = 300;
+        enum meterChannelWidthPixels = 8;
+        enum meterWidthPixels = meterChannelWidthPixels * 2 + 4;
+        enum meterMarkFont = "Arial 7";
 
         this() {
             _channelStripWidth = defaultChannelStripWidth;
@@ -4954,40 +4955,66 @@ private:
                     }
 
                     _meterGradient =
-                        Pattern.createLinear(0, windowHeight, 0, windowHeight - _meterHeightPixels);
+                        Pattern.createLinear(0, windowHeight, 0, windowHeight - meterHeightPixels);
                     addMeterColorStops(_meterGradient, colorMap);
                     
                     _backgroundGradient =
-                        Pattern.createLinear(0, windowHeight, 0, windowHeight - _meterHeightPixels);
+                        Pattern.createLinear(0, windowHeight, 0, windowHeight - meterHeightPixels);
                     addMeterColorStops(_backgroundGradient,
                                        std.algorithm.map!((Color color) => color / 10)(colorMap));
                 }
 
-                immutable pixels_t meterXOffset = 10;
+                immutable pixels_t meterXOffset = 30;
                 immutable pixels_t meterXOffset1 = meterXOffset + 1;
-                immutable pixels_t meterXOffset2 = meterXOffset1 + 2 + _meterChannelWidthPixels;
+                immutable pixels_t meterXOffset2 = meterXOffset1 + 2 + meterChannelWidthPixels;
+                immutable pixels_t meterYOffset = windowHeight - (meterHeightPixels + 10);
+
+                // draw the meter marks
+                if(!_meterMarkLayout) {
+                    PgFontDescription desc;
+                    _meterMarkLayout = PgCairo.createLayout(cr);
+                    desc = PgFontDescription.fromString(meterMarkFont);
+                    _meterMarkLayout.setFontDescription(desc);
+                    desc.free();
+                }
+
+                immutable float[] meterMarks =
+                    [3, 0, -3, -6, -9, -12, -15, -18, -20, -25, -30, -35, -40, -50, -60];
+
+                void drawMark(float db) {
+                    _meterMarkLayout.setText(db > 0 ? ("+" ~ to!string(cast(int)(db))) :
+                                             to!string(cast(int)(db)));
+                    int widthPixels, heightPixels;
+                    _meterMarkLayout.getPixelSize(widthPixels, heightPixels);
+                    cr.moveTo(meterXOffset - (widthPixels + 4),
+                              meterYOffset + meterHeightPixels -
+                              (meterHeightPixels * deflect(db) + heightPixels / 2));
+                    PgCairo.updateLayout(cr, _meterMarkLayout);
+                    PgCairo.showLayout(cr, _meterMarkLayout);
+                }
+                cr.setSourceRgb(1.0, 1.0, 1.0);
+                foreach(meterMark; meterMarks) {
+                    drawMark(meterMark);
+                }
 
                 // draw the meter background
-                cr.rectangle(meterXOffset, windowHeight - _meterHeightPixels,
-                             _meterWidthPixels, windowHeight);
+                cr.rectangle(meterXOffset, meterYOffset, meterWidthPixels, meterHeightPixels);
                 cr.setSourceRgb(0.0, 0.0, 0.0);
                 cr.strokePreserve();
                 cr.setSource(_backgroundGradient);
                 cr.fill();
 
-                // draw the meter marks
-                
+                // draw the current meter levels
+                pixels_t levelHeight1 = cast(pixels_t)(_selectedTrack.level[0] * meterHeightPixels);
+                pixels_t levelHeight2 = cast(pixels_t)(_selectedTrack.level[1] * meterHeightPixels);
 
-                pixels_t levelHeight1 = cast(pixels_t)(_selectedTrack.level[0] * _meterHeightPixels);
-                pixels_t levelHeight2 = cast(pixels_t)(_selectedTrack.level[1] * _meterHeightPixels);
-
-                cr.rectangle(meterXOffset1, windowHeight - levelHeight1,
-                             _meterChannelWidthPixels, windowHeight);
+                cr.rectangle(meterXOffset1, meterYOffset + (meterHeightPixels - levelHeight1),
+                             meterChannelWidthPixels, levelHeight1);
                 cr.setSource(_meterGradient);
                 cr.fill();
 
-                cr.rectangle(meterXOffset2, windowHeight - levelHeight2,
-                             _meterChannelWidthPixels, windowHeight);
+                cr.rectangle(meterXOffset2, meterYOffset + (meterHeightPixels - levelHeight2),
+                             meterChannelWidthPixels, levelHeight2);
                 cr.setSource(_meterGradient);
                 cr.fill();
 
@@ -5019,8 +5046,8 @@ private:
 
                 redraw();
 
-                if(cast(pixels_t)(_selectedTrack.level[0] * _meterHeightPixels) == 0 &&
-                   cast(pixels_t)(_selectedTrack.level[1] * _meterHeightPixels) == 0) {
+                if(cast(pixels_t)(_selectedTrack.level[0] * meterHeightPixels) == 0 &&
+                   cast(pixels_t)(_selectedTrack.level[1] * meterHeightPixels) == 0) {
                     _processSilence = false;
                 }
             }
@@ -5032,6 +5059,7 @@ private:
         pixels_t _channelStripWidth;
         Pattern _meterGradient;
         Pattern _backgroundGradient;
+        PgLayout _meterMarkLayout;
 
         bool _mixerPlaying;
         bool _processSilence;
