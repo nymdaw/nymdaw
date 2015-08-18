@@ -2078,6 +2078,11 @@ public:
         }
     }
 
+    void resetMeters() @nogc nothrow {
+        _meter[0].reset();
+        _meter[1].reset();
+    }
+
     const(Region[]) regions() const { return _regions; }
 
     @property bool mute() const @nogc nothrow { return _mute; }
@@ -2098,6 +2103,13 @@ public:
             _leftSolo = false;
         }
         return (_rightSolo = enable);
+    }
+
+    @property sample_t faderGainDB() const @nogc nothrow {
+        return 20 * log10(_faderGain);
+    }
+    @property sample_t faderGainDB(sample_t db) {
+        return (_faderGain = pow(10, db / 20));
     }
 
     @property ref const(sample_t[2]) level() const { return _level; }
@@ -2126,7 +2138,7 @@ package:
                         if(nChannels == 1) {
                             // mono region
                             if(r.nChannels == 1) {
-                                auto sample = r.getSampleGlobal(0, offset + j);
+                                auto sample = r.getSampleGlobal(0, offset + j) * _faderGain;
 
                                 mixBuf[i] += sample;
                                 if(leftSolo) {
@@ -2144,8 +2156,8 @@ package:
                             }
                             // stereo region
                             else if(r.nChannels >= 2) {
-                                auto sample1 = r.getSampleGlobal(0, offset + j);
-                                auto sample2 = r.getSampleGlobal(1, offset + j);
+                                auto sample1 = r.getSampleGlobal(0, offset + j) * _faderGain;
+                                auto sample2 = r.getSampleGlobal(1, offset + j) * _faderGain;
 
                                 if(leftSolo) {
                                     mixBuf[i] += sample1;
@@ -2168,7 +2180,7 @@ package:
                         else if(nChannels >= 2) {
                             // mono region
                             if(r.nChannels == 1) {
-                                auto sample = r.getSampleGlobal(0, offset + j);
+                                auto sample = r.getSampleGlobal(0, offset + j) * _faderGain;
 
                                 if(leftSolo) {
                                     mixBuf[i] += sample;
@@ -2189,8 +2201,8 @@ package:
                             }
                             // stereo region
                             else if(r.nChannels >= 2) {
-                                auto sample1 = r.getSampleGlobal(0, offset + j);
-                                auto sample2 = r.getSampleGlobal(1, offset + j);
+                                auto sample1 = r.getSampleGlobal(0, offset + j) * _faderGain;
+                                auto sample2 = r.getSampleGlobal(1, offset + j) * _faderGain;
 
                                 if(leftSolo) {
                                     mixBuf[i] += sample1;
@@ -2229,7 +2241,7 @@ package:
                     if(!r.mute()) {
                         // mono region
                         if(r.nChannels == 1) {
-                            auto sample = r.getSampleGlobal(0, offset + i);
+                            auto sample = r.getSampleGlobal(0, offset + i) * _faderGain;
 
                             if(leftSolo) {
                                 mixBuf1[i] += sample;
@@ -2250,8 +2262,8 @@ package:
                         }
                         // stereo region
                         else if(r.nChannels >= 2) {
-                            auto sample1 = r.getSampleGlobal(0, offset + i);
-                            auto sample2 = r.getSampleGlobal(1, offset + i);
+                            auto sample1 = r.getSampleGlobal(0, offset + i) * _faderGain;
+                            auto sample2 = r.getSampleGlobal(1, offset + i) * _faderGain;
 
                             if(leftSolo) {
                                 mixBuf1[i] += sample1;
@@ -2299,6 +2311,8 @@ private:
 
     bool _leftSolo;
     bool _rightSolo;
+
+    sample_t _faderGain = 1.0;
 
     nframes_t _sampleRate;
     sample_t[maxBufferLength][2] _buffer;
@@ -2718,7 +2732,7 @@ public:
         _arrangeStateHistory = StateHistory!ArrangeState(ArrangeState());
 
         _canvas = new Canvas();
-        _channelStrip = new ChannelStrip();
+        _arrangeChannelStrip = new ArrangeChannelStrip();
         _trackStubs = new TrackStubs();
         _hScroll = new ArrangeHScroll();
         _vScroll = new ArrangeVScroll();
@@ -2729,7 +2743,7 @@ public:
         vBox.packEnd(_hScroll, false, false, 0);
 
         auto channelStripBox = new Box(Orientation.VERTICAL, 0);
-        channelStripBox.packStart(_channelStrip, true, true, 0);
+        channelStripBox.packStart(_arrangeChannelStrip, true, true, 0);
 
         auto trackStubsBox = new Box(Orientation.VERTICAL, 0);
         trackStubsBox.packStart(_trackStubs, true, true, 0);
@@ -3953,6 +3967,7 @@ public:
                     cr.appendPath(borderPath);
                     cr.setSourceRgba(0.5, 0.5, 0.5, 0.6);
                     cr.fill();
+                    Context.pathDestroy(borderPath);
                 }
             }
 
@@ -3977,6 +3992,277 @@ public:
 
         Pattern _regionGradient;
         pixels_t _prevYOffset;
+    }
+
+    abstract class TrackButton {
+    public:
+        enum buttonWidth = 20;
+        enum buttonHeight = 20;
+        enum cornerRadius = 4;
+
+        this(Track track, bool roundedLeftEdges = true, bool roundedRightEdges = true) {
+            _track = track;
+            this.roundedLeftEdges = roundedLeftEdges;
+            this.roundedRightEdges = roundedRightEdges;
+        }
+
+        final void draw(ref Scoped!Context cr, pixels_t xOffset, pixels_t yOffset) {
+            alias labelPadding = TrackStubs.labelPadding;
+
+            enum degrees = PI / 180.0;
+
+            immutable Color gradientTop = Color(0.5, 0.5, 0.5);
+            immutable Color gradientBottom = Color(0.2, 0.2, 0.2);
+            immutable Color pressedGradientTop = Color(0.4, 0.4, 0.4);
+            immutable Color pressedGradientBottom = Color(0.6, 0.6, 0.6);
+
+            boundingBox.x0 = xOffset;
+            boundingBox.y0 = yOffset;
+            boundingBox.x1 = xOffset + buttonWidth;
+            boundingBox.y1 = yOffset + buttonHeight;
+
+            cr.save();
+            cr.setAntialias(cairo_antialias_t.GRAY);
+            cr.setLineWidth(1.0);
+
+            // draw the button
+            cr.newSubPath();
+            // top left corner
+            if(roundedLeftEdges) {
+                cr.arc(xOffset + cornerRadius, yOffset + cornerRadius,
+                       cornerRadius, 180 * degrees, 270 * degrees);
+            }
+            else {
+                cr.moveTo(xOffset, yOffset);
+                cr.lineTo(xOffset + buttonWidth + (roundedRightEdges ? -cornerRadius : 0), yOffset);
+            }
+
+            // right corners
+            if(roundedRightEdges) {
+                cr.arc(xOffset + buttonWidth - cornerRadius, yOffset + cornerRadius,
+                       cornerRadius, -90 * degrees, 0 * degrees);
+                cr.arc(xOffset + buttonWidth - cornerRadius, yOffset + buttonHeight - cornerRadius,
+                       cornerRadius, 0 * degrees, 90 * degrees);
+            }
+            else {
+                cr.lineTo(xOffset + buttonWidth, yOffset);
+                cr.lineTo(xOffset + buttonWidth, yOffset + buttonHeight);
+            }
+
+            // bottom left corner
+            if(roundedLeftEdges) {
+                cr.arc(xOffset + cornerRadius, yOffset + buttonHeight - cornerRadius,
+                       cornerRadius, 90 * degrees, 180 * degrees);
+            }
+            else {
+                cr.lineTo(xOffset, yOffset + buttonHeight);
+            }
+            cr.closePath();
+
+            // if the button is inactive, save the border path for later rendering operations
+            cairo_path_t* borderPath;
+            if(!active) {
+                borderPath = cr.copyPath();
+            }
+
+            Pattern buttonGradient = Pattern.createLinear(0, yOffset, 0, yOffset + buttonHeight);
+            Color processedGradientTop = (pressed || enabled) ? pressedGradientTop : gradientTop;
+            Color processedGradientBottom = (pressed || enabled) ? pressedGradientBottom : gradientBottom;
+            if(pressed || enabled) {
+                processedGradientTop = processedGradientTop * enabledColor;
+                processedGradientBottom = processedGradientBottom * enabledColor;
+            }
+            buttonGradient.addColorStopRgb(0,
+                                           processedGradientTop.r,
+                                           processedGradientTop.g,
+                                           processedGradientTop.b);
+            buttonGradient.addColorStopRgb(1,
+                                           processedGradientBottom.r,
+                                           processedGradientBottom.g,
+                                           processedGradientBottom.b);
+            cr.setSource(buttonGradient);
+            cr.fillPreserve();
+
+            cr.setSourceRgb(0.15, 0.15, 0.15);
+            cr.stroke();
+
+            // draw the button's text
+            if(!_trackButtonLayout) {
+                PgFontDescription desc;
+                _trackButtonLayout = PgCairo.createLayout(cr);
+                desc = PgFontDescription.fromString(TrackStubs.buttonFont);
+                _trackButtonLayout.setFontDescription(desc);
+                desc.free();
+            }
+
+            _trackButtonLayout.setText(buttonText);
+            int widthPixels, heightPixels;
+            _trackButtonLayout.getPixelSize(widthPixels, heightPixels);
+            cr.moveTo(xOffset + buttonWidth / 2 - widthPixels / 2,
+                      yOffset + buttonHeight / 2 - heightPixels / 2);
+            cr.setSourceRgb(1.0, 1.0, 1.0);
+            PgCairo.updateLayout(cr, _trackButtonLayout);
+            PgCairo.showLayout(cr, _trackButtonLayout);
+
+            // if the button is inactive, gray it out
+            if(!active) {
+                cr.setOperator(cairo_operator_t.OVER);
+                cr.appendPath(borderPath);
+                cr.setSourceRgba(0.5, 0.5, 0.5, 0.6);
+                cr.fill();
+                Context.pathDestroy(borderPath);
+            }
+
+            cr.restore();
+        }
+
+        BoundingBox boundingBox;
+
+        @property Track track() { return _track; }
+        @property Track track(Track newTrack) { return (_track = newTrack); }
+
+        @property bool active() const { return _active; }
+        @property bool active(bool setActive) { return (_active = setActive); }
+
+        @property bool pressed() const { return _pressed; }
+        @property bool pressed(bool setPressed) { return (_pressed = setPressed); }
+
+        @property bool enabled() const { return _enabled; }
+        @property bool enabled(bool setEnabled) {
+            _enabled = setEnabled;
+            onEnabled(setEnabled);
+            return _enabled;
+        }
+
+        final void otherEnabled() {
+            _enabled = false;
+            onOtherEnabled();
+        }
+
+    protected:
+        void onEnabled(bool enabled) {
+        }
+
+        void onOtherEnabled() {
+        }
+
+        @property string buttonText() const;
+        @property Color enabledColor() const { return Color(1.0, 1.0, 1.0); }
+
+        immutable bool roundedLeftEdges;
+        immutable bool roundedRightEdges;
+
+    private:
+        Track _track;
+
+        bool _active = true;
+        bool _pressed;
+        bool _enabled;
+
+        PgLayout _trackButtonLayout;
+    }
+
+    final class MuteButton : TrackButton {
+    public:
+        this(Track track) {
+            super(track, true, false);
+        }
+
+    protected:
+        override void onEnabled(bool enabled) {
+            if(track !is null) {
+                track.mute = enabled;
+            }
+        }
+
+        @property override string buttonText() const { return "M"; }
+        @property override Color enabledColor() const { return Color(0.0, 1.0, 1.0); }
+    }
+
+    final class SoloButton : TrackButton {
+    public:
+        this(Track track) {
+            super(track, false, true);
+        }
+
+    protected:
+        override void onEnabled(bool enabled) {
+            if(track !is null) {
+                track.solo = enabled;
+            }
+            if(enabled) {
+                _mixer.soloTrack = true;
+            }
+            else {
+                foreach(trackView; _trackViews) {
+                    if(trackView.solo) {
+                        return;
+                    }
+                }
+                _mixer.soloTrack = false;
+            }
+        }
+
+        @property override string buttonText() const { return "S"; }
+        @property override Color enabledColor() const { return Color(1.0, 1.0, 0.0); }
+    }
+
+    final class LeftButton : TrackButton {
+    public:
+        this(Track track) {
+            super(track, true, false);
+        }
+
+        TrackButton other;
+
+    protected:
+        override void onEnabled(bool enabled) {
+            if(track !is null) {
+                track.leftSolo = enabled;
+            }
+            if(other !is null) {
+                other.otherEnabled();
+            }
+        }
+
+        override void onOtherEnabled() {
+            if(track !is null) {
+                track.leftSolo = false;
+            }
+        }
+
+        @property override string buttonText() const { return "L"; }
+        @property override Color enabledColor() const { return Color(1.0, 0.65, 0.0); }
+
+    private:
+    }
+
+    final class RightButton : TrackButton {
+    public:
+        this(Track track) {
+            super(track, false, true);
+        }
+
+        TrackButton other;
+
+    protected:
+        override void onEnabled(bool enabled) {
+            if(track !is null) {
+                track.rightSolo = enabled;
+            }
+            if(other !is null) {
+                other.otherEnabled();
+            }
+        }
+
+        override void onOtherEnabled() {
+            if(track !is null) {
+                track.rightSolo = false;
+            }
+        }
+
+        @property override string buttonText() const { return "R"; }
+        @property override Color enabledColor() const { return Color(1.0, 0.65, 0.0); }
     }
 
     class TrackView {
@@ -4092,7 +4378,7 @@ public:
             pixels_t buttonXOffset = xOffset;
             pixels_t buttonYOffset = yOffset + heightPixels / 2 + labelPadding / 2;
             _trackButtonStrip.draw(cr, buttonXOffset, buttonYOffset);
-            _minHeightPixels += TrackView.TrackButton.buttonWidth + (labelPadding / 2);
+            _minHeightPixels += TrackButton.buttonWidth + (labelPadding / 2);
 
             // draw separators
             cr.save();
@@ -4119,253 +4405,34 @@ public:
             cr.restore();
         }
 
-        abstract class TrackButton {
-        public:
-            enum buttonWidth = 20;
-            enum buttonHeight = 20;
-            enum cornerRadius = 4;
-
-            this(bool roundedLeftEdges = true, bool roundedRightEdges = true) {
-                this.roundedLeftEdges = roundedLeftEdges;
-                this.roundedRightEdges = roundedRightEdges;
-            }
-
-            final void draw(ref Scoped!Context cr, pixels_t xOffset, pixels_t yOffset) {
-                alias labelPadding = TrackStubs.labelPadding;
-
-                enum degrees = PI / 180.0;
-
-                immutable Color gradientTop = Color(0.5, 0.5, 0.5);
-                immutable Color gradientBottom = Color(0.2, 0.2, 0.2);
-                immutable Color pressedGradientTop = Color(0.4, 0.4, 0.4);
-                immutable Color pressedGradientBottom = Color(0.6, 0.6, 0.6);
-
-                boundingBox.x0 = xOffset;
-                boundingBox.y0 = yOffset;
-                boundingBox.x1 = xOffset + buttonWidth;
-                boundingBox.y1 = yOffset + buttonHeight;
-
-                cr.save();
-                cr.setAntialias(cairo_antialias_t.GRAY);
-                cr.setLineWidth(1.0);
-
-                // draw the button
-                cr.newSubPath();
-                // top left corner
-                if(roundedLeftEdges) {
-                    cr.arc(xOffset + cornerRadius, yOffset + cornerRadius,
-                           cornerRadius, 180 * degrees, 270 * degrees);
-                }
-                else {
-                    cr.moveTo(xOffset, yOffset);
-                    cr.lineTo(xOffset + buttonWidth + (roundedRightEdges ? -cornerRadius : 0), yOffset);
-                }
-
-                // right corners
-                if(roundedRightEdges) {
-                    cr.arc(xOffset + buttonWidth - cornerRadius, yOffset + cornerRadius,
-                           cornerRadius, -90 * degrees, 0 * degrees);
-                    cr.arc(xOffset + buttonWidth - cornerRadius, yOffset + buttonHeight - cornerRadius,
-                           cornerRadius, 0 * degrees, 90 * degrees);
-                }
-                else {
-                    cr.lineTo(xOffset + buttonWidth, yOffset);
-                    cr.lineTo(xOffset + buttonWidth, yOffset + buttonHeight);
-                }
-
-                // bottom left corner
-                if(roundedLeftEdges) {
-                    cr.arc(xOffset + cornerRadius, yOffset + buttonHeight - cornerRadius,
-                           cornerRadius, 90 * degrees, 180 * degrees);
-                }
-                else {
-                    cr.lineTo(xOffset, yOffset + buttonHeight);
-                }
-                cr.closePath();
-
-                Pattern buttonGradient = Pattern.createLinear(0, yOffset, 0, yOffset + buttonHeight);
-                Color processedGradientTop = (pressed || enabled) ? pressedGradientTop : gradientTop;
-                Color processedGradientBottom = (pressed || enabled) ? pressedGradientBottom : gradientBottom;
-                if(pressed || enabled) {
-                    processedGradientTop = processedGradientTop * enabledColor;
-                    processedGradientBottom = processedGradientBottom * enabledColor;
-                }
-                buttonGradient.addColorStopRgb(0,
-                                               processedGradientTop.r,
-                                               processedGradientTop.g,
-                                               processedGradientTop.b);
-                buttonGradient.addColorStopRgb(1,
-                                               processedGradientBottom.r,
-                                               processedGradientBottom.g,
-                                               processedGradientBottom.b);
-                cr.setSource(buttonGradient);
-                cr.fillPreserve();
-
-                cr.setSourceRgb(0.15, 0.15, 0.15);
-                cr.stroke();
-
-                // draw the button's text
-                _trackButtonLayout.setText(buttonText);
-                int widthPixels, heightPixels;
-                _trackButtonLayout.getPixelSize(widthPixels, heightPixels);
-                cr.moveTo(xOffset + buttonWidth / 2 - widthPixels / 2,
-                          yOffset + buttonHeight / 2 - heightPixels / 2);
-                cr.setSourceRgb(1.0, 1.0, 1.0);
-                PgCairo.updateLayout(cr, _trackButtonLayout);
-                PgCairo.showLayout(cr, _trackButtonLayout);
-
-                cr.restore();
-            }
-
-            BoundingBox boundingBox;
-
-            @property bool pressed() const { return _pressed; }
-            @property bool pressed(bool setPressed) { return (_pressed = setPressed); }
-
-            @property bool enabled() const { return _enabled; }
-            @property bool enabled(bool setEnabled) {
-                _enabled = setEnabled;
-                onEnabled(setEnabled);
-                return _enabled;
-            }
-
-            final void otherEnabled() {
-                _enabled = false;
-                onOtherEnabled();
-            }
-
-        protected:
-            void onEnabled(bool enabled) {
-            }
-
-            void onOtherEnabled() {
-            }
-
-            @property string buttonText() const;
-            @property Color enabledColor() const { return Color(1.0, 1.0, 1.0); }
-
-            immutable bool roundedLeftEdges;
-            immutable bool roundedRightEdges;
-
-        private:
-            bool _pressed;
-            bool _enabled;
-        }
-
-        final class MuteButton : TrackButton {
-        public:
-            this() {
-                super(true, false);
-            }
-
-        protected:
-            override void onEnabled(bool enabled) {
-                _track.mute = enabled;
-            }
-
-            @property override string buttonText() const { return "M"; }
-            @property override Color enabledColor() const { return Color(0.0, 1.0, 1.0); }
-        }
-
-        final class SoloButton : TrackButton {
-        public:
-            this() {
-                super(false, true);
-            }
-
-        protected:
-            override void onEnabled(bool enabled) {
-                _track.solo = enabled;
-                if(enabled) {
-                    _mixer.soloTrack = true;
-                }
-                else {
-                    foreach(trackView; _trackViews) {
-                        if(trackView.solo) {
-                            return;
-                        }
-                    }
-                    _mixer.soloTrack = false;
-                }
-            }
-
-            @property override string buttonText() const { return "S"; }
-            @property override Color enabledColor() const { return Color(1.0, 1.0, 0.0); }
-        }
-
-        final class LeftButton : TrackButton {
-        public:
-            this() {
-                super(true, false);
-            }
-
-            TrackButton other;
-
-        protected:
-            override void onEnabled(bool enabled) {
-                _track.leftSolo = enabled;
-                if(other !is null) {
-                    other.otherEnabled();
-                }
-            }
-
-            override void onOtherEnabled() {
-                _track.leftSolo = false;
-            }
-
-            @property override string buttonText() const { return "L"; }
-            @property override Color enabledColor() const { return Color(1.0, 0.65, 0.0); }
-
-        private:
-        }
-
-        final class RightButton : TrackButton {
-        public:
-            this() {
-                super(false, true);
-            }
-
-            TrackButton other;
-
-        protected:
-            override void onEnabled(bool enabled) {
-                _track.rightSolo = enabled;
-                if(other !is null) {
-                    other.otherEnabled();
-                }
-            }
-
-            override void onOtherEnabled() {
-                _track.rightSolo = false;
-            }
-
-            @property override string buttonText() const { return "R"; }
-            @property override Color enabledColor() const { return Color(1.0, 0.65, 0.0); }
-        }
-
         class TrackButtonStrip {
         public:
-            this() {
-                muteButton = new MuteButton();
-                soloButton = new SoloButton();
+            this(Track track) {
+                muteButton = new MuteButton(track);
+                soloButton = new SoloButton(track);
 
-                leftButton = new LeftButton();
-                rightButton = new RightButton();
+                leftButton = new LeftButton(track);
+                rightButton = new RightButton(track);
                 leftButton.other = rightButton;
                 rightButton.other = leftButton;
+            }
+
+            void drawMuteSolo(ref Scoped!Context cr, pixels_t xOffset, pixels_t yOffset) {
+                muteButton.draw(cr, xOffset, yOffset);
+                soloButton.draw(cr, xOffset + TrackButton.buttonWidth, yOffset);
+            }
+
+            void drawLeftRight(ref Scoped!Context cr, pixels_t xOffset, pixels_t yOffset) {
+                leftButton.draw(cr, xOffset, yOffset);
+                rightButton.draw(cr, xOffset + TrackButton.buttonWidth, yOffset);
             }
 
             void draw(ref Scoped!Context cr, pixels_t xOffset, pixels_t yOffset) {
                 enum buttonGroupSeparation = 15;
 
-                muteButton.draw(cr, xOffset, yOffset);
-                xOffset += TrackButton.buttonWidth;
-                soloButton.draw(cr, xOffset, yOffset);
-                xOffset += TrackButton.buttonWidth + buttonGroupSeparation;
-
-                leftButton.draw(cr, xOffset, yOffset);
-                xOffset += TrackButton.buttonWidth;
-                rightButton.draw(cr, xOffset, yOffset);
+                drawMuteSolo(cr, xOffset, yOffset);
+                xOffset += TrackButton.buttonWidth * 2 + buttonGroupSeparation;
+                drawLeftRight(cr, xOffset, yOffset);
             }
 
             @property TrackButton[] trackButtons() {
@@ -4383,12 +4450,19 @@ public:
             return _trackButtonStrip.trackButtons;
         }
 
+        @property TrackButtonStrip trackButtonStrip() {
+            return _trackButtonStrip;
+        }
+
         @property bool mute() const { return _track.mute; }
         @property bool solo() const { return _track.solo; }
 
         void processSilence(nframes_t bufferLength) { _track.processSilence(bufferLength); }
         @property ref const(sample_t[2]) level() const { return _track.level; }
         @property ref const(sample_t[2]) peakMax() const { return _track.peakMax; }
+
+        @property sample_t faderGainDB() const @nogc nothrow { return _track.faderGainDB; }
+        @property sample_t faderGainDB(sample_t db) { return (_track.faderGainDB = db); }
 
         bool validZoom(float verticalScaleFactor) {
             return cast(pixels_t)(max(_baseHeightPixels * verticalScaleFactor, RegionView.headerHeight)) >=
@@ -4415,7 +4489,7 @@ public:
             _trackColor = _newTrackColor();
             _name = name;
 
-            _trackButtonStrip = new TrackButtonStrip();
+            _trackButtonStrip = new TrackButtonStrip(_track);
         }
 
         static Color _newTrackColor() {
@@ -4467,6 +4541,7 @@ public:
             // select the new track
             trackView.selected = true;
             _selectedTrack = trackView;
+            _arrangeChannelStrip.update();
             _trackViews ~= trackView;
 
             _canvas.redraw();
@@ -4848,76 +4923,108 @@ private:
         return null;
     }
 
-    class ChannelStrip : DrawingArea {
+    class ChannelStrip {
     public:
         enum meterHeightPixels = 300;
         enum meterChannelWidthPixels = 8;
         enum meterWidthPixels = meterChannelWidthPixels * 2 + 4;
         enum meterMarkFont = "Arial 7";
 
-        this() {
-            _channelStripWidth = defaultChannelStripWidth;
-            setSizeRequest(_channelStripWidth, 0);
+        enum faderBackgroundWidthPixels = 6;
+        enum faderWidthPixels = 20;
+        enum faderHeightPixels = 40;
+        enum faderCornerRadiusPixels = 4;
 
-            addOnDraw(&drawCallback);
+        static immutable float[] meterMarks =
+            [6, 3, 0, -3, -6, -9, -12, -15, -18, -20, -25, -30, -35, -40, -50, -60];
+
+        this(TrackView track) {
+            _track = track;
+
+            updateFaderFromTrack();
         }
 
-        void redraw() {
-            queueDrawArea(0, 0, getWindow().getWidth(), getWindow().getHeight());
-        }
-
-        bool drawCallback(Scoped!Context cr, Widget widget) {
-            if(_channelStripRefresh is null) {
-                _channelStripRefresh = new Timeout(cast(uint)(1.0 / refreshRate * 1000), &onRefresh, false);
-            }
+        void draw(ref Scoped!Context cr) {
+            immutable pixels_t windowWidth = cast(pixels_t)(getWindow().getWidth());
+            immutable pixels_t windowHeight = cast(pixels_t)(getWindow().getHeight());
 
             cr.setSourceRgb(0.1, 0.1, 0.1);
             cr.paint();
 
-            drawMeter(cr);
+            pixels_t xOffset = 20;
+            _faderYOffset = windowHeight - (meterHeightPixels + 10);
 
-            return true;
+            drawFader(cr, xOffset, _faderYOffset);
+            xOffset += faderBackgroundWidthPixels + 30;
+            drawMeter(cr, xOffset, _faderYOffset);
         }
 
-        void drawMeter(ref Scoped!Context cr) {
-            if(_selectedTrack !is null) {
+        void drawFader(ref Scoped!Context cr, pixels_t faderXOffset, pixels_t faderYOffset) {
+            if(_track !is null) {
+                enum degrees = PI / 180.0;
+
                 cr.save();
 
                 cr.setOperator(cairo_operator_t.OVER);
                 cr.setAntialias(cairo_antialias_t.GRAY);
                 cr.setLineWidth(1.0);
 
-                immutable pixels_t windowWidth = cast(pixels_t)(getWindow().getWidth());
-                immutable pixels_t windowHeight = cast(pixels_t)(getWindow().getHeight());
+                // draw the background
+                cr.rectangle(faderXOffset - faderBackgroundWidthPixels / 2, faderYOffset,
+                             faderBackgroundWidthPixels, meterHeightPixels);
+                cr.setSourceRgb(0.0, 0.0, 0.0);
+                cr.fill();
 
-                static float deflect(float db) {
-                    float def = 0.0f;
-                    if(db < -70.0f) {
-                        def = 0.0f;
-                    }
-                    else if(db < -60.0f) {
-                        def = (db + 70.0f) * 0.25f;
-                    }
-                    else if(db < -50.0f) {
-                        def = (db + 60.0f) * 0.5f + 2.5f;
-                    }
-                    else if(db < -40.0f) {
-                        def = (db + 50.0f) * 0.75f + 7.5f;
-                    }
-                    else if(db < -30.0f) {
-                        def = (db + 40.0f) * 1.5f + 15.0f;
-                    }
-                    else if(db < -20.0f) {
-                        def = (db + 30.0f) * 2.0f + 30.0f;
-                    }
-                    else if(db < 6.0f) {
-                        def = (db + 20.0f) * 2.5f + 50.0f;
-                    }
-                    else {
-                        def = 115.0f;
-                    }
-                    return def / 115.0f;
-                }
+                // compute pixel offsets for the top left corner of the fader
+                immutable pixels_t xOffset = faderXOffset - faderWidthPixels / 2;
+                immutable pixels_t yOffset = faderYOffset - faderHeightPixels / 2 + _faderAdjustmentPixels;
+
+                // compute a bounding box for the fader
+                _faderBox.x0 = xOffset;
+                _faderBox.y0 = yOffset;
+                _faderBox.x1 = xOffset + faderWidthPixels;
+                _faderBox.y1 = yOffset + faderHeightPixels;
+
+                // draw the fader
+                Pattern faderGradient = Pattern.createLinear(0, yOffset, 0, yOffset + faderHeightPixels);
+                faderGradient.addColorStopRgb(0, 0.25, 0.25, 0.25);
+                faderGradient.addColorStopRgb(0.5, 0.6, 0.6, 0.6);
+                faderGradient.addColorStopRgb(1, 0.25, 0.25, 0.25);
+
+                cr.newSubPath();
+                cr.arc(xOffset + faderCornerRadiusPixels, yOffset + faderCornerRadiusPixels,
+                       faderCornerRadiusPixels, 180 * degrees, 270 * degrees);
+                cr.arc(xOffset + faderWidthPixels - faderCornerRadiusPixels, yOffset + faderCornerRadiusPixels,
+                       faderCornerRadiusPixels, -90 * degrees, 0 * degrees);
+                cr.arc(xOffset + faderWidthPixels - faderCornerRadiusPixels,
+                       yOffset + faderHeightPixels - faderCornerRadiusPixels,
+                       faderCornerRadiusPixels, 0 * degrees, 90 * degrees);
+                cr.arc(xOffset + faderCornerRadiusPixels, yOffset + faderHeightPixels - faderCornerRadiusPixels,
+                       faderCornerRadiusPixels, 90 * degrees, 180 * degrees);
+                cr.closePath();
+
+                cr.setSourceRgb(0.0, 0.0, 0.0);
+                cr.strokePreserve();
+                cr.setSource(faderGradient);
+                cr.fill();
+
+                cr.setAntialias(cairo_antialias_t.NONE);
+                cr.moveTo(faderXOffset - (faderWidthPixels / 2) + 2, faderYOffset + _faderAdjustmentPixels);
+                cr.lineTo(faderXOffset + (faderWidthPixels / 2) - 2, faderYOffset + _faderAdjustmentPixels);
+                cr.setSourceRgb(0.0, 0.0, 0.0);
+                cr.stroke();
+
+                cr.restore();
+            }
+        }
+
+        void drawMeter(ref Scoped!Context cr, pixels_t meterXOffset, pixels_t meterYOffset) {
+            if(_track !is null) {
+                cr.save();
+
+                cr.setOperator(cairo_operator_t.OVER);
+                cr.setAntialias(cairo_antialias_t.GRAY);
+                cr.setLineWidth(1.0);
 
                 if(_meterGradient is null || _backgroundGradient is null) {
                     immutable Color[] colorMap = [
@@ -4929,45 +5036,43 @@ private:
                         Color(0.0, 0.6, 0.1),
                         Color(0.0, 0.4, 0.25),
                         Color(0.0, 0.1, 0.5)
-                    ];
+                        ];
 
                     static void addMeterColorStops(T)(Pattern pattern, T colorMap) {
                         // clip
                         pattern.addColorStopRgb(1.0, colorMap[0].r, colorMap[0].g, colorMap[0].b);
 
                         // 0 dB
-                        pattern.addColorStopRgb(deflect(0), colorMap[1].r, colorMap[1].g, colorMap[1].b);
+                        pattern.addColorStopRgb(_deflect(0), colorMap[1].r, colorMap[1].g, colorMap[1].b);
 
                         // -3 dB
-                        pattern.addColorStopRgb(deflect(-3), colorMap[2].r, colorMap[2].g, colorMap[2].b);
+                        pattern.addColorStopRgb(_deflect(-3), colorMap[2].r, colorMap[2].g, colorMap[2].b);
 
                         // -9 dB
-                        pattern.addColorStopRgb(deflect(-9), colorMap[3].r, colorMap[3].g, colorMap[3].b);
+                        pattern.addColorStopRgb(_deflect(-9), colorMap[3].r, colorMap[3].g, colorMap[3].b);
 
                         // -18 dB
-                        pattern.addColorStopRgb(deflect(-18), colorMap[4].r, colorMap[4].g, colorMap[4].b);
+                        pattern.addColorStopRgb(_deflect(-18), colorMap[4].r, colorMap[4].g, colorMap[4].b);
 
                         // -40 dB
-                        pattern.addColorStopRgb(deflect(-40), colorMap[6].r, colorMap[6].g, colorMap[6].b);
+                        pattern.addColorStopRgb(_deflect(-40), colorMap[6].r, colorMap[6].g, colorMap[6].b);
 
                         // -inf
                         pattern.addColorStopRgb(0.0, colorMap[7].r, colorMap[7].g, colorMap[7].b);
                     }
 
                     _meterGradient =
-                        Pattern.createLinear(0, windowHeight, 0, windowHeight - meterHeightPixels);
+                        Pattern.createLinear(0, meterYOffset + meterHeightPixels, 0, meterYOffset);
                     addMeterColorStops(_meterGradient, colorMap);
                     
                     _backgroundGradient =
-                        Pattern.createLinear(0, windowHeight, 0, windowHeight - meterHeightPixels);
+                        Pattern.createLinear(0, meterYOffset + meterHeightPixels, 0, meterYOffset);
                     addMeterColorStops(_backgroundGradient,
                                        std.algorithm.map!((Color color) => color / 10)(colorMap));
                 }
 
-                immutable pixels_t meterXOffset = 30;
                 immutable pixels_t meterXOffset1 = meterXOffset + 1;
                 immutable pixels_t meterXOffset2 = meterXOffset1 + 2 + meterChannelWidthPixels;
-                immutable pixels_t meterYOffset = windowHeight - (meterHeightPixels + 10);
 
                 // draw the meter marks
                 if(!_meterMarkLayout) {
@@ -4978,17 +5083,14 @@ private:
                     desc.free();
                 }
 
-                immutable float[] meterMarks =
-                    [3, 0, -3, -6, -9, -12, -15, -18, -20, -25, -30, -35, -40, -50, -60];
-
                 void drawMark(float db) {
-                    _meterMarkLayout.setText(db > 0 ? ("+" ~ to!string(cast(int)(db))) :
+                    _meterMarkLayout.setText(db > 0 ? ('+' ~ to!string(cast(int)(db))) :
                                              to!string(cast(int)(db)));
                     int widthPixels, heightPixels;
                     _meterMarkLayout.getPixelSize(widthPixels, heightPixels);
                     cr.moveTo(meterXOffset - (widthPixels + 4),
                               meterYOffset + meterHeightPixels -
-                              (meterHeightPixels * deflect(db) + heightPixels / 2));
+                              (meterHeightPixels * _deflect(db) + heightPixels / 2));
                     PgCairo.updateLayout(cr, _meterMarkLayout);
                     PgCairo.showLayout(cr, _meterMarkLayout);
                 }
@@ -5005,8 +5107,10 @@ private:
                 cr.fill();
 
                 // draw the current meter levels
-                pixels_t levelHeight1 = cast(pixels_t)(_selectedTrack.level[0] * meterHeightPixels);
-                pixels_t levelHeight2 = cast(pixels_t)(_selectedTrack.level[1] * meterHeightPixels);
+                immutable pixels_t levelHeight1 = min(cast(pixels_t)(_track.level[0] * meterHeightPixels),
+                                                      meterHeightPixels);
+                immutable pixels_t levelHeight2 = min(cast(pixels_t)(_track.level[1] * meterHeightPixels),
+                                                      meterHeightPixels);
 
                 cr.rectangle(meterXOffset1, meterYOffset + (meterHeightPixels - levelHeight1),
                              meterChannelWidthPixels, levelHeight1);
@@ -5017,9 +5121,141 @@ private:
                              meterChannelWidthPixels, levelHeight2);
                 cr.setSource(_meterGradient);
                 cr.fill();
-
-                cr.restore();
             }
+        }
+
+        void sizeChanged() {
+            _meterGradient = null;
+            _backgroundGradient = null;
+        }
+
+        void updateFaderFromMouse() {
+            _faderAdjustmentPixels = clamp(_mouseY - _faderYOffset, 0, meterHeightPixels);
+            if(_track !is null) {
+                _track.faderGainDB =
+                    _deflectInverse(1 - cast(float)(_faderAdjustmentPixels) / cast(float)(meterHeightPixels));
+            }
+        }
+
+        void updateFaderFromTrack() {
+            if(_track !is null) {
+                _faderAdjustmentPixels = cast(pixels_t)((1 - _deflect(_track.faderGainDB)) * meterHeightPixels);
+            }
+            else {
+                _faderAdjustmentPixels = cast(pixels_t)((1 - _deflect(0)) * meterHeightPixels);
+            }
+        }
+
+        @property TrackView track() { return _track; }
+        @property TrackView track(TrackView newTrack) {
+            _track = newTrack;
+            updateFaderFromTrack();
+            return _track;
+        }
+
+        @property ref const(BoundingBox) faderBox() const { return _faderBox; }
+
+    private:
+        static float _deflect(float db) {
+            float def = 0.0f;
+
+            if(db < -70.0f) {
+                def = 0.0f;
+            }
+            else if(db < -60.0f) {
+                def = (db + 70.0f) * 0.25f;
+            }
+            else if(db < -50.0f) {
+                def = (db + 60.0f) * 0.5f + 2.5f;
+            }
+            else if(db < -40.0f) {
+                def = (db + 50.0f) * 0.75f + 7.5f;
+            }
+            else if(db < -30.0f) {
+                def = (db + 40.0f) * 1.5f + 15.0f;
+            }
+            else if(db < -20.0f) {
+                def = (db + 30.0f) * 2.0f + 30.0f;
+            }
+            else if(db < 6.0f) {
+                def = (db + 20.0f) * 2.5f + 50.0f;
+            }
+            else {
+                def = 115.0f;
+            }
+
+            return def / 115.0f;
+        }
+
+        static float _deflectInverse(float faderPosition) {
+            static auto deflectionPoints = std.algorithm.map!(db => _deflect(db))(meterMarks);
+
+            size_t index;
+            float db;
+
+            if(faderPosition >= deflectionPoints[0]) {
+                db = meterMarks[0];
+            }
+            else {
+                foreach(point; deflectionPoints) {
+                    if(faderPosition >= point && index < meterMarks.length) {
+                        db = ((faderPosition - point) / ((index > 0 ? deflectionPoints[index - 1] : 1) - point)) *
+                            ((index > 0 ? meterMarks[index - 1] : 6) - meterMarks[index]) +
+                            meterMarks[index];
+                        break;
+                    }
+                    ++index;
+                }
+                if(index >= meterMarks.length) {
+                    db = -float.infinity;
+                }
+            }
+
+            return db;
+        }
+
+        TrackView _track;
+
+        pixels_t _faderYOffset;
+        pixels_t _faderAdjustmentPixels;
+        BoundingBox _faderBox;
+
+        Pattern _meterGradient;
+        Pattern _backgroundGradient;
+        PgLayout _meterMarkLayout;
+    }
+
+    class ArrangeChannelStrip : DrawingArea {
+    public:
+        this() {
+            _arrangeChannelStripWidth = defaultChannelStripWidth;
+            setSizeRequest(_arrangeChannelStripWidth, 0);
+
+            addOnDraw(&drawCallback);
+            addOnSizeAllocate(&onSizeAllocate);
+            addOnMotionNotify(&onMotionNotify);
+            addOnButtonPress(&onButtonPress);
+            addOnButtonRelease(&onButtonRelease);
+
+            _selectedTrackChannelStrip = new ChannelStrip(_selectedTrack);
+        }
+
+        void update() {
+            _selectedTrackChannelStrip.track = _selectedTrack;
+        }
+
+        void redraw() {
+            queueDrawArea(0, 0, getWindow().getWidth(), getWindow().getHeight());
+        }
+
+        bool drawCallback(Scoped!Context cr, Widget widget) {
+            if(_arrangeChannelStripRefresh is null) {
+                _arrangeChannelStripRefresh = new Timeout(cast(uint)(1.0 / refreshRate * 1000), &onRefresh, false);
+            }
+
+            _selectedTrackChannelStrip.draw(cr);
+
+            return true;
         }
 
         bool onRefresh() {
@@ -5046,8 +5282,8 @@ private:
 
                 redraw();
 
-                if(cast(pixels_t)(_selectedTrack.level[0] * meterHeightPixels) == 0 &&
-                   cast(pixels_t)(_selectedTrack.level[1] * meterHeightPixels) == 0) {
+                if(cast(pixels_t)(_selectedTrack.level[0] * ChannelStrip.meterHeightPixels) == 0 &&
+                   cast(pixels_t)(_selectedTrack.level[1] * ChannelStrip.meterHeightPixels) == 0) {
                     _processSilence = false;
                 }
             }
@@ -5055,11 +5291,47 @@ private:
             return true;
         }
 
+        void onSizeAllocate(GtkAllocation* allocation, Widget widget) {
+            _selectedTrackChannelStrip.sizeChanged();
+        }
+
+        bool onMotionNotify(Event event, Widget widget) {
+            if(event.type == EventType.MOTION_NOTIFY) {
+                _mouseX = cast(typeof(_mouseX))(event.motion.x);
+                _mouseY = cast(typeof(_mouseX))(event.motion.y);
+
+                if(_selectedTrackFaderMoving) {
+                    _selectedTrackChannelStrip.updateFaderFromMouse();
+                    redraw();
+                }
+            }
+            return true;
+        }
+
+        bool onButtonPress(Event event, Widget widget) {
+            if(event.type == EventType.BUTTON_PRESS) {
+                if(event.button.button == leftButton &&
+                   _selectedTrackChannelStrip.faderBox.containsPoint(_mouseX, _mouseY)) {
+                    _selectedTrackFaderMoving = true;
+                }
+            }
+            return false;
+        }
+
+        bool onButtonRelease(Event event, Widget widget) {
+            if(event.type == EventType.BUTTON_RELEASE && event.button.button == leftButton) {
+                if(_selectedTrackFaderMoving) {
+                    _selectedTrackFaderMoving = false;
+                }
+            }
+            return false;
+        }
+
     private:
-        pixels_t _channelStripWidth;
-        Pattern _meterGradient;
-        Pattern _backgroundGradient;
-        PgLayout _meterMarkLayout;
+        pixels_t _arrangeChannelStripWidth;
+
+        ChannelStrip _selectedTrackChannelStrip;
+        bool _selectedTrackFaderMoving;
 
         bool _mixerPlaying;
         bool _processSilence;
@@ -5094,13 +5366,6 @@ private:
                 _trackLabelLayout.setFontDescription(desc);
                 desc.free();
             }
-            if(!_trackButtonLayout) {
-                PgFontDescription desc;
-                _trackButtonLayout = PgCairo.createLayout(cr);
-                desc = PgFontDescription.fromString(TrackStubs.buttonFont);
-                _trackButtonLayout.setFontDescription(desc);
-                desc.free();
-            }
 
             cr.setAntialias(cairo_antialias_t.NONE);
             cr.setLineWidth(1.0);
@@ -5131,8 +5396,6 @@ private:
 
         bool onMotionNotify(Event event, Widget widget) {
             if(event.type == EventType.MOTION_NOTIFY) {
-                pixels_t prevMouseX = _mouseX;
-                pixels_t prevMouseY = _mouseY;
                 _mouseX = cast(typeof(_mouseX))(event.motion.x);
                 _mouseY = cast(typeof(_mouseX))(event.motion.y);
             }
@@ -5165,6 +5428,7 @@ private:
                             // select the new track
                             trackView.selected = true;
                             _selectedTrack = trackView;
+                            _arrangeChannelStrip.update();
 
                             redraw();
                         }
@@ -6598,7 +6862,6 @@ private:
     Direction _subregionDirection;
 
     PgLayout _trackLabelLayout;
-    PgLayout _trackButtonLayout;
     PgLayout _regionHeaderLabelLayout;
     PgLayout _markerLabelLayout;
     PgLayout _timeStripMarkerLayout;
@@ -6607,12 +6870,12 @@ private:
     nframes_t _samplesPerPixel;
     nframes_t _viewOffset;
 
-    ChannelStrip _channelStrip;
-    Timeout _channelStripRefresh;
+    ArrangeChannelStrip _arrangeChannelStrip;
+    Timeout _arrangeChannelStripRefresh;
 
     TrackStubs _trackStubs;
     pixels_t _trackStubWidth;
-    TrackView.TrackButton _trackButtonPressed;
+    TrackButton _trackButtonPressed;
 
     Canvas _canvas;
     ArrangeHScroll _hScroll;
