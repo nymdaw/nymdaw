@@ -2083,6 +2083,7 @@ public:
         _meter[1].reset();
         _peakMax = 0;
         _level = 0;
+        _lastLevelMax = 0;
     }
 
     const(Region[]) regions() const { return _regions; }
@@ -2114,7 +2115,13 @@ public:
         return (_faderGain = pow(10, db / 20));
     }
 
-    @property ref const(sample_t[2]) level() const { return _level; }
+    @property const(sample_t[2]) level() {
+        _resetLastLevel = true;
+        sample_t[2] retValue;
+        retValue[0] = _lastLevelMax[0];
+        retValue[1] = _lastLevelMax[1];
+        return retValue;
+    }
     @property ref const(sample_t[2]) peakMax() const { return _peakMax; }
 
 package:
@@ -2300,7 +2307,12 @@ private:
 
         float m, p;
         _meter[channelIndex].read(m, p);
-        _level[channelIndex] = m;
+
+        _level[channelIndex]  = m;
+        if(_resetLastLevel || _lastLevelMax[channelIndex] < m) {
+            _lastLevelMax[channelIndex] = m;
+        }
+
         if(_peakMax[channelIndex] < p) {
             _peakMax[channelIndex] = p;
         }
@@ -2322,6 +2334,8 @@ private:
     TruePeakDSP[2] _meter;
     sample_t[2] _peakMax = 0;
     sample_t[2] _level = 0;
+    sample_t[2] _lastLevelMax = 0;
+    bool _resetLastLevel;
 }
 
 abstract class Mixer {
@@ -2696,7 +2710,7 @@ public:
     enum defaultTrackHeightPixels = 200; // default height in pixels of new tracks in the arrange view
     enum defaultTrackStubWidth = 200; // default width in pixels for all track stubs
     enum defaultChannelStripWidth = 100; // default width in pixels for the channel strip
-    enum refreshRate = 60; // rate in hertz at which to redraw the view when the transport is playing
+    enum refreshRate = 50; // rate in hertz at which to redraw the view when the transport is playing
     enum mouseOverThreshold = 2; // threshold number of pixels in one direction for mouse over events
     enum doubleClickMsecs = 500; // amount of time between two button clicks considered as a double click
 
@@ -4461,7 +4475,7 @@ public:
         @property bool solo() const { return _track.solo; }
 
         void processSilence(nframes_t bufferLength) { _track.processSilence(bufferLength); }
-        @property ref const(sample_t[2]) level() const { return _track.level; }
+        @property const(sample_t[2]) level() { return _track.level; }
         @property ref const(sample_t[2]) peakMax() const { return _track.peakMax; }
 
         void resetMeters() @nogc nothrow { _track.resetMeters(); }
@@ -5116,7 +5130,7 @@ private:
                 cr.setSource(_backgroundGradient);
                 cr.fill();
 
-                // draw the current meter levels
+                // draw the meter levels
                 immutable pixels_t levelHeight1 = min(cast(pixels_t)(_track.level[0] * meterHeightPixels),
                                                       meterHeightPixels);
                 immutable pixels_t levelHeight2 = min(cast(pixels_t)(_track.level[1] * meterHeightPixels),
@@ -5131,6 +5145,25 @@ private:
                              meterChannelWidthPixels, levelHeight2);
                 cr.setSource(_meterGradient);
                 cr.fill();
+
+                // draw the peak levels
+                if(_track.peakMax[0] > 0 || _track.peakMax[1] > 0) {
+                    immutable pixels_t peakHeight1 = min(cast(pixels_t)(_track.peakMax[0] * meterHeightPixels),
+                                                         meterHeightPixels);
+                    immutable pixels_t peakHeight2 = min(cast(pixels_t)(_track.peakMax[1] * meterHeightPixels),
+                                                         meterHeightPixels);
+
+                    cr.moveTo(meterXOffset1, meterYOffset + (meterHeightPixels - peakHeight1));
+                    cr.lineTo(meterXOffset1 + meterChannelWidthPixels,
+                              meterYOffset + (meterHeightPixels - peakHeight1));
+
+                    cr.moveTo(meterXOffset2, meterYOffset + (meterHeightPixels - peakHeight2));
+                    cr.lineTo(meterXOffset2 + meterChannelWidthPixels,
+                              meterYOffset + (meterHeightPixels - peakHeight2));
+
+                    cr.setSource(_meterGradient);
+                    cr.stroke();
+                }
             }
         }
 
