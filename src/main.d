@@ -2081,6 +2081,8 @@ public:
     void resetMeters() @nogc nothrow {
         _meter[0].reset();
         _meter[1].reset();
+        _peakMax = 0;
+        _level = 0;
     }
 
     const(Region[]) regions() const { return _regions; }
@@ -2696,6 +2698,7 @@ public:
     enum defaultChannelStripWidth = 100; // default width in pixels for the channel strip
     enum refreshRate = 60; // rate in hertz at which to redraw the view when the transport is playing
     enum mouseOverThreshold = 2; // threshold number of pixels in one direction for mouse over events
+    enum doubleClickMsecs = 500; // amount of time between two button clicks considered as a double click
 
     // convenience constants for GTK mouse buttons
     enum leftButton = 1;
@@ -4461,6 +4464,7 @@ public:
         @property ref const(sample_t[2]) level() const { return _track.level; }
         @property ref const(sample_t[2]) peakMax() const { return _track.peakMax; }
 
+        void resetMeters() @nogc nothrow { _track.resetMeters(); }
         @property sample_t faderGainDB() const @nogc nothrow { return _track.faderGainDB; }
         @property sample_t faderGainDB(sample_t db) { return (_track.faderGainDB = db); }
 
@@ -5099,6 +5103,12 @@ private:
                     drawMark(meterMark);
                 }
 
+                // compute the bounding box for the meter
+                _meterBox.x0 = meterXOffset;
+                _meterBox.y0 = meterYOffset;
+                _meterBox.x1 = meterXOffset + meterWidthPixels;
+                _meterBox.y1 = meterYOffset + meterHeightPixels;
+
                 // draw the meter background
                 cr.rectangle(meterXOffset, meterYOffset, meterWidthPixels, meterHeightPixels);
                 cr.setSourceRgb(0.0, 0.0, 0.0);
@@ -5129,6 +5139,54 @@ private:
             _backgroundGradient = null;
         }
 
+        // continues to update the meter when the mixer stops playing
+        // returns true if the meter should be redrawn
+        bool refresh() {
+            if(_mixer.playing) {
+                _mixerPlaying = true;
+                _processSilence = false;
+                return true;
+            }
+            else if(_mixerPlaying) {
+                _mixerPlaying = false;
+                _processSilence = true;
+                _lastRefresh = MonoTime.currTime;
+            }
+
+            if(_processSilence && _track !is null) {
+                auto elapsed = (MonoTime.currTime - _lastRefresh).split!("msecs").msecs;
+                _lastRefresh = MonoTime.currTime;
+
+                // this check is required for the meter implementation
+                if(elapsed > 0) {
+                    _track.processSilence(cast(nframes_t)(_mixer.sampleRate / 1000 * elapsed));
+                }
+
+                if(cast(pixels_t)(_track.level[0] * meterHeightPixels) == 0 &&
+                   cast(pixels_t)(_track.level[1] * meterHeightPixels) == 0) {
+                    _processSilence = false;
+                    return true;
+                }
+            }
+
+            return _processSilence;
+        }
+
+        void resetMeters() {
+            if(_track !is null) {
+                _track.resetMeters();
+                _processSilence = false;
+            }
+        }
+
+        void zeroFader() {
+            if(_track !is null) {
+                _track.faderGainDB = 0;
+                _track.resetMeters();
+                updateFaderFromTrack();
+            }
+        }
+
         void updateFaderFromMouse() {
             _faderAdjustmentPixels = clamp(_mouseY - _faderYOffset, 0, meterHeightPixels);
             if(_track !is null) {
@@ -5154,6 +5212,7 @@ private:
         }
 
         @property ref const(BoundingBox) faderBox() const { return _faderBox; }
+        @property ref const(BoundingBox) meterBox() const { return _meterBox; }
 
     private:
         static float _deflect(float db) {
@@ -5219,10 +5278,15 @@ private:
         pixels_t _faderYOffset;
         pixels_t _faderAdjustmentPixels;
         BoundingBox _faderBox;
+        BoundingBox _meterBox;
 
         Pattern _meterGradient;
         Pattern _backgroundGradient;
         PgLayout _meterMarkLayout;
+
+        bool _mixerPlaying;
+        bool _processSilence;
+        MonoTime _lastRefresh;
     }
 
     class ArrangeChannelStrip : DrawingArea {
@@ -5253,39 +5317,21 @@ private:
                 _arrangeChannelStripRefresh = new Timeout(cast(uint)(1.0 / refreshRate * 1000), &onRefresh, false);
             }
 
+            // draw the channel strip for the currently selected track
             _selectedTrackChannelStrip.draw(cr);
+
+            // draw a right border
+            cr.moveTo(_arrangeChannelStripWidth, 0);
+            cr.lineTo(_arrangeChannelStripWidth, getWindow.getHeight());
+            cr.setSourceRgb(0.0, 0.0, 0.0);
+            cr.stroke();
 
             return true;
         }
 
         bool onRefresh() {
-            if(_mixer.playing) {
-                _mixerPlaying = true;
-                _processSilence = false;
+            if(_selectedTrackChannelStrip.refresh()) {
                 redraw();
-                return true;
-            }
-            else if(_mixerPlaying) {
-                _mixerPlaying = false;
-                _processSilence = true;
-                _lastRefresh = MonoTime.currTime;
-            }
-
-            if(_processSilence && _selectedTrack !is null) {
-                auto elapsed = (MonoTime.currTime - _lastRefresh).split!("msecs").msecs;
-                _lastRefresh = MonoTime.currTime;
-
-                // this check is required for the meter implementation
-                if(elapsed > 0) {
-                    _selectedTrack.processSilence(cast(nframes_t)(_mixer.sampleRate / 1000 * elapsed));
-                }
-
-                redraw();
-
-                if(cast(pixels_t)(_selectedTrack.level[0] * ChannelStrip.meterHeightPixels) == 0 &&
-                   cast(pixels_t)(_selectedTrack.level[1] * ChannelStrip.meterHeightPixels) == 0) {
-                    _processSilence = false;
-                }
             }
 
             return true;
@@ -5310,9 +5356,27 @@ private:
 
         bool onButtonPress(Event event, Widget widget) {
             if(event.type == EventType.BUTTON_PRESS) {
-                if(event.button.button == leftButton &&
-                   _selectedTrackChannelStrip.faderBox.containsPoint(_mouseX, _mouseY)) {
-                    _selectedTrackFaderMoving = true;
+                bool doubleClick;
+                auto doubleClickElapsed = (MonoTime.currTime - _doubleClickTime).split!("msecs").msecs;
+                if(doubleClickElapsed <= doubleClickMsecs) {
+                    doubleClick = true;
+                }
+                _doubleClickTime = MonoTime.currTime;
+
+                if(event.button.button == leftButton) {
+                    if(_selectedTrackChannelStrip.faderBox.containsPoint(_mouseX, _mouseY)) {
+                        if(doubleClick) {
+                            _selectedTrackChannelStrip.zeroFader();
+                            redraw();
+                        }
+                        else {
+                            _selectedTrackFaderMoving = true;
+                        }
+                    }
+                    else if(_selectedTrackChannelStrip.meterBox.containsPoint(_mouseX, _mouseY)) {
+                        _selectedTrackChannelStrip.resetMeters();
+                        redraw();
+                    }
                 }
             }
             return false;
@@ -5332,10 +5396,6 @@ private:
 
         ChannelStrip _selectedTrackChannelStrip;
         bool _selectedTrackFaderMoving;
-
-        bool _mixerPlaying;
-        bool _processSilence;
-        MonoTime _lastRefresh;
     }
 
     class TrackStubs : DrawingArea {
@@ -6905,6 +6965,7 @@ private:
     pixels_t _mouseY;
     pixels_t _selectMouseX;
     pixels_t _selectMouseY;
+    MonoTime _doubleClickTime;
 
     size_t _moveOnsetIndex;
     channels_t _moveOnsetChannel;
