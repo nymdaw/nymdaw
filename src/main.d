@@ -2237,6 +2237,9 @@ package:
             _processMeter(0, _buffer[0].ptr, bufNFrames);
             _processMeter(1, _buffer[1].ptr, bufNFrames);
         }
+        else {
+            processSilence(bufNFrames);
+        }
     }
 
     void mixStereoNonInterleaved(nframes_t offset,
@@ -2296,6 +2299,9 @@ package:
             }
             _processMeter(0, _buffer[0].ptr, bufNFrames);
             _processMeter(1, _buffer[1].ptr, bufNFrames);
+        }
+        else {
+            processSilence(bufNFrames);
         }
     }
 
@@ -4083,6 +4089,7 @@ public:
             }
 
             Pattern buttonGradient = Pattern.createLinear(0, yOffset, 0, yOffset + buttonHeight);
+            scope(exit) buttonGradient.destroy();
             Color processedGradientTop = (pressed || enabled) ? pressedGradientTop : gradientTop;
             Color processedGradientBottom = (pressed || enabled) ? pressedGradientBottom : gradientBottom;
             if(pressed || enabled) {
@@ -4335,6 +4342,7 @@ public:
             // draw the track stub background
             cr.rectangle(0, yOffset, _trackStubWidth, heightPixels);
             Pattern trackGradient = Pattern.createLinear(0, yOffset, 0, yOffset + heightPixels);
+            scope(exit) trackGradient.destroy();
             if(selected) {
                 trackGradient.addColorStopRgb(0,
                                               selectedGradientTop.r,
@@ -4943,6 +4951,8 @@ private:
 
     class ChannelStrip {
     public:
+        enum peakHoldMsecs = 3000; // amount of time to maintain meter peak levels
+
         enum meterHeightPixels = 300;
         enum meterChannelWidthPixels = 8;
         enum meterWidthPixels = meterChannelWidthPixels * 2 + 4;
@@ -4955,10 +4965,126 @@ private:
 
         static immutable float[] meterMarks =
             [6, 3, 0, -3, -6, -9, -12, -15, -18, -20, -25, -30, -35, -40, -50, -60];
+        static immutable Color[] colorMap = [
+            Color(1.0, 0.0, 0.0),
+            Color(1.0, 0.5, 0.0),
+            Color(1.0, 0.95, 0.0),
+            Color(0.0, 1.0, 0.0),
+            Color(0.0, 0.75, 0.0),
+            Color(0.0, 0.4, 0.25),
+            Color(0.0, 0.1, 0.5)
+            ];
+        static immutable float[] colorMapDb = [float.infinity, 0, -3, -9, -18, -40, -float.infinity];
+
+        abstract class DbReadout {
+        public:
+            enum dbReadoutWidth = 30;
+            enum dbReadoutHeight = 20;
+            enum dbReadoutFont = "Arial 8";
+
+            void draw(ref Scoped!Context cr, pixels_t readoutXOffset, pixels_t readoutYOffset) {
+                // draw the readout background
+                cr.setAntialias(cairo_antialias_t.GRAY);
+                cr.rectangle(readoutXOffset, readoutYOffset, dbReadoutWidth, dbReadoutHeight);
+                cr.setSourceRgb(0.0, 0.0, 0.0);
+                cr.stroke();
+
+                cr.rectangle(readoutXOffset + 1, readoutYOffset + 1, dbReadoutWidth - 2, dbReadoutHeight - 2);
+                cr.setSourceRgb(0.5, 0.5, 0.5);
+                cr.strokePreserve();
+
+                Pattern readoutGradient = Pattern.createLinear(0, readoutYOffset,
+                                                               0, readoutYOffset + dbReadoutHeight);
+                scope(exit) readoutGradient.destroy();
+                readoutGradient.addColorStopRgb(0, 0.15, 0.15, 0.15);
+                readoutGradient.addColorStopRgb(1, 0.05, 0.05, 0.05);
+                cr.setSource(readoutGradient);
+                cr.fill();
+
+                // draw the readout text
+                if(!_dbReadoutLayout) {
+                    PgFontDescription desc;
+                    _dbReadoutLayout = PgCairo.createLayout(cr);
+                    desc = PgFontDescription.fromString(dbReadoutFont);
+                    _dbReadoutLayout.setFontDescription(desc);
+                    desc.free();
+                }
+
+                if(abs(db) >= 10) {
+                    _dbReadoutLayout.setText(db > 0 ? '+' ~ to!string(round(db)) : to!string(round(db)));
+                }
+                else if(abs(db) < 0.1) {
+                    _dbReadoutLayout.setText("0.0");
+                }
+                else {
+                    auto dbString = appender!string();
+                    auto spec = singleSpec("%+1.1f");
+                    formatValue(dbString, db, spec);
+                    _dbReadoutLayout.setText(dbString.data);
+                }
+
+                int widthPixels, heightPixels;
+                _dbReadoutLayout.getPixelSize(widthPixels, heightPixels);
+                cr.moveTo(readoutXOffset + dbReadoutWidth / 2 - widthPixels / 2,
+                          readoutYOffset + dbReadoutHeight / 2 - heightPixels / 2);
+                Color color = textColor;
+                cr.setSourceRgb(color.r, color.g, color.b);
+                PgCairo.updateLayout(cr, _dbReadoutLayout);
+                PgCairo.showLayout(cr, _dbReadoutLayout);
+            }
+
+            float db;
+
+        protected:
+            @property Color textColor();
+
+        private:
+            PgLayout _dbReadoutLayout;
+        }
+
+        class FaderReadout : DbReadout {
+        public:
+            this() {
+                db = 0;
+            }
+
+        protected:
+            @property override Color textColor() {
+                return Color(1.0, 1.0, 1.0);
+            }
+        }
+
+        class MeterReadout : DbReadout {
+        public:
+            this() {
+                db = -float.infinity;
+            }
+
+        protected:
+            @property override Color textColor() {
+                if(_meterGradient !is null) {
+                    size_t markIndex;
+                    foreach(index, mark; colorMapDb) {
+                        if(db > mark) {
+                            markIndex = index;
+                            break;
+                        }
+                    }
+
+                    if(markIndex > 0 && markIndex < colorMapDb.length) {
+                        return colorMap[markIndex - 1];
+                    }
+                }
+
+                return Color(0.4, 0.4, 0.4);
+            }
+        }
 
         this(TrackView track) {
             _track = track;
 
+            _faderReadout = new FaderReadout();
+            _meterReadout = new MeterReadout();
             updateFaderFromTrack();
         }
 
@@ -4970,7 +5096,7 @@ private:
             cr.paint();
 
             pixels_t xOffset = 20;
-            _faderYOffset = windowHeight - (meterHeightPixels + 10);
+            _faderYOffset = windowHeight - (meterHeightPixels + faderHeightPixels / 2);
 
             drawFader(cr, xOffset, _faderYOffset);
             xOffset += faderBackgroundWidthPixels + 30;
@@ -5005,6 +5131,7 @@ private:
 
                 // draw the fader
                 Pattern faderGradient = Pattern.createLinear(0, yOffset, 0, yOffset + faderHeightPixels);
+                scope(exit) faderGradient.destroy();
                 faderGradient.addColorStopRgb(0, 0.25, 0.25, 0.25);
                 faderGradient.addColorStopRgb(0.5, 0.6, 0.6, 0.6);
                 faderGradient.addColorStopRgb(1, 0.25, 0.25, 0.25);
@@ -5032,6 +5159,13 @@ private:
                 cr.setSourceRgb(0.0, 0.0, 0.0);
                 cr.stroke();
 
+                // draw the dB readout
+                immutable pixels_t readoutXOffset =
+                    faderXOffset - DbReadout.dbReadoutWidth / 2;
+                immutable pixels_t readoutYOffset =
+                    faderYOffset - (faderHeightPixels / 2 + DbReadout.dbReadoutHeight + 5);
+                _faderReadout.draw(cr, readoutXOffset, readoutYOffset);
+
                 cr.restore();
             }
         }
@@ -5045,44 +5179,38 @@ private:
                 cr.setLineWidth(1.0);
 
                 if(_meterGradient is null || _backgroundGradient is null) {
-                    immutable Color[] colorMap = [
-                        Color(1.0, 0.0, 0.0),
-                        Color(1.0, 0.5, 0.0),
-                        Color(1.0, 0.95, 0.0),
-                        Color(0.0, 1.0, 0.0),
-                        Color(0.0, 0.75, 0.0),
-                        Color(0.0, 0.6, 0.1),
-                        Color(0.0, 0.4, 0.25),
-                        Color(0.0, 0.1, 0.5)
-                        ];
-
                     static void addMeterColorStops(T)(Pattern pattern, T colorMap) {
                         // clip
                         pattern.addColorStopRgb(1.0, colorMap[0].r, colorMap[0].g, colorMap[0].b);
 
                         // 0 dB
-                        pattern.addColorStopRgb(_deflect(0), colorMap[1].r, colorMap[1].g, colorMap[1].b);
+                        pattern.addColorStopRgb(_deflect(colorMapDb[1]),
+                                                colorMap[1].r, colorMap[1].g, colorMap[1].b);
 
                         // -3 dB
-                        pattern.addColorStopRgb(_deflect(-3), colorMap[2].r, colorMap[2].g, colorMap[2].b);
+                        pattern.addColorStopRgb(_deflect(colorMapDb[2]),
+                                                colorMap[2].r, colorMap[2].g, colorMap[2].b);
 
                         // -9 dB
-                        pattern.addColorStopRgb(_deflect(-9), colorMap[3].r, colorMap[3].g, colorMap[3].b);
+                        pattern.addColorStopRgb(_deflect(colorMapDb[3]),
+                                                colorMap[3].r, colorMap[3].g, colorMap[3].b);
 
                         // -18 dB
-                        pattern.addColorStopRgb(_deflect(-18), colorMap[4].r, colorMap[4].g, colorMap[4].b);
+                        pattern.addColorStopRgb(_deflect(colorMapDb[4]),
+                                                colorMap[4].r, colorMap[4].g, colorMap[4].b);
 
                         // -40 dB
-                        pattern.addColorStopRgb(_deflect(-40), colorMap[6].r, colorMap[6].g, colorMap[6].b);
+                        pattern.addColorStopRgb(_deflect(colorMapDb[5]),
+                                                colorMap[5].r, colorMap[5].g, colorMap[5].b);
 
                         // -inf
-                        pattern.addColorStopRgb(0.0, colorMap[7].r, colorMap[7].g, colorMap[7].b);
+                        pattern.addColorStopRgb(0.0, colorMap[6].r, colorMap[6].g, colorMap[6].b);
                     }
 
                     _meterGradient =
                         Pattern.createLinear(0, meterYOffset + meterHeightPixels, 0, meterYOffset);
                     addMeterColorStops(_meterGradient, colorMap);
-                    
+
                     _backgroundGradient =
                         Pattern.createLinear(0, meterYOffset + meterHeightPixels, 0, meterYOffset);
                     addMeterColorStops(_backgroundGradient,
@@ -5164,11 +5292,26 @@ private:
                     cr.setSource(_meterGradient);
                     cr.stroke();
                 }
+
+                //draw the dB readout
+                immutable pixels_t readoutXOffset =
+                    meterXOffset + meterWidthPixels / 2 - DbReadout.dbReadoutWidth / 2;
+                immutable pixels_t readoutYOffset =
+                    meterYOffset - (faderHeightPixels / 2 + DbReadout.dbReadoutHeight + 5);
+                _meterReadout.db = 20 * log10(max(_track.peakMax[0], _track.peakMax[1]));
+                _meterReadout.draw(cr, readoutXOffset, readoutYOffset);
             }
         }
 
         void sizeChanged() {
+            if(_meterGradient !is null) {
+                _meterGradient.destroy();
+            }
             _meterGradient = null;
+
+            if(_backgroundGradient !is null) {
+                _backgroundGradient.destroy();
+            }
             _backgroundGradient = null;
         }
 
@@ -5225,15 +5368,18 @@ private:
             if(_track !is null) {
                 _track.faderGainDB =
                     _deflectInverse(1 - cast(float)(_faderAdjustmentPixels) / cast(float)(meterHeightPixels));
+                _faderReadout.db = _track.faderGainDB;
             }
         }
 
         void updateFaderFromTrack() {
             if(_track !is null) {
                 _faderAdjustmentPixels = cast(pixels_t)((1 - _deflect(_track.faderGainDB)) * meterHeightPixels);
+                _faderReadout.db = _track.faderGainDB;
             }
             else {
                 _faderAdjustmentPixels = cast(pixels_t)((1 - _deflect(0)) * meterHeightPixels);
+                _faderReadout.db = 0;
             }
         }
 
@@ -5307,6 +5453,9 @@ private:
         }
 
         TrackView _track;
+
+        FaderReadout _faderReadout;
+        MeterReadout _meterReadout;
 
         pixels_t _faderYOffset;
         pixels_t _faderAdjustmentPixels;
