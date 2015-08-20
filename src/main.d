@@ -3396,14 +3396,14 @@ public:
                 if(_editStateHistory.currentState.onsetsEdited) {
                     OnsetSequence onsets = _editStateHistory.currentState.onsetsLinkChannels ?
                         _onsetsLinked : _onsets[_editStateHistory.currentState.onsetsChannelIndex];
-                    if(!onsets.queryUndo()) {
+                    if(showOnsets && !onsets.queryUndo()) {
                         computeOnsets();
                     }
                     else {
                         onsets.undo();
                     }
                 }
-                else if(_editStateHistory.currentState.recomputeOnsets) {
+                else if(showOnsets && _editStateHistory.currentState.recomputeOnsets) {
                     computeOnsets();
                 }
 
@@ -3421,14 +3421,14 @@ public:
                 if(_editStateHistory.currentState.onsetsEdited) {
                     OnsetSequence onsets = _editStateHistory.currentState.onsetsLinkChannels ?
                         _onsetsLinked : _onsets[_editStateHistory.currentState.onsetsChannelIndex];
-                    if(!onsets.queryRedo()) {
+                    if(showOnsets && !onsets.queryRedo()) {
                         computeOnsets();
                     }
                     else {
                         onsets.redo();
                     }
                 }
-                else if(_editStateHistory.currentState.recomputeOnsets) {
+                else if(showOnsets && _editStateHistory.currentState.recomputeOnsets) {
                     computeOnsets();
                 }
 
@@ -6268,24 +6268,28 @@ private:
         }
 
         void onSelectSubregion() {
-            if(_editRegion && _mouseX >= 0 && _mouseX <= viewWidthPixels) {
+            if(_editRegion) {
                 immutable nframes_t mouseFrame =
-                    clamp(_mouseX, _editRegion.boundingBox.x0, _editRegion.boundingBox.x1) *
-                    samplesPerPixel + viewOffset;
+                    clamp(_mouseX, _editRegion.boundingBox.x0, _editRegion.boundingBox.x1) * samplesPerPixel +
+                    viewOffset;
                 if(mouseFrame < _editRegion.subregionStartFrame + _editRegion.offset) {
                     _editRegion.subregionStartFrame = mouseFrame - _editRegion.offset;
-                    _subregionDirection = Direction.left;
+                    _editRegion.subregionEndFrame = _editRegion.editPointOffset;
                 }
                 else if(mouseFrame > _editRegion.subregionEndFrame + _editRegion.offset) {
                     _editRegion.subregionEndFrame = mouseFrame - _editRegion.offset;
-                    _subregionDirection = Direction.right;
+                    _editRegion.subregionStartFrame = _editRegion.editPointOffset;
                 }
                 else {
-                    if(_subregionDirection == Direction.left) {
+                    if(mouseFrame > _editRegion.subregionStartFrame + _editRegion.offset &&
+                       mouseFrame < _editRegion.editPointOffset + _editRegion.offset) {
                         _editRegion.subregionStartFrame = mouseFrame - _editRegion.offset;
+                        _editRegion.subregionEndFrame = _editRegion.editPointOffset;
                     }
-                    else {
+                    else if(mouseFrame > _editRegion.editPointOffset + _editRegion.offset &&
+                            mouseFrame < _editRegion.subregionEndFrame + _editRegion.offset) {
                         _editRegion.subregionEndFrame = mouseFrame - _editRegion.offset;
+                        _editRegion.subregionStartFrame = _editRegion.editPointOffset;
                     }
                 }
 
@@ -7266,7 +7270,6 @@ private:
     Marker* _moveMarker;
 
     bool _mixerPlaying;
-    Direction _subregionDirection;
 
     PgLayout _trackLabelLayout;
     PgLayout _regionHeaderLabelLayout;
