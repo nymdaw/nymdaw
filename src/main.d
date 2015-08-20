@@ -3445,16 +3445,16 @@ public:
 
         void updateCurrentEditState() {
             subregionSelected = _editStateHistory.currentState.subregionSelected;
-            if(subregionSelected) {
-                _subregionStartFrame = clamp(_editStateHistory.currentState.subregionStartFrame,
-                                             sliceStartFrame, sliceEndFrame);
-                _subregionEndFrame = clamp(_editStateHistory.currentState.subregionEndFrame,
-                                           _subregionStartFrame, sliceEndFrame);
-                if(_subregionStartFrame == _subregionEndFrame) {
-                    subregionSelected = false;
-                }
 
-                editPointOffset = subregionStartFrame;
+            _subregionStartFrame = clamp(_editStateHistory.currentState.subregionStartFrame,
+                                         sliceStartFrame, sliceEndFrame);
+            _subregionEndFrame = clamp(_editStateHistory.currentState.subregionEndFrame,
+                                       _subregionStartFrame, sliceEndFrame);
+
+            editPointOffset = subregionStartFrame;
+
+            if(_subregionStartFrame == _subregionEndFrame) {
+                subregionSelected = false;
             }
         }
 
