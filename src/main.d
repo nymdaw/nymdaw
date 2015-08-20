@@ -22,6 +22,7 @@ import std.cstream;
 
 import core.memory;
 import core.time;
+import core.sync.mutex;
 
 version(HAVE_JACK) {
     import jack.jack;
@@ -150,72 +151,104 @@ private:
     }
 }
 
-struct StateHistory(T) {
+class StateHistory(T) {
 public:
     this(T initialState) {
+        mutex = new Mutex;
+
         _undoHistory.insertFront(initialState);
+        _updateCurrentState();
     }
 
     @disable this();
 
     // returns true if an undo operation is currently possible
     bool queryUndo() {
-        auto undoRange = _undoHistory[];
-        if(!undoRange.empty) {
-            // the undo history must always contain at least one element
-            undoRange.popFront();
-            return !undoRange.empty();
+        synchronized(mutex) {
+            auto undoRange = _undoHistory[];
+            if(!undoRange.empty) {
+                // the undo history must always contain at least one element
+                undoRange.popFront();
+                return !undoRange.empty();
+            }
+            return false;
         }
-        return false;
     }
 
     // returns true if a redo operation is currently possible
     bool queryRedo() {
-        auto redoRange = _redoHistory[];
-        return !redoRange.empty;
+        synchronized(mutex) {
+            auto redoRange = _redoHistory[];
+            return !redoRange.empty;
+        }
     }
 
     // undo the last operation, if possible
     // this function will clear the redo history if the user subsequently appends new operation
     void undo() {
-        auto operation = takeOne(retro(_undoHistory[]));
-        if(!operation.empty) {
-            // never remove the last element in the undo history
-            auto newUndoHistory = _undoHistory[];
-            newUndoHistory.popFront();
-            if(!newUndoHistory.empty) {
-                _undoHistory.removeBack(1);
-                _redoHistory.insertFront(operation);
-                _clearRedoHistory = true;
+        synchronized(mutex) {
+            auto operation = takeOne(retro(_undoHistory[]));
+            if(!operation.empty) {
+                // never remove the last element in the undo history
+                auto newUndoHistory = _undoHistory[];
+                newUndoHistory.popFront();
+                if(!newUndoHistory.empty) {
+                    _undoHistory.removeBack(1);
+                    _redoHistory.insertFront(operation);
+                    _clearRedoHistory = true;
+                }
+                _updateCurrentState();
             }
         }
     }
 
     // redo the last operation, if possible
     void redo() {
-        auto operation = takeOne(_redoHistory[]);
-        if(!operation.empty) {
-            _redoHistory.removeFront(1);
-            _undoHistory.insertBack(operation);
+        synchronized(mutex) {
+            auto operation = takeOne(_redoHistory[]);
+            if(!operation.empty) {
+                _redoHistory.removeFront(1);
+                _undoHistory.insertBack(operation);
+                _updateCurrentState();
+            }
         }
     }
 
     // execute this function when the user effects a new undo-able state
     void appendState(T t) {
-        _undoHistory.insertBack(t);
+        synchronized(mutex) {
+            _undoHistory.insertBack(t);
 
-        if(_clearRedoHistory) {
-            _clearRedoHistory = false;
-            _redoHistory.clear();
+            if(_clearRedoHistory) {
+                _clearRedoHistory = false;
+                _redoHistory.clear();
+            }
+
+            _updateCurrentState();
         }
     }
 
     // returns the current user-modifiable state
     @property ref T currentState() @nogc nothrow {
-        return _undoHistory.back;
+        return _currentState.state;
     }
 
+protected:
+    Mutex mutex;
+
 private:
+    void _updateCurrentState() {
+        _currentState = new CurrentState(_undoHistory.back);
+    }
+
+    class CurrentState {
+        this(T state) {
+            this.state = state;
+        }
+        T state;
+    }
+    CurrentState _currentState;
+
     alias HistoryContainer = DList!T;
     HistoryContainer _undoHistory;
     HistoryContainer _redoHistory;
@@ -241,9 +274,11 @@ public:
         assert(originalBuffer.length > 0);
         this.originalBuffer = originalBuffer;
 
+        mutex = new Mutex;
+
         PieceEntry[] table;
         table ~= PieceEntry(originalBuffer, 0);
-        stateHistory = StateHistory!PieceTable(PieceTable(table));
+        stateHistory = new StateHistory!PieceTable(PieceTable(table));
     }
 
     bool queryUndo() {
@@ -262,21 +297,43 @@ public:
 
     // insert a new buffer at logicalOffset and append the result to the piece table history
     void insert(T)(T buffer, size_t logicalOffset) {
-        appendToHistory(currentPieceTable.insert(buffer, logicalOffset));
+        synchronized(mutex) {
+            appendToHistory(currentPieceTable.insert(buffer, logicalOffset));
+        }
     }
 
     // delete all indices in the range [logicalStart, logicalEnd) and append the result to the piece table history
     void remove(size_t logicalStart, size_t logicalEnd) {
-        appendToHistory(currentPieceTable.remove(logicalStart, logicalEnd));
+        synchronized(mutex) {
+            appendToHistory(currentPieceTable.remove(logicalStart, logicalEnd));
+        }
     }
 
     // removes elements in the given range, then insert a new buffer at the start of that range
     // append the result to the piece table history
     void replace(T)(T buffer, size_t logicalStart, size_t logicalEnd) {
-        appendToHistory(currentPieceTable.remove(logicalStart, logicalEnd).insert(buffer, logicalStart));
+        synchronized(mutex) {
+            appendToHistory(currentPieceTable.remove(logicalStart, logicalEnd).insert(buffer, logicalStart));
+        }
     }
 
-    struct PieceEntry {
+    auto opSlice(size_t logicalStart, size_t logicalEnd) {
+        return currentPieceTable[logicalStart .. logicalEnd];
+    }
+    auto opSlice() {
+        return currentPieceTable[];
+    }
+
+    auto ref opIndex(size_t index) @nogc nothrow {
+        return currentPieceTable[index];
+    }
+
+    @property size_t length() {
+        return currentPieceTable.length;
+    }
+    alias opDollar = length;
+
+    static struct PieceEntry {
         Buffer buffer;
         size_t logicalOffset;
 
@@ -285,7 +342,7 @@ public:
         }
     }
 
-    struct PieceTable {
+    static struct PieceTable {
     public:
         this(PieceEntry[] table) {
             this.table = table;
@@ -632,6 +689,7 @@ public:
         size_t _cachedBufferEnd;
     }
 
+protected:
     void appendToHistory(PieceEntry[] pieceTable) {
         stateHistory.appendState(PieceTable(pieceTable));
     }
@@ -642,9 +700,9 @@ public:
     @property ref PieceTable currentPieceTable() @nogc nothrow {
         return stateHistory.currentState;
     }
-    alias currentPieceTable this;
 
-protected:
+    Mutex mutex;
+
     Buffer originalBuffer;
     StateHistory!PieceTable stateHistory;
 }
@@ -2767,7 +2825,7 @@ public:
         _mixer = mixer;
         _samplesPerPixel = defaultSamplesPerPixel;
 
-        _arrangeStateHistory = StateHistory!ArrangeState(ArrangeState());
+        _arrangeStateHistory = new StateHistory!ArrangeState(ArrangeState());
 
         _canvas = new Canvas();
         _arrangeChannelStrip = new ArrangeChannelStrip();
@@ -3528,8 +3586,8 @@ public:
             this.region = region;
             _regionColor = color;
 
-            _arrangeStateHistory = StateHistory!ArrangeState(ArrangeState());
-            _editStateHistory = StateHistory!EditState(EditState());
+            _arrangeStateHistory = new StateHistory!ArrangeState(ArrangeState());
+            _editStateHistory = new StateHistory!EditState(EditState());
         }
 
         void _drawRegion(ref Scoped!Context cr,
