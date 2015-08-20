@@ -152,10 +152,10 @@ private:
     }
 }
 
-class StateHistory(T) {
+final class StateHistory(T) {
 public:
     this(T initialState) {
-        mutex = new Mutex;
+        _mutex = new Mutex;
 
         _undoHistory.insertFront(initialState);
         _updateCurrentState();
@@ -165,7 +165,7 @@ public:
 
     // returns true if an undo operation is currently possible
     bool queryUndo() {
-        synchronized(mutex) {
+        synchronized(_mutex) {
             auto undoRange = _undoHistory[];
             if(!undoRange.empty) {
                 // the undo history must always contain at least one element
@@ -178,7 +178,7 @@ public:
 
     // returns true if a redo operation is currently possible
     bool queryRedo() {
-        synchronized(mutex) {
+        synchronized(_mutex) {
             auto redoRange = _redoHistory[];
             return !redoRange.empty;
         }
@@ -187,7 +187,7 @@ public:
     // undo the last operation, if possible
     // this function will clear the redo history if the user subsequently appends a new operation
     void undo() {
-        synchronized(mutex) {
+        synchronized(_mutex) {
             auto operation = takeOne(retro(_undoHistory[]));
             if(!operation.empty) {
                 // never remove the last element in the undo history
@@ -205,7 +205,7 @@ public:
 
     // redo the last operation, if possible
     void redo() {
-        synchronized(mutex) {
+        synchronized(_mutex) {
             auto operation = takeOne(_redoHistory[]);
             if(!operation.empty) {
                 _redoHistory.removeFront(1);
@@ -217,7 +217,7 @@ public:
 
     // execute this function when the user effects a new undo-able state
     void appendState(T t) {
-        synchronized(mutex) {
+        synchronized(_mutex) {
             _undoHistory.insertBack(t);
 
             if(_clearRedoHistory) {
@@ -234,21 +234,21 @@ public:
         return _currentState.state;
     }
 
-protected:
-    Mutex mutex;
-
 private:
     void _updateCurrentState() {
         atomicStore(*cast(shared)(&_currentState), cast(shared)(new CurrentState(_undoHistory.back)));
     }
 
-    class CurrentState {
+    static final class CurrentState {
         this(T state) {
             this.state = state;
         }
+
         T state;
     }
     CurrentState _currentState;
+
+    Mutex _mutex;
 
     alias HistoryContainer = DList!T;
     HistoryContainer _undoHistory;
@@ -257,7 +257,7 @@ private:
     bool _clearRedoHistory;
 }
 
-class Sequence(Buffer) if(is(typeof((Buffer.init)[size_t.init]))) {
+final class Sequence(Buffer) if(is(typeof((Buffer.init)[size_t.init]))) {
 public:
     static if(is(Buffer == U[], U)) {
         enum BufferCacheIsPointer = false;
@@ -273,64 +273,64 @@ public:
     // original buffer must not be empty
     this(Buffer originalBuffer) {
         assert(originalBuffer.length > 0);
-        this.originalBuffer = originalBuffer;
+        _originalBuffer = originalBuffer;
 
-        mutex = new Mutex;
+        _mutex = new Mutex;
 
         PieceEntry[] table;
-        table ~= PieceEntry(originalBuffer, 0);
-        stateHistory = new StateHistory!PieceTable(PieceTable(table));
+        table ~= PieceEntry(_originalBuffer, 0);
+        _stateHistory = new StateHistory!PieceTable(PieceTable(table));
     }
 
     bool queryUndo() {
-        return stateHistory.queryUndo();
+        return _stateHistory.queryUndo();
     }
     bool queryRedo() {
-        return stateHistory.queryRedo();
+        return _stateHistory.queryRedo();
     }
 
     void undo() {
-        stateHistory.undo();
+        _stateHistory.undo();
     }
     void redo() {
-        stateHistory.redo();
+        _stateHistory.redo();
     }
 
     // insert a new buffer at logicalOffset and append the result to the piece table history
     void insert(T)(T buffer, size_t logicalOffset) {
-        synchronized(mutex) {
-            appendToHistory(currentPieceTable.insert(buffer, logicalOffset));
+        synchronized(_mutex) {
+            _appendToHistory(_currentPieceTable.insert(buffer, logicalOffset));
         }
     }
 
     // delete all indices in the range [logicalStart, logicalEnd) and append the result to the piece table history
     void remove(size_t logicalStart, size_t logicalEnd) {
-        synchronized(mutex) {
-            appendToHistory(currentPieceTable.remove(logicalStart, logicalEnd));
+        synchronized(_mutex) {
+            _appendToHistory(_currentPieceTable.remove(logicalStart, logicalEnd));
         }
     }
 
     // removes elements in the given range, then insert a new buffer at the start of that range
     // append the result to the piece table history
     void replace(T)(T buffer, size_t logicalStart, size_t logicalEnd) {
-        synchronized(mutex) {
-            appendToHistory(currentPieceTable.remove(logicalStart, logicalEnd).insert(buffer, logicalStart));
+        synchronized(_mutex) {
+            _appendToHistory(_currentPieceTable.remove(logicalStart, logicalEnd).insert(buffer, logicalStart));
         }
     }
 
     auto opSlice(size_t logicalStart, size_t logicalEnd) {
-        return currentPieceTable[logicalStart .. logicalEnd];
+        return _currentPieceTable[logicalStart .. logicalEnd];
     }
     auto opSlice() {
-        return currentPieceTable[];
+        return _currentPieceTable[];
     }
 
     auto ref opIndex(size_t index) @nogc nothrow {
-        return currentPieceTable[index];
+        return _currentPieceTable[index];
     }
 
     @property size_t length() {
-        return currentPieceTable.length;
+        return _currentPieceTable.length;
     }
     alias opDollar = length;
 
@@ -690,22 +690,22 @@ public:
         size_t _cachedBufferEnd;
     }
 
-protected:
-    void appendToHistory(PieceEntry[] pieceTable) {
-        stateHistory.appendState(PieceTable(pieceTable));
+private:
+    void _appendToHistory(PieceEntry[] pieceTable) {
+        _stateHistory.appendState(PieceTable(pieceTable));
     }
-    void appendToHistory(PieceTable pieceTable) {
-        stateHistory.appendState(pieceTable);
-    }
-
-    @property ref PieceTable currentPieceTable() @nogc nothrow {
-        return stateHistory.currentState;
+    void _appendToHistory(PieceTable pieceTable) {
+        _stateHistory.appendState(pieceTable);
     }
 
-    Mutex mutex;
+    @property ref PieceTable _currentPieceTable() @nogc nothrow {
+        return _stateHistory.currentState;
+    }
 
-    Buffer originalBuffer;
-    StateHistory!PieceTable stateHistory;
+    Mutex _mutex;
+
+    Buffer _originalBuffer;
+    StateHistory!PieceTable _stateHistory;
 }
 
 // test sequence indexing
@@ -1122,7 +1122,7 @@ sample_t[] convertSampleRate(sample_t[] audioBuffer,
 }
 
 // stores the min/max sample values of a single-channel waveform at a specified binning size
-class WaveformBinned {
+final class WaveformBinned {
 public:
     @property nframes_t binSize() const { return _binSize; }
     @property const(sample_t[]) minValues() const { return _minValues; }
@@ -1191,7 +1191,7 @@ private:
     sample_t[] _maxValues;
 }
 
-class WaveformCache {
+final class WaveformCache {
 public:
     static immutable nframes_t[] cacheBinSizes = [10, 100];
     static assert(cacheBinSizes.length > 0);
@@ -1291,7 +1291,7 @@ struct AudioSegment {
     WaveformCache waveformCache;
 }
 
-class AudioSequence {
+final class AudioSequence {
 public:
     this(AudioSegment originalBuffer, nframes_t sampleRate, channels_t nChannels, string name) {
         sequence = new Sequence!(AudioSegment)(originalBuffer);
@@ -1403,7 +1403,7 @@ struct Onset {
 
 alias OnsetSequence = Sequence!(Onset[]);
 
-class Region {
+final class Region {
 public:
     this(AudioSequence audioSeq, string name) {
         _sampleRate = audioSeq.sampleRate;
@@ -2113,15 +2113,31 @@ private:
     nframes_t _sliceStartFrame; // start frame for this region, relative to the start of the sequence
     nframes_t _sliceEndFrame; // end frame for this region, relative to the end of the sequence
 
+    // wrap the piece table into a reference type
+    static final class AudioSlice {
+        this(AudioSequence.PieceTable pieceTable) {
+            slice = pieceTable;
+        }
+
+        AudioSequence.PieceTable slice;
+    }
+    AudioSlice _currentAudioSlice;
+
     // current slice of the audio sequence, based on _sliceStartFrame and _sliceEndFrame
-    AudioSequence.PieceTable _audioSlice;
+    @property ref AudioSequence.PieceTable _audioSlice() @nogc nothrow {
+        return _currentAudioSlice.slice;
+    }
+    @property ref AudioSequence.PieceTable _audioSlice(T)(T newAudioSlice) {
+        atomicStore(*cast(shared)(&_currentAudioSlice), cast(shared)(new AudioSlice(newAudioSlice)));
+        return _currentAudioSlice.slice;
+    }
 
     nframes_t _offset; // the offset, in frames, for the start of this region
     bool _mute; // flag indicating whether to mute all audio in this region during playback
     string _name; // name for this region
 }
 
-class Track {
+final class Track {
 public:
     void addRegion(Region region) {
         region.resizeDelegate = resizeDelegate;
@@ -2784,7 +2800,7 @@ public:
     }
 }
 
-class ArrangeView : Box {
+final class ArrangeView : Box {
 public:
     enum defaultSamplesPerPixel = 500; // default zoom level, in samples per pixel
     enum defaultTrackHeightPixels = 200; // default height in pixels of new tracks in the arrange view
@@ -3205,7 +3221,7 @@ public:
         Adjustment _normalizeGainAdjustment;
     }
 
-    class RegionView {
+    final class RegionView {
     public:
         enum cornerRadius = 4; // radius of the rounded corners of the region, in pixels
         enum borderWidth = 1; // width of the edges of the region, in pixels
@@ -4368,7 +4384,7 @@ public:
         @property override Color enabledColor() const { return Color(1.0, 0.65, 0.0); }
     }
 
-    class TrackView {
+    final class TrackView {
     public:
         void addRegion(Region region, nframes_t sampleRate) {
             synchronized {
@@ -4509,7 +4525,7 @@ public:
             cr.restore();
         }
 
-        class TrackButtonStrip {
+        final class TrackButtonStrip {
         public:
             this(Track track) {
                 muteButton = new MuteButton(track);
@@ -5033,7 +5049,7 @@ private:
         return null;
     }
 
-    class ChannelStrip {
+    final class ChannelStrip {
     public:
         immutable Duration peakHoldTime = 1500.msecs; // amount of time to maintain meter peak levels
 
@@ -5138,7 +5154,7 @@ private:
             PgLayout _dbReadoutLayout;
         }
 
-        class FaderReadout : DbReadout {
+        final class FaderReadout : DbReadout {
         public:
             this() {
                 db = 0;
@@ -5150,7 +5166,7 @@ private:
             }
         }
 
-        class MeterReadout : DbReadout {
+        final class MeterReadout : DbReadout {
         public:
             this() {
                 db = -float.infinity;
@@ -5693,7 +5709,7 @@ private:
         Duration _totalPeakTime2;
     }
 
-    class ArrangeChannelStrip : DrawingArea {
+    final class ArrangeChannelStrip : DrawingArea {
     public:
         this() {
             _arrangeChannelStripWidth = defaultChannelStripWidth;
@@ -5804,7 +5820,7 @@ private:
         bool _selectedTrackFaderMoving;
     }
 
-    class TrackStubs : DrawingArea {
+    final class TrackStubs : DrawingArea {
     public:
         enum labelPadding = 5; // general padding for track labels, in pixels
         enum labelFont = "Arial 12"; // font family and size to use for track labels
@@ -5933,7 +5949,7 @@ private:
         }
     }
 
-    class Canvas : DrawingArea {
+    final class Canvas : DrawingArea {
         enum timeStripHeightPixels = 40;
 
         enum markerHeightPixels = 20;
@@ -7384,7 +7400,7 @@ private:
     AudioSequence.PieceTable _copyBuffer;
 }
 
-class AppMainWindow : MainWindow {
+final class AppMainWindow : MainWindow {
 public:
     this(string title, Mixer mixer) {
         _mixer = mixer;
