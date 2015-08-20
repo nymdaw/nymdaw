@@ -23,6 +23,7 @@ import std.cstream;
 import core.memory;
 import core.time;
 import core.sync.mutex;
+import core.atomic;
 
 version(HAVE_JACK) {
     import jack.jack;
@@ -184,7 +185,7 @@ public:
     }
 
     // undo the last operation, if possible
-    // this function will clear the redo history if the user subsequently appends new operation
+    // this function will clear the redo history if the user subsequently appends a new operation
     void undo() {
         synchronized(mutex) {
             auto operation = takeOne(retro(_undoHistory[]));
@@ -238,7 +239,7 @@ protected:
 
 private:
     void _updateCurrentState() {
-        _currentState = new CurrentState(_undoHistory.back);
+        atomicStore(*cast(shared)(&_currentState), cast(shared)(new CurrentState(_undoHistory.back)));
     }
 
     class CurrentState {
