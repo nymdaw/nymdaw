@@ -2078,6 +2078,20 @@ public:
         }
     }
 
+    void resetMeterLeft() @nogc nothrow {
+        _meter[0].reset();
+        _peakMax[0] = 0;
+        _level[0] = 0;
+        _lastLevelMax[0] = 0;
+    }
+
+    void resetMeterRight() @nogc nothrow {
+        _meter[1].reset();
+        _peakMax[1] = 0;
+        _level[1] = 0;
+        _lastLevelMax[1] = 0;
+    }
+
     void resetMeters() @nogc nothrow {
         _meter[0].reset();
         _meter[1].reset();
@@ -2314,7 +2328,7 @@ private:
         float m, p;
         _meter[channelIndex].read(m, p);
 
-        _level[channelIndex]  = m;
+        _level[channelIndex] = m;
         if(_resetLastLevel || _lastLevelMax[channelIndex] < m) {
             _lastLevelMax[channelIndex] = m;
         }
@@ -2337,6 +2351,7 @@ private:
     nframes_t _sampleRate;
     sample_t[maxBufferLength][2] _buffer;
     sample_t[maxBufferLength] _zeroBuffer = 0;
+
     TruePeakDSP[2] _meter;
     sample_t[2] _peakMax = 0;
     sample_t[2] _level = 0;
@@ -3447,7 +3462,6 @@ public:
 
         bool selected;
         nframes_t selectedOffset;
-        BoundingBox boundingBox;
         Region.OnsetParams onsetParams;
 
         nframes_t editPointOffset; // locally indexed for this region
@@ -3503,6 +3517,8 @@ public:
             }
             return (_linkChannels = enable);
         }
+
+        @property ref const(BoundingBox) boundingBox() const { return _boundingBox; }
 
     protected:
         Region region;
@@ -3566,10 +3582,10 @@ public:
                 }
 
                 // get the bounding box for this region
-                boundingBox.x0 = xOffset;
-                boundingBox.y0 = yOffset;
-                boundingBox.x1 = xOffset + width;
-                boundingBox.y1 = yOffset + height;
+                _boundingBox.x0 = xOffset;
+                _boundingBox.y0 = yOffset;
+                _boundingBox.x1 = xOffset + width;
+                _boundingBox.y1 = yOffset + height;
 
                 // these variables designate whether the left and right endpoints of the given region are visible
                 bool lCorners = regionOffset + (cornerRadius * samplesPerPixel) >= viewOffset;
@@ -4015,6 +4031,8 @@ public:
 
         Pattern _regionGradient;
         pixels_t _prevYOffset;
+
+        BoundingBox _boundingBox;
     }
 
     abstract class TrackButton {
@@ -4039,10 +4057,10 @@ public:
             immutable Color pressedGradientTop = Color(0.4, 0.4, 0.4);
             immutable Color pressedGradientBottom = Color(0.6, 0.6, 0.6);
 
-            boundingBox.x0 = xOffset;
-            boundingBox.y0 = yOffset;
-            boundingBox.x1 = xOffset + buttonWidth;
-            boundingBox.y1 = yOffset + buttonHeight;
+            _boundingBox.x0 = xOffset;
+            _boundingBox.y0 = yOffset;
+            _boundingBox.x1 = xOffset + buttonWidth;
+            _boundingBox.y1 = yOffset + buttonHeight;
 
             cr.save();
             cr.setAntialias(cairo_antialias_t.GRAY);
@@ -4140,8 +4158,6 @@ public:
             cr.restore();
         }
 
-        BoundingBox boundingBox;
-
         @property Track track() { return _track; }
         @property Track track(Track newTrack) { return (_track = newTrack); }
 
@@ -4162,6 +4178,8 @@ public:
             _enabled = false;
             onOtherEnabled();
         }
+
+        @property ref const(BoundingBox) boundingBox() const { return _boundingBox; }
 
     protected:
         void onEnabled(bool enabled) {
@@ -4184,6 +4202,8 @@ public:
         bool _enabled;
 
         PgLayout _trackButtonLayout;
+
+        BoundingBox _boundingBox;
     }
 
     final class MuteButton : TrackButton {
@@ -4334,10 +4354,10 @@ public:
             cr.setOperator(cairo_operator_t.OVER);
 
             // compute the bounding box for this track
-            boundingBox.x0 = 0;
-            boundingBox.x1 = _trackStubWidth;
-            boundingBox.y0 = yOffset;
-            boundingBox.y1 = yOffset + heightPixels;
+            _boundingBox.x0 = 0;
+            _boundingBox.x1 = _trackStubWidth;
+            _boundingBox.y0 = yOffset;
+            _boundingBox.y1 = yOffset + heightPixels;
 
             // draw the track stub background
             cr.rectangle(0, yOffset, _trackStubWidth, heightPixels);
@@ -4486,6 +4506,8 @@ public:
         @property const(sample_t[2]) level() { return _track.level; }
         @property ref const(sample_t[2]) peakMax() const { return _track.peakMax; }
 
+        void resetMeterLeft() @nogc nothrow { _track.resetMeterLeft(); }
+        void resetMeterRight() @nogc nothrow { _track.resetMeterRight(); }
         void resetMeters() @nogc nothrow { _track.resetMeters(); }
         @property sample_t faderGainDB() const @nogc nothrow { return _track.faderGainDB; }
         @property sample_t faderGainDB(sample_t db) { return (_track.faderGainDB = db); }
@@ -4504,8 +4526,9 @@ public:
         @property string name() const { return _name; }
         @property string name(string newName) { return (_name = newName); }
 
-        BoundingBox boundingBox;
         bool selected;
+
+        @property ref const(BoundingBox) boundingBox() const { return _boundingBox; }
 
     private:
         this(Track track, pixels_t heightPixels, string name) {
@@ -4547,6 +4570,8 @@ public:
         string _name;
 
         TrackButtonStrip _trackButtonStrip;
+
+        BoundingBox _boundingBox;
     }
 
     struct Marker {
@@ -4951,7 +4976,7 @@ private:
 
     class ChannelStrip {
     public:
-        enum peakHoldMsecs = 3000; // amount of time to maintain meter peak levels
+        immutable Duration peakHoldTime = 1500.msecs; // amount of time to maintain meter peak levels
 
         enum meterHeightPixels = 300;
         enum meterChannelWidthPixels = 8;
@@ -4963,8 +4988,11 @@ private:
         enum faderHeightPixels = 40;
         enum faderCornerRadiusPixels = 4;
 
-        static immutable float[] meterMarks =
+        static immutable float[] meterMarks0Db =
+            [0, -3, -6, -9, -12, -15, -18, -20, -25, -30, -35, -40, -50, -60];
+        static immutable float[] meterMarks6Db =
             [6, 3, 0, -3, -6, -9, -12, -15, -18, -20, -25, -30, -35, -40, -50, -60];
+
         static immutable Color[] colorMap = [
             Color(1.0, 0.0, 0.0),
             Color(1.0, 0.5, 0.0),
@@ -4974,7 +5002,7 @@ private:
             Color(0.0, 0.4, 0.25),
             Color(0.0, 0.1, 0.5)
             ];
-        static immutable float[] colorMapDb = [float.infinity, 0, -3, -9, -18, -40, -float.infinity];
+        static immutable float[] colorMapDb = [0, -2, -6, -12, -25, -float.infinity];
 
         abstract class DbReadout {
         public:
@@ -4983,6 +5011,12 @@ private:
             enum dbReadoutFont = "Arial 8";
 
             void draw(ref Scoped!Context cr, pixels_t readoutXOffset, pixels_t readoutYOffset) {
+                // compute the bounding box for the readout
+                _boundingBox.x0 = readoutXOffset;
+                _boundingBox.y0 = readoutYOffset;
+                _boundingBox.x1 = readoutXOffset + dbReadoutWidth;
+                _boundingBox.y1 = readoutYOffset + dbReadoutHeight;
+
                 // draw the readout background
                 cr.setAntialias(cairo_antialias_t.GRAY);
                 cr.rectangle(readoutXOffset, readoutYOffset, dbReadoutWidth, dbReadoutHeight);
@@ -5033,12 +5067,15 @@ private:
                 PgCairo.showLayout(cr, _dbReadoutLayout);
             }
 
+            @property ref const(BoundingBox) boundingBox() const { return _boundingBox; }
+
             float db;
 
         protected:
             @property Color textColor();
 
         private:
+            BoundingBox _boundingBox;
             PgLayout _dbReadoutLayout;
         }
 
@@ -5062,17 +5099,17 @@ private:
 
         protected:
             @property override Color textColor() {
-                if(_meterGradient !is null) {
+                if(_meterGradient !is null && db > -float.infinity) {
                     size_t markIndex;
                     foreach(index, mark; colorMapDb) {
-                        if(db > mark) {
+                        if(min(db, 0) >= mark) {
                             markIndex = index;
                             break;
                         }
                     }
 
-                    if(markIndex > 0 && markIndex < colorMapDb.length) {
-                        return colorMap[markIndex - 1];
+                    if(markIndex < colorMapDb.length) {
+                        return colorMap[markIndex];
                     }
                 }
 
@@ -5184,23 +5221,23 @@ private:
                         pattern.addColorStopRgb(1.0, colorMap[0].r, colorMap[0].g, colorMap[0].b);
 
                         // 0 dB
-                        pattern.addColorStopRgb(_deflect(colorMapDb[1]),
+                        pattern.addColorStopRgb(_deflect0Db(colorMapDb[1]),
                                                 colorMap[1].r, colorMap[1].g, colorMap[1].b);
 
                         // -3 dB
-                        pattern.addColorStopRgb(_deflect(colorMapDb[2]),
+                        pattern.addColorStopRgb(_deflect0Db(colorMapDb[2]),
                                                 colorMap[2].r, colorMap[2].g, colorMap[2].b);
 
                         // -9 dB
-                        pattern.addColorStopRgb(_deflect(colorMapDb[3]),
+                        pattern.addColorStopRgb(_deflect0Db(colorMapDb[3]),
                                                 colorMap[3].r, colorMap[3].g, colorMap[3].b);
 
                         // -18 dB
-                        pattern.addColorStopRgb(_deflect(colorMapDb[4]),
+                        pattern.addColorStopRgb(_deflect0Db(colorMapDb[4]),
                                                 colorMap[4].r, colorMap[4].g, colorMap[4].b);
 
                         // -40 dB
-                        pattern.addColorStopRgb(_deflect(colorMapDb[5]),
+                        pattern.addColorStopRgb(_deflect0Db(colorMapDb[5]),
                                                 colorMap[5].r, colorMap[5].g, colorMap[5].b);
 
                         // -inf
@@ -5236,12 +5273,12 @@ private:
                     _meterMarkLayout.getPixelSize(widthPixels, heightPixels);
                     cr.moveTo(meterXOffset - (widthPixels + 4),
                               meterYOffset + meterHeightPixels -
-                              (meterHeightPixels * _deflect(db) + heightPixels / 2));
+                              (meterHeightPixels * _deflect0Db(db) + heightPixels / 2));
                     PgCairo.updateLayout(cr, _meterMarkLayout);
                     PgCairo.showLayout(cr, _meterMarkLayout);
                 }
                 cr.setSourceRgb(1.0, 1.0, 1.0);
-                foreach(meterMark; meterMarks) {
+                foreach(meterMark; meterMarks0Db) {
                     drawMark(meterMark);
                 }
 
@@ -5259,9 +5296,12 @@ private:
                 cr.fill();
 
                 // draw the meter levels
-                immutable pixels_t levelHeight1 = min(cast(pixels_t)(_track.level[0] * meterHeightPixels),
+                immutable sample_t levelDb1 = 20 * log10(_track.level[0]);
+                immutable sample_t levelDb2 = 20 * log10(_track.level[1]);
+
+                immutable pixels_t levelHeight1 = min(cast(pixels_t)(_deflect0Db(levelDb1) * meterHeightPixels),
                                                       meterHeightPixels);
-                immutable pixels_t levelHeight2 = min(cast(pixels_t)(_track.level[1] * meterHeightPixels),
+                immutable pixels_t levelHeight2 = min(cast(pixels_t)(_deflect0Db(levelDb2) * meterHeightPixels),
                                                       meterHeightPixels);
 
                 cr.rectangle(meterXOffset1, meterYOffset + (meterHeightPixels - levelHeight1),
@@ -5274,13 +5314,84 @@ private:
                 cr.setSource(_meterGradient);
                 cr.fill();
 
-                // draw the peak levels
-                if(_track.peakMax[0] > 0 || _track.peakMax[1] > 0) {
-                    immutable pixels_t peakHeight1 = min(cast(pixels_t)(_track.peakMax[0] * meterHeightPixels),
-                                                         meterHeightPixels);
-                    immutable pixels_t peakHeight2 = min(cast(pixels_t)(_track.peakMax[1] * meterHeightPixels),
-                                                         meterHeightPixels);
+                // update peak hold times
+                sample_t peak1 = _track.peakMax[0];
+                sample_t peak2 = _track.peakMax[1];
 
+                if(_readoutPeak1 < peak1) {
+                    _readoutPeak1 = peak1;
+                }
+                if(_readoutPeak2 < peak2) {
+                    _readoutPeak2 = peak2;
+                }
+
+                if(!_peak1Falling.isNull) {
+                    auto elapsed = MonoTime.currTime - _lastPeakTime;
+                    _peak1Falling = max(_peak1Falling - sample_t(1) / elapsed.split!("msecs").msecs, 0);
+                    peak1 = _peak1Falling;
+                    if(_peak1Falling < peak1 || _peak1Falling == 0) {
+                        _peak1Falling.nullify();
+                        _peakHold1 = peak1;
+                        _totalPeakTime1 = 0.msecs;
+                    }
+                    else {
+                        _track.resetMeterLeft();
+                    }
+                }
+                else {
+                    if(_peakHold1 > 0 && peak1 == _peakHold1) {
+                        auto elapsed = MonoTime.currTime - _lastPeakTime;
+                        _totalPeakTime1 += elapsed;
+                        if(_totalPeakTime1 >= peakHoldTime) {
+                            _peak1Falling = peak1;
+                            _track.resetMeterLeft();
+                        }
+                    }
+                    else {
+                        _peakHold1 = peak1;
+                        _totalPeakTime1 = 0.msecs;
+                    }
+                }
+
+                if(!_peak2Falling.isNull) {
+                    auto elapsed = MonoTime.currTime - _lastPeakTime;
+                    _peak2Falling = max(_peak2Falling - sample_t(1) / elapsed.split!("msecs").msecs, 0);
+                    peak2 = _peak2Falling;
+                    if(_peak2Falling < peak2 || peak2 <= 0) {
+                        _peak2Falling.nullify();
+                        _peakHold2 = peak2;
+                        _totalPeakTime2 = 0.msecs;
+                    }
+                    else {
+                        _track.resetMeterRight();
+                    }
+                }
+                else {
+                    if(_peakHold2 > 0 && peak2 == _peakHold2) {
+                        auto elapsed = MonoTime.currTime - _lastPeakTime;
+                        _totalPeakTime2 += elapsed;
+                        if(_totalPeakTime2 >= peakHoldTime) {
+                            _peak2Falling = peak2;
+                            _track.resetMeterRight();
+                        }
+                    }
+                    else {
+                        _peakHold2 = peak2;
+                        _totalPeakTime2 = 0.msecs;
+                    }
+                }
+
+                _lastPeakTime = MonoTime.currTime;
+
+                // draw the peak levels
+                immutable sample_t peakDb1 = 20 * log10(peak1);
+                immutable sample_t peakDb2 = 20 * log10(peak2);
+
+                immutable pixels_t peakHeight1 = min(cast(pixels_t)(_deflect0Db(peakDb1) * meterHeightPixels),
+                                                     meterHeightPixels);
+                immutable pixels_t peakHeight2 = min(cast(pixels_t)(_deflect0Db(peakDb2) * meterHeightPixels),
+                                                     meterHeightPixels);
+                if(peakHeight1 > 0 || peakHeight2 > 0) {
                     cr.moveTo(meterXOffset1, meterYOffset + (meterHeightPixels - peakHeight1));
                     cr.lineTo(meterXOffset1 + meterChannelWidthPixels,
                               meterYOffset + (meterHeightPixels - peakHeight1));
@@ -5298,7 +5409,7 @@ private:
                     meterXOffset + meterWidthPixels / 2 - DbReadout.dbReadoutWidth / 2;
                 immutable pixels_t readoutYOffset =
                     meterYOffset - (faderHeightPixels / 2 + DbReadout.dbReadoutHeight + 5);
-                _meterReadout.db = 20 * log10(max(_track.peakMax[0], _track.peakMax[1]));
+                _meterReadout.db = 20 * log10(max(_readoutPeak1, _readoutPeak2));
                 _meterReadout.draw(cr, readoutXOffset, readoutYOffset);
             }
         }
@@ -5338,8 +5449,10 @@ private:
                     _track.processSilence(cast(nframes_t)(_mixer.sampleRate / 1000 * elapsed));
                 }
 
-                if(cast(pixels_t)(_track.level[0] * meterHeightPixels) == 0 &&
-                   cast(pixels_t)(_track.level[1] * meterHeightPixels) == 0) {
+                immutable sample_t levelDb1 = 20 * log10(_track.level[0]);
+                immutable sample_t levelDb2 = 20 * log10(_track.level[1]);
+                if(levelDb1 <= -70 && levelDb2 <= -70 &&
+                   _peak1Falling.isNull && _peak2Falling.isNull) {
                     _processSilence = false;
                     return true;
                 }
@@ -5351,6 +5464,9 @@ private:
         void resetMeters() {
             if(_track !is null) {
                 _track.resetMeters();
+                _readoutPeak1 = _readoutPeak2 = -float.infinity;
+                _peak1Falling.nullify();
+                _peak2Falling.nullify();
                 _processSilence = false;
             }
         }
@@ -5367,18 +5483,18 @@ private:
             _faderAdjustmentPixels = clamp(_mouseY - _faderYOffset, 0, meterHeightPixels);
             if(_track !is null) {
                 _track.faderGainDB =
-                    _deflectInverse(1 - cast(float)(_faderAdjustmentPixels) / cast(float)(meterHeightPixels));
+                    _deflectInverse6Db(1 - cast(float)(_faderAdjustmentPixels) / cast(float)(meterHeightPixels));
                 _faderReadout.db = _track.faderGainDB;
             }
         }
 
         void updateFaderFromTrack() {
             if(_track !is null) {
-                _faderAdjustmentPixels = cast(pixels_t)((1 - _deflect(_track.faderGainDB)) * meterHeightPixels);
+                _faderAdjustmentPixels = cast(pixels_t)((1 - _deflect6Db(_track.faderGainDB)) * meterHeightPixels);
                 _faderReadout.db = _track.faderGainDB;
             }
             else {
-                _faderAdjustmentPixels = cast(pixels_t)((1 - _deflect(0)) * meterHeightPixels);
+                _faderAdjustmentPixels = cast(pixels_t)((1 - _deflect6Db(0)) * meterHeightPixels);
                 _faderReadout.db = 0;
             }
         }
@@ -5391,10 +5507,45 @@ private:
         }
 
         @property ref const(BoundingBox) faderBox() const { return _faderBox; }
+        @property ref const(BoundingBox) faderReadoutBox() const { return _faderReadout.boundingBox; }
         @property ref const(BoundingBox) meterBox() const { return _meterBox; }
+        @property ref const(BoundingBox) meterReadoutBox() const { return _meterReadout.boundingBox; }
 
     private:
-        static float _deflect(float db) {
+        // deflection between (-inf, 0] dB
+        static float _deflect0Db(float db) {
+            float def = 0.0f;
+
+            if(db < -70.0f) {
+                def = 0.0f;
+            }
+            else if(db < -60.0f) {
+                def = (db + 70.0f) * 0.25f;
+            }
+            else if(db < -50.0f) {
+                def = (db + 60.0f) * 0.5f + 2.5f;
+            }
+            else if(db < -40.0f) {
+                def = (db + 50.0f) * 0.75f + 7.5f;
+            }
+            else if(db < -30.0f) {
+                def = (db + 40.0f) * 1.5f + 15.0f;
+            }
+            else if(db < -20.0f) {
+                def = (db + 30.0f) * 2.0f + 30.0f;
+            }
+            else if(db < 0.0f) {
+                def = (db + 20.0f) * 2.5f + 50.0f;
+            }
+            else {
+                def = 100.0f;
+            }
+
+            return def / 100.0f;
+        }
+
+        // deflection between (-inf, 6] dB
+        static float _deflect6Db(float db) {
             float def = 0.0f;
 
             if(db < -70.0f) {
@@ -5425,26 +5576,28 @@ private:
             return def / 115.0f;
         }
 
-        static float _deflectInverse(float faderPosition) {
-            static auto deflectionPoints = std.algorithm.map!(db => _deflect(db))(meterMarks);
+        // linearly scale between logarithmically spaced meter marks
+        // this seems to yield pleasant behavior when adjusting faders via the mouse
+        static float _deflectInverse6Db(float faderPosition) {
+            static auto deflectionPoints = std.algorithm.map!(db => _deflect6Db(db))(meterMarks6Db);
 
             size_t index;
             float db;
 
             if(faderPosition >= deflectionPoints[0]) {
-                db = meterMarks[0];
+                db = meterMarks6Db[0];
             }
             else {
                 foreach(point; deflectionPoints) {
-                    if(faderPosition >= point && index < meterMarks.length) {
+                    if(faderPosition >= point && index < meterMarks6Db.length) {
                         db = ((faderPosition - point) / ((index > 0 ? deflectionPoints[index - 1] : 1) - point)) *
-                            ((index > 0 ? meterMarks[index - 1] : 6) - meterMarks[index]) +
-                            meterMarks[index];
+                            ((index > 0 ? meterMarks6Db[index - 1] : meterMarks6Db[0]) - meterMarks6Db[index]) +
+                            meterMarks6Db[index];
                         break;
                     }
                     ++index;
                 }
-                if(index >= meterMarks.length) {
+                if(index >= meterMarks6Db.length) {
                     db = -float.infinity;
                 }
             }
@@ -5469,6 +5622,16 @@ private:
         bool _mixerPlaying;
         bool _processSilence;
         MonoTime _lastRefresh;
+
+        sample_t _readoutPeak1 = -float.infinity;
+        sample_t _readoutPeak2 = -float.infinity;
+        sample_t _peakHold1 = 0;
+        sample_t _peakHold2 = 0;
+        Nullable!sample_t _peak1Falling;
+        Nullable!sample_t _peak2Falling;
+        MonoTime _lastPeakTime;
+        Duration _totalPeakTime1;
+        Duration _totalPeakTime2;
     }
 
     class ArrangeChannelStrip : DrawingArea {
@@ -5546,7 +5709,8 @@ private:
                 _doubleClickTime = MonoTime.currTime;
 
                 if(event.button.button == leftButton) {
-                    if(_selectedTrackChannelStrip.faderBox.containsPoint(_mouseX, _mouseY)) {
+                    if(_selectedTrackChannelStrip.faderBox.containsPoint(_mouseX, _mouseY) ||
+                       _selectedTrackChannelStrip.faderReadoutBox.containsPoint(_mouseX, _mouseY)) {
                         if(doubleClick) {
                             _selectedTrackChannelStrip.zeroFader();
                             redraw();
@@ -5555,7 +5719,8 @@ private:
                             _selectedTrackFaderMoving = true;
                         }
                     }
-                    else if(_selectedTrackChannelStrip.meterBox.containsPoint(_mouseX, _mouseY)) {
+                    else if(_selectedTrackChannelStrip.meterBox.containsPoint(_mouseX, _mouseY) ||
+                            _selectedTrackChannelStrip.meterReadoutBox.containsPoint(_mouseX, _mouseY)) {
                         _selectedTrackChannelStrip.resetMeters();
                         redraw();
                     }
