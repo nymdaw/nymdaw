@@ -1401,6 +1401,16 @@ struct Onset {
     AudioSequence.PieceTable rightSource;
 }
 
+struct OnsetParams {
+    enum onsetThresholdMin = 0.0;
+    enum onsetThresholdMax = 1.0;
+    sample_t onsetThreshold = 0.3;
+
+    enum silenceThresholdMin = -90;
+    enum silenceThresholdMax = 0.0;
+    sample_t silenceThreshold = -90;
+}
+
 alias OnsetSequence = Sequence!(Onset[]);
 
 final class Region {
@@ -1417,16 +1427,6 @@ public:
     }
     this(AudioSequence audioSeq) {
         this(audioSeq, audioSeq.name);
-    }
-
-    struct OnsetParams {
-        enum onsetThresholdMin = 0.0;
-        enum onsetThresholdMax = 1.0;
-        sample_t onsetThreshold = 0.3;
-
-        enum silenceThresholdMin = -90;
-        enum silenceThresholdMax = 0.0;
-        sample_t silenceThreshold = -90;
     }
 
     // returns an array of frames at which an onset occurs, with frames given locally for this region
@@ -2106,13 +2106,6 @@ private:
         _audioSlice = _audioSeq[_sliceStartFrame * nChannels .. _sliceEndFrame * nChannels];
     }
 
-    nframes_t _sampleRate; // sample rate of the audio data
-    channels_t _nChannels; // number of channels in the audio data
-
-    AudioSequence _audioSeq; // sequence of interleaved audio data, for all channels
-    nframes_t _sliceStartFrame; // start frame for this region, relative to the start of the sequence
-    nframes_t _sliceEndFrame; // end frame for this region, relative to the end of the sequence
-
     // wrap the piece table into a reference type
     static final class AudioSlice {
         this(AudioSequence.PieceTable pieceTable) {
@@ -2131,6 +2124,13 @@ private:
         atomicStore(*cast(shared)(&_currentAudioSlice), cast(shared)(new AudioSlice(newAudioSlice)));
         return _currentAudioSlice.slice;
     }
+
+    nframes_t _sampleRate; // sample rate of the audio data
+    channels_t _nChannels; // number of channels in the audio data
+
+    AudioSequence _audioSeq; // sequence of interleaved audio data, for all channels
+    nframes_t _sliceStartFrame; // start frame for this region, relative to the start of the sequence
+    nframes_t _sliceEndFrame; // end frame for this region, relative to the end of the sequence
 
     nframes_t _offset; // the offset, in frames, for the start of this region
     bool _mute; // flag indicating whether to mute all audio in this region during playback
@@ -3060,8 +3060,8 @@ public:
             auto box1 = new Box(Orientation.VERTICAL, 5);
             box1.packStart(new Label("Onset Threshold"), false, false, 0);
             _onsetThresholdAdjustment = new Adjustment(_region.onsetParams.onsetThreshold,
-                                                       Region.OnsetParams.onsetThresholdMin,
-                                                       Region.OnsetParams.onsetThresholdMax,
+                                                       OnsetParams.onsetThresholdMin,
+                                                       OnsetParams.onsetThresholdMax,
                                                        0.01,
                                                        0.1,
                                                        0);
@@ -3073,8 +3073,8 @@ public:
             auto box2 = new Box(Orientation.VERTICAL, 5);
             box2.packStart(new Label("Silence Threshold (dbFS)"), false, false, 0);
             _silenceThresholdAdjustment = new Adjustment(_region.onsetParams.silenceThreshold,
-                                                         Region.OnsetParams.silenceThresholdMin,
-                                                         Region.OnsetParams.silenceThresholdMax,
+                                                         OnsetParams.silenceThresholdMin,
+                                                         OnsetParams.silenceThresholdMax,
                                                          0.1,
                                                          1,
                                                          0);
@@ -3397,7 +3397,7 @@ public:
             return clamp((mouseY - (boundingBox.y0 + headerHeight)) / channelHeight, 0, region.nChannels - 1);
         }
 
-        struct EditState {
+        static struct EditState {
             this(bool audioEdited,
                  bool recomputeOnsets,
                  bool onsetsEdited,
@@ -3537,7 +3537,7 @@ public:
 
         bool selected;
         nframes_t selectedOffset;
-        Region.OnsetParams onsetParams;
+        OnsetParams onsetParams;
 
         nframes_t editPointOffset; // locally indexed for this region
 
@@ -4574,6 +4574,8 @@ public:
             return _trackButtonStrip;
         }
 
+        @property ChannelStrip channelStrip() { return _channelStrip; }
+
         @property bool mute() const { return _track.mute; }
         @property bool solo() const { return _track.solo; }
 
@@ -4608,6 +4610,7 @@ public:
     private:
         this(Track track, pixels_t heightPixels, string name) {
             _track = track;
+            _channelStrip = new ChannelStrip(this);
 
             _baseHeightPixels = heightPixels;
             _trackColor = _newTrackColor();
@@ -4637,6 +4640,7 @@ public:
         }
  
         Track _track;
+        ChannelStrip _channelStrip;
         RegionView[] _regionViews;
 
         pixels_t _baseHeightPixels;
@@ -4649,7 +4653,7 @@ public:
         BoundingBox _boundingBox;
     }
 
-    struct Marker {
+    static struct Marker {
         nframes_t offset;
         string name;
     }
@@ -4672,6 +4676,7 @@ public:
 
             _canvas.redraw();
             _trackStubs.redraw();
+            _arrangeChannelStrip.redraw();
             return trackView;
         }
     }
@@ -5389,78 +5394,11 @@ private:
                 cr.setSource(_meterGradient);
                 cr.fill();
 
-                // update peak hold times
-                sample_t peak1 = _track.peakMax[0];
-                sample_t peak2 = _track.peakMax[1];
-
-                if(_readoutPeak1 < peak1) {
-                    _readoutPeak1 = peak1;
-                }
-                if(_readoutPeak2 < peak2) {
-                    _readoutPeak2 = peak2;
-                }
-
-                if(!_peak1Falling.isNull) {
-                    auto elapsed = MonoTime.currTime - _lastPeakTime;
-                    _peak1Falling = max(_peak1Falling - sample_t(1) / elapsed.split!("msecs").msecs, 0);
-                    peak1 = _peak1Falling;
-                    if(_peak1Falling < peak1 || _peak1Falling == 0) {
-                        _peak1Falling.nullify();
-                        _peakHold1 = peak1;
-                        _totalPeakTime1 = 0.msecs;
-                    }
-                    else {
-                        _track.resetMeterLeft();
-                    }
-                }
-                else {
-                    if(_peakHold1 > 0 && peak1 == _peakHold1) {
-                        auto elapsed = MonoTime.currTime - _lastPeakTime;
-                        _totalPeakTime1 += elapsed;
-                        if(_totalPeakTime1 >= peakHoldTime) {
-                            _peak1Falling = peak1;
-                            _track.resetMeterLeft();
-                        }
-                    }
-                    else {
-                        _peakHold1 = peak1;
-                        _totalPeakTime1 = 0.msecs;
-                    }
-                }
-
-                if(!_peak2Falling.isNull) {
-                    auto elapsed = MonoTime.currTime - _lastPeakTime;
-                    _peak2Falling = max(_peak2Falling - sample_t(1) / elapsed.split!("msecs").msecs, 0);
-                    peak2 = _peak2Falling;
-                    if(_peak2Falling < peak2 || peak2 <= 0) {
-                        _peak2Falling.nullify();
-                        _peakHold2 = peak2;
-                        _totalPeakTime2 = 0.msecs;
-                    }
-                    else {
-                        _track.resetMeterRight();
-                    }
-                }
-                else {
-                    if(_peakHold2 > 0 && peak2 == _peakHold2) {
-                        auto elapsed = MonoTime.currTime - _lastPeakTime;
-                        _totalPeakTime2 += elapsed;
-                        if(_totalPeakTime2 >= peakHoldTime) {
-                            _peak2Falling = peak2;
-                            _track.resetMeterRight();
-                        }
-                    }
-                    else {
-                        _peakHold2 = peak2;
-                        _totalPeakTime2 = 0.msecs;
-                    }
-                }
-
-                _lastPeakTime = MonoTime.currTime;
-
                 // draw the peak levels
-                immutable sample_t peakDb1 = 20 * log10(peak1);
-                immutable sample_t peakDb2 = 20 * log10(peak2);
+                updatePeaks();
+
+                immutable sample_t peakDb1 = 20 * log10(_peak1);
+                immutable sample_t peakDb2 = 20 * log10(_peak2);
 
                 immutable pixels_t peakHeight1 = min(cast(pixels_t)(_deflect0Db(peakDb1) * meterHeightPixels),
                                                      meterHeightPixels);
@@ -5501,6 +5439,77 @@ private:
             _backgroundGradient = null;
         }
 
+        void updatePeaks() {
+            // update peak hold times
+            _peak1 = _track.peakMax[0];
+            _peak2 = _track.peakMax[1];
+
+            if(_readoutPeak1 < _peak1) {
+                _readoutPeak1 = _peak1;
+            }
+            if(_readoutPeak2 < _peak2) {
+                _readoutPeak2 = _peak2;
+            }
+
+            if(!_peak1Falling.isNull) {
+                auto elapsed = MonoTime.currTime - _lastPeakTime;
+                _peak1Falling = max(_peak1Falling - sample_t(1) / elapsed.split!("msecs").msecs, 0);
+                _peak1 = _peak1Falling;
+                if(_peak1Falling < _peak1 || _peak1Falling == 0) {
+                    _peak1Falling.nullify();
+                    _peakHold1 = _peak1;
+                    _totalPeakTime1 = 0.msecs;
+                }
+                else {
+                    _track.resetMeterLeft();
+                }
+            }
+            else {
+                if(_peakHold1 > 0 && _peak1 == _peakHold1) {
+                    auto elapsed = MonoTime.currTime - _lastPeakTime;
+                    _totalPeakTime1 += elapsed;
+                    if(_totalPeakTime1 >= peakHoldTime) {
+                        _peak1Falling = _peak1;
+                        _track.resetMeterLeft();
+                    }
+                }
+                else {
+                    _peakHold1 = _peak1;
+                    _totalPeakTime1 = 0.msecs;
+                }
+            }
+
+            if(!_peak2Falling.isNull) {
+                auto elapsed = MonoTime.currTime - _lastPeakTime;
+                _peak2Falling = max(_peak2Falling - sample_t(1) / elapsed.split!("msecs").msecs, 0);
+                _peak2 = _peak2Falling;
+                if(_peak2Falling < _peak2 || _peak2 <= 0) {
+                    _peak2Falling.nullify();
+                    _peakHold2 = _peak2;
+                    _totalPeakTime2 = 0.msecs;
+                }
+                else {
+                    _track.resetMeterRight();
+                }
+            }
+            else {
+                if(_peakHold2 > 0 && _peak2 == _peakHold2) {
+                    auto elapsed = MonoTime.currTime - _lastPeakTime;
+                    _totalPeakTime2 += elapsed;
+                    if(_totalPeakTime2 >= peakHoldTime) {
+                        _peak2Falling = _peak2;
+                        _track.resetMeterRight();
+                    }
+                }
+                else {
+                    _peakHold2 = _peak2;
+                    _totalPeakTime2 = 0.msecs;
+                }
+            }
+
+            _lastPeakTime = MonoTime.currTime;
+        }
+
         // continues to update the meter when the mixer stops playing
         // returns true if the meter should be redrawn
         bool refresh() {
@@ -5539,7 +5548,7 @@ private:
         void resetMeters() {
             if(_track !is null) {
                 _track.resetMeters();
-                _readoutPeak1 = _readoutPeak2 = -float.infinity;
+                _peak1 = _peak2 = _readoutPeak1 = _readoutPeak2 = -float.infinity;
                 _peak1Falling.nullify();
                 _peak2Falling.nullify();
                 _processSilence = false;
@@ -5575,10 +5584,9 @@ private:
         }
 
         @property TrackView track() { return _track; }
-        @property TrackView track(TrackView newTrack) {
-            _track = newTrack;
-            updateFaderFromTrack();
-            return _track;
+
+        @property bool redrawRequested() {
+            return _mixerPlaying || _processSilence;
         }
 
         @property ref const(BoundingBox) faderBox() const { return _faderBox; }
@@ -5698,6 +5706,8 @@ private:
         bool _processSilence;
         MonoTime _lastRefresh;
 
+        sample_t _peak1 = -float.infinity;
+        sample_t _peak2 = -float.infinity;
         sample_t _readoutPeak1 = -float.infinity;
         sample_t _readoutPeak2 = -float.infinity;
         sample_t _peakHold1 = 0;
@@ -5721,11 +5731,14 @@ private:
             addOnButtonPress(&onButtonPress);
             addOnButtonRelease(&onButtonRelease);
 
-            _selectedTrackChannelStrip = new ChannelStrip(_selectedTrack);
+            update();
         }
 
         void update() {
-            _selectedTrackChannelStrip.track = _selectedTrack;
+            if(_selectedTrack !is null) {
+                _selectedTrackChannelStrip = _selectedTrack.channelStrip;
+                _selectedTrackChannelStrip.updateFaderFromTrack();
+            }
         }
 
         void redraw() {
@@ -5738,7 +5751,9 @@ private:
             }
 
             // draw the channel strip for the currently selected track
-            _selectedTrackChannelStrip.draw(cr);
+            if(_selectedTrackChannelStrip !is null) {
+                _selectedTrackChannelStrip.draw(cr);
+            }
 
             // draw a right border
             cr.moveTo(_arrangeChannelStripWidth, 0);
@@ -5750,7 +5765,14 @@ private:
         }
 
         bool onRefresh() {
-            if(_selectedTrackChannelStrip.refresh()) {
+            foreach(trackView; _trackViews) {
+                if(trackView != _selectedTrack) {
+                    trackView.channelStrip.updatePeaks();
+                }
+                trackView.channelStrip.refresh();
+            }
+
+            if(_selectedTrackChannelStrip.redrawRequested) {
                 redraw();
             }
 
@@ -5758,7 +5780,9 @@ private:
         }
 
         void onSizeAllocate(GtkAllocation* allocation, Widget widget) {
-            _selectedTrackChannelStrip.sizeChanged();
+            if(_selectedTrackChannelStrip !is null) {
+                _selectedTrackChannelStrip.sizeChanged();
+            }
         }
 
         bool onMotionNotify(Event event, Widget widget) {
@@ -5766,7 +5790,7 @@ private:
                 _mouseX = cast(typeof(_mouseX))(event.motion.x);
                 _mouseY = cast(typeof(_mouseX))(event.motion.y);
 
-                if(_selectedTrackFaderMoving) {
+                if(_selectedTrackChannelStrip !is null && _selectedTrackFaderMoving) {
                     _selectedTrackChannelStrip.updateFaderFromMouse();
                     redraw();
                 }
@@ -5783,21 +5807,23 @@ private:
                 }
                 _doubleClickTime = MonoTime.currTime;
 
-                if(event.button.button == leftButton) {
-                    if(_selectedTrackChannelStrip.faderBox.containsPoint(_mouseX, _mouseY) ||
-                       _selectedTrackChannelStrip.faderReadoutBox.containsPoint(_mouseX, _mouseY)) {
-                        if(doubleClick) {
-                            _selectedTrackChannelStrip.zeroFader();
+                if(_selectedTrackChannelStrip !is null) {
+                    if(event.button.button == leftButton) {
+                        if(_selectedTrackChannelStrip.faderBox.containsPoint(_mouseX, _mouseY) ||
+                           _selectedTrackChannelStrip.faderReadoutBox.containsPoint(_mouseX, _mouseY)) {
+                            if(doubleClick) {
+                                _selectedTrackChannelStrip.zeroFader();
+                                redraw();
+                            }
+                            else {
+                                _selectedTrackFaderMoving = true;
+                            }
+                        }
+                        else if(_selectedTrackChannelStrip.meterBox.containsPoint(_mouseX, _mouseY) ||
+                                _selectedTrackChannelStrip.meterReadoutBox.containsPoint(_mouseX, _mouseY)) {
+                            _selectedTrackChannelStrip.resetMeters();
                             redraw();
                         }
-                        else {
-                            _selectedTrackFaderMoving = true;
-                        }
-                    }
-                    else if(_selectedTrackChannelStrip.meterBox.containsPoint(_mouseX, _mouseY) ||
-                            _selectedTrackChannelStrip.meterReadoutBox.containsPoint(_mouseX, _mouseY)) {
-                        _selectedTrackChannelStrip.resetMeters();
-                        redraw();
                     }
                 }
             }
@@ -7317,13 +7343,13 @@ private:
         }
     }
 
-    struct RegionViewState {
+    static struct RegionViewState {
         RegionView regionView;
         nframes_t offset;
         nframes_t sliceStartFrame;
         nframes_t sliceEndFrame;
     }
-    struct ArrangeState {
+    static struct ArrangeState {
         RegionViewState[] selectedRegionStates;
     }
     StateHistory!ArrangeState _arrangeStateHistory;
