@@ -4438,7 +4438,7 @@ public:
             cr.rectangle(0, yOffset, _trackStubWidth, heightPixels);
             Pattern trackGradient = Pattern.createLinear(0, yOffset, 0, yOffset + heightPixels);
             scope(exit) trackGradient.destroy();
-            if(selected) {
+            if(this is _selectedTrack) {
                 trackGradient.addColorStopRgb(0,
                                               selectedGradientTop.r,
                                               selectedGradientTop.g,
@@ -4603,8 +4603,6 @@ public:
         @property string name() const { return _name; }
         @property string name(string newName) { return (_name = newName); }
 
-        bool selected;
-
         @property ref const(BoundingBox) boundingBox() const { return _boundingBox; }
 
     private:
@@ -4663,16 +4661,10 @@ public:
             TrackView trackView;
             trackView = new TrackView(_mixer.createTrack(), defaultTrackHeightPixels, trackName);
 
-            // deselect current track
-            if(_selectedTrack !is null) {
-                _selectedTrack.selected = false;
-            }
-
             // select the new track
-            trackView.selected = true;
-            _selectedTrack = trackView;
-            _arrangeChannelStrip.update();
+            _selectTrack(trackView);
             _trackViews ~= trackView;
+            appendArrangeState(currentArrangeState!(ArrangeStateType.tracksEdit));
 
             _canvas.redraw();
             _trackStubs.redraw();
@@ -5054,6 +5046,11 @@ private:
         return null;
     }
 
+    void _selectTrack(TrackView trackView) {
+        _selectedTrack = trackView;
+        _arrangeChannelStrip.update();
+    }
+
     final class ChannelStrip {
     public:
         immutable Duration peakHoldTime = 1500.msecs; // amount of time to maintain meter peak levels
@@ -5208,9 +5205,6 @@ private:
         void draw(ref Scoped!Context cr) {
             immutable pixels_t windowWidth = cast(pixels_t)(getWindow().getWidth());
             immutable pixels_t windowHeight = cast(pixels_t)(getWindow().getHeight());
-
-            cr.setSourceRgb(0.1, 0.1, 0.1);
-            cr.paint();
 
             pixels_t xOffset = 20;
             _faderYOffset = windowHeight - (meterHeightPixels + faderHeightPixels / 2);
@@ -5739,6 +5733,9 @@ private:
                 _selectedTrackChannelStrip = _selectedTrack.channelStrip;
                 _selectedTrackChannelStrip.updateFaderFromTrack();
             }
+            else {
+                _selectedTrackChannelStrip = null;
+            }
         }
 
         void redraw() {
@@ -5749,6 +5746,10 @@ private:
             if(_arrangeChannelStripRefresh is null) {
                 _arrangeChannelStripRefresh = new Timeout(cast(uint)(1.0 / refreshRate * 1000), &onRefresh, false);
             }
+
+            // draw the background
+            cr.setSourceRgb(0.1, 0.1, 0.1);
+            cr.paint();
 
             // draw the channel strip for the currently selected track
             if(_selectedTrackChannelStrip !is null) {
@@ -5772,7 +5773,7 @@ private:
                 trackView.channelStrip.refresh();
             }
 
-            if(_selectedTrackChannelStrip.redrawRequested) {
+            if(_selectedTrackChannelStrip !is null && _selectedTrackChannelStrip.redrawRequested) {
                 redraw();
             }
 
@@ -5817,6 +5818,7 @@ private:
                             }
                             else {
                                 _selectedTrackFaderMoving = true;
+                                _selectedTrackFaderStartGainDB = _selectedTrack.faderGainDB;
                             }
                         }
                         else if(_selectedTrackChannelStrip.meterBox.containsPoint(_mouseX, _mouseY) ||
@@ -5834,6 +5836,9 @@ private:
             if(event.type == EventType.BUTTON_RELEASE && event.button.button == leftButton) {
                 if(_selectedTrackFaderMoving) {
                     _selectedTrackFaderMoving = false;
+                    if(_selectedTrackFaderStartGainDB != _selectedTrack.faderGainDB) {
+                        appendArrangeState(currentArrangeState!(ArrangeStateType.selectedTrackEdit));
+                    }
                 }
             }
             return false;
@@ -5844,6 +5849,7 @@ private:
 
         ChannelStrip _selectedTrackChannelStrip;
         bool _selectedTrackFaderMoving;
+        sample_t _selectedTrackFaderStartGainDB;
     }
 
     final class TrackStubs : DrawingArea {
@@ -5928,15 +5934,11 @@ private:
                         }
 
                         if(_trackButtonPressed is null && trackView !is _selectedTrack) {
-                            // deselect the previously selected track
-                            if(_selectedTrack !is null) {
-                                _selectedTrack.selected = false;
-                            }
-
                             // select the new track
-                            trackView.selected = true;
-                            _selectedTrack = trackView;
-                            _arrangeChannelStrip.update();
+                            if(trackView !is _selectedTrack) {
+                                _selectTrack(trackView);
+                                appendArrangeState(currentArrangeState!(ArrangeStateType.selectedTrackEdit));
+                            }
 
                             redraw();
                         }
@@ -6626,7 +6628,7 @@ private:
                                     _computeEarliestSelectedRegion();
                                     _setAction(Action.selectRegion);
 
-                                    appendArrangeState(currentArrangeState());
+                                    appendArrangeState(currentArrangeState!(ArrangeStateType.selectedRegionEdit));
                                 }
                                 break;
 
@@ -6732,7 +6734,7 @@ private:
                     case Action.shrinkRegionStart:
                     case Action.shrinkRegionEnd:
                         _setAction(Action.none);
-                        appendArrangeState(currentArrangeState());
+                        appendArrangeState(currentArrangeState!(ArrangeStateType.selectedRegionEdit));
                         break;
 
                     // select a subregion
@@ -6761,7 +6763,7 @@ private:
                             _computeEarliestSelectedRegion();
 
                             if(regionFound) {
-                                appendArrangeState(currentArrangeState());
+                                appendArrangeState(currentArrangeState!(ArrangeStateType.selectedRegionEdit));
                             }
                         }
                         _setAction(Action.none);
@@ -6781,7 +6783,7 @@ private:
                         }
 
                         if(regionModified) {
-                            appendArrangeState(currentArrangeState());
+                            appendArrangeState(currentArrangeState!(ArrangeStateType.selectedRegionEdit));
                         }
 
                         redraw();
@@ -7298,32 +7300,73 @@ private:
         }
     }
 
-    ArrangeState currentArrangeState() {
-        Appender!(RegionViewState[]) regionViewStates;
-        foreach(regionView; _selectedRegions) {
-            regionViewStates.put(RegionViewState(regionView,
-                                                 regionView.offset,
-                                                 regionView.sliceStartFrame,
-                                                 regionView.sliceEndFrame));
+    @property ArrangeState currentArrangeState(ArrangeStateType stateType)() {
+        static if(stateType == ArrangeStateType.tracksEdit) {
+            auto trackStatesApp = appender!(TrackViewState[]);
+            foreach(trackView; _trackViews) {
+                trackStatesApp.put(TrackViewState(trackView, trackView.faderGainDB));
+            }
+            return ArrangeState(stateType, TrackViewStateList(_selectedTrack, trackStatesApp.data));
         }
-        return ArrangeState(regionViewStates.data.dup);
+        else if(stateType == ArrangeStateType.selectedTrackEdit) {
+            return ArrangeState(stateType,
+                                TrackViewState(_selectedTrack, _selectedTrack.faderGainDB));
+        }
+        else if(stateType == ArrangeStateType.selectedRegionEdit) {
+            Appender!(RegionViewState[]) regionViewStates;
+            foreach(regionView; _selectedRegions) {
+                regionViewStates.put(RegionViewState(regionView,
+                                                     regionView.offset,
+                                                     regionView.sliceStartFrame,
+                                                     regionView.sliceEndFrame));
+            }
+            return ArrangeState(stateType, regionViewStates.data.dup);
+        }
     }
 
     void updateCurrentArrangeState() {
-        // clear the selection flag for all currently selected regions
-        foreach(regionView; _selectedRegions) {
-            regionView.selected = false;
-        }
-        _selectedRegionsApp.clear();
+        final switch(_arrangeStateHistory.currentState.stateType) {
+            case ArrangeStateType.tracksEdit:
+                auto trackViewsApp = appender!(TrackView[]);
+                foreach(trackViewState; _arrangeStateHistory.currentState.trackStates) {
+                    trackViewState.trackView.faderGainDB = trackViewState.faderGainDB;
+                    trackViewsApp.put(trackViewState.trackView);
+                }
+                _trackViews = trackViewsApp.data;
+                _selectTrack(_arrangeStateHistory.currentState.trackStates.selectedTrack);
+                break;
 
-        foreach(regionViewState; _arrangeStateHistory.currentState.selectedRegionStates) {
-            regionViewState.regionView.selected = true;
-            regionViewState.regionView.offset = regionViewState.offset;
-            regionViewState.regionView.sliceStartFrame = regionViewState.sliceStartFrame;
-            regionViewState.regionView.sliceEndFrame = regionViewState.sliceEndFrame;
-            _selectedRegionsApp.put(regionViewState.regionView);
-            _computeEarliestSelectedRegion();
+            case ArrangeStateType.selectedTrackEdit:
+                // update the selected track
+                _selectTrack(_arrangeStateHistory.currentState.selectedTrackState.trackView);
+                if(_selectedTrack !is null) {
+                    _selectedTrack.faderGainDB = _arrangeStateHistory.currentState.selectedTrackState.faderGainDB;
+                }
+                break;
+
+            case ArrangeStateType.selectedRegionEdit:
+                // clear the selection flag for all currently selected regions
+                foreach(regionView; _selectedRegions) {
+                    regionView.selected = false;
+                }
+                _selectedRegionsApp.clear();
+
+                // update selectd regions
+                foreach(regionViewState; _arrangeStateHistory.currentState.selectedRegionStates) {
+                    regionViewState.regionView.selected = true;
+                    regionViewState.regionView.offset = regionViewState.offset;
+                    regionViewState.regionView.sliceStartFrame = regionViewState.sliceStartFrame;
+                    regionViewState.regionView.sliceEndFrame = regionViewState.sliceEndFrame;
+                    _selectedRegionsApp.put(regionViewState.regionView);
+                    _computeEarliestSelectedRegion();
+                }
+                break;
         }
+
+        _canvas.redraw();
+        _trackStubs.redraw();
+        _arrangeChannelStrip.update();
+        _arrangeChannelStrip.redraw();
     }
 
     void appendArrangeState(ArrangeState arrangeState) {
@@ -7343,14 +7386,70 @@ private:
         }
     }
 
+    static struct TrackViewState {
+        TrackView trackView;
+        sample_t faderGainDB;
+    }
+    static struct TrackViewStateList {
+        TrackView selectedTrack;
+        TrackViewState[] trackViewStates;
+        alias trackViewStates this;
+    }
     static struct RegionViewState {
         RegionView regionView;
         nframes_t offset;
         nframes_t sliceStartFrame;
         nframes_t sliceEndFrame;
     }
+
+    enum ArrangeStateType {
+        tracksEdit,
+        selectedTrackEdit,
+        selectedRegionEdit
+    }
+
     static struct ArrangeState {
-        RegionViewState[] selectedRegionStates;
+    public:
+        static bool isValidStateData(T)() {
+            foreach(member; __traits(allMembers, StateData)) {
+                static if(is(T : typeof(mixin("StateData." ~ member)))) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        this(T)(ArrangeStateType stateType, T stateData) if(isValidStateData!T) {
+            _stateType = stateType;
+
+            foreach(member; __traits(allMembers, StateData)) {
+                static if(is(T : typeof(mixin("StateData." ~ member)))) {
+                    mixin("_stateData." ~ member ~ " = stateData;");
+                    break;
+                }
+            }
+        }
+
+        @property ArrangeStateType stateType() const { return _stateType; }
+        mixin(_stateDataMembers());
+
+    private:
+        static string _stateDataMembers() {
+            string result;
+            foreach(member; __traits(allMembers, StateData)) {
+                result ~= "@property auto ref " ~ member ~ "() { return _stateData." ~ member ~ "; }";
+            }
+            return result;
+        }
+
+        static union StateData {
+            TrackViewStateList trackStates;
+            TrackViewState selectedTrackState;
+            RegionViewState[] selectedRegionStates;
+        }
+
+        ArrangeStateType _stateType;
+        StateData _stateData;
     }
     StateHistory!ArrangeState _arrangeStateHistory;
 
