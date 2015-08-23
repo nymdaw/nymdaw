@@ -120,7 +120,7 @@ public:
     }
 
 private:
-     template rank(T) {
+    template rank(T) {
         static if(is(T t == U[], U)) {
             enum size_t rank = 1 + rank!U;
         }
@@ -161,8 +161,6 @@ public:
         _updateCurrentState();
     }
 
-    @disable this();
-
     // returns true if an undo operation is currently possible
     bool queryUndo() {
         synchronized(_mutex) {
@@ -189,8 +187,8 @@ public:
     void undo() {
         synchronized(_mutex) {
             auto operation = takeOne(retro(_undoHistory[]));
+            // never remove the last element in the undo history
             if(!operation.empty) {
-                // never remove the last element in the undo history
                 auto newUndoHistory = _undoHistory[];
                 newUndoHistory.popFront();
                 if(!newUndoHistory.empty) {
@@ -234,6 +232,10 @@ public:
         return _currentState.state;
     }
 
+    alias HistoryContainer = DList!T;
+    @property ref HistoryContainer undoHistory() { return _undoHistory; }
+    @property ref HistoryContainer redoHistory() { return _redoHistory; }
+
 private:
     void _updateCurrentState() {
         atomicStore(*cast(shared)(&_currentState), cast(shared)(new CurrentState(_undoHistory.back)));
@@ -250,7 +252,6 @@ private:
 
     Mutex _mutex;
 
-    alias HistoryContainer = DList!T;
     HistoryContainer _undoHistory;
     HistoryContainer _redoHistory;
 
@@ -2595,139 +2596,137 @@ private:
 }
 
 version(HAVE_JACK) {
-
-final class JackMixer : Mixer {
-public:
-    this(string appName) {
-        if(_instance !is null) {
-            throw new AudioError("Only one JackMixer instance may be constructed per process");
-        }
-        _instance = this;
-        super(appName);
-    }
-
-    @property override nframes_t sampleRate() { return jack_get_sample_rate(_client); }
-
-protected:
-    override void initializeMixer() {
-        _client = jack_client_open(appName.toStringz, JackOptions.JackNoStartServer, null);
-        if(!_client) {
-            throw new AudioError("jack_client_open failed");
-        }
-
-        immutable char* mixPort1Name = "StereoMix1";
-        immutable char* mixPort2Name = "StereoMix2";
-        _mixPort1 = jack_port_register(_client,
-                                       mixPort1Name,
-                                       JACK_DEFAULT_AUDIO_TYPE,
-                                       JackPortFlags.JackPortIsOutput,
-                                       0);
-        _mixPort2 = jack_port_register(_client,
-                                       mixPort2Name,
-                                       JACK_DEFAULT_AUDIO_TYPE,
-                                       JackPortFlags.JackPortIsOutput,
-                                       0);
-        if(!_mixPort1 || !_mixPort2) {
-            throw new AudioError("jack_port_register failed");
-        }
-
-        // callback to process a single period of audio data
-        if(jack_set_process_callback(_client, &_jackProcessCallback, null)) {
-            throw new AudioError("jack_set_process_callback failed");
-        }
-
-        // activate the client
-        if(jack_activate(_client)) {
-            throw new AudioError("jack_activate failed");
-        }
-
-        // attempt to connect to physical playback ports
-        const(char)** playbackPorts =
-            jack_get_ports(_client, null, null, JackPortFlags.JackPortIsInput | JackPortFlags.JackPortIsPhysical);
-        if(playbackPorts && playbackPorts[1]) {
-            auto status1 = jack_connect(_client, jack_port_name(_mixPort1), playbackPorts[0]);
-            auto status2 = jack_connect(_client, jack_port_name(_mixPort2), playbackPorts[1]);
-            import core.stdc.errno : EEXIST;
-            if((status1 && status2 != EEXIST) || (status2 && status2 != EEXIST)) {
-                throw new AudioError("jack_connect failed ");
+    final class JackMixer : Mixer {
+    public:
+        this(string appName) {
+            if(_instance !is null) {
+                throw new AudioError("Only one JackMixer instance may be constructed per process");
             }
+            _instance = this;
+            super(appName);
         }
-        jack_free(playbackPorts);
+
+        @property override nframes_t sampleRate() { return jack_get_sample_rate(_client); }
+
+    protected:
+        override void initializeMixer() {
+            _client = jack_client_open(appName.toStringz, JackOptions.JackNoStartServer, null);
+            if(!_client) {
+                throw new AudioError("jack_client_open failed");
+            }
+
+            immutable char* mixPort1Name = "StereoMix1";
+            immutable char* mixPort2Name = "StereoMix2";
+            _mixPort1 = jack_port_register(_client,
+                                           mixPort1Name,
+                                           JACK_DEFAULT_AUDIO_TYPE,
+                                           JackPortFlags.JackPortIsOutput,
+                                           0);
+            _mixPort2 = jack_port_register(_client,
+                                           mixPort2Name,
+                                           JACK_DEFAULT_AUDIO_TYPE,
+                                           JackPortFlags.JackPortIsOutput,
+                                           0);
+            if(!_mixPort1 || !_mixPort2) {
+                throw new AudioError("jack_port_register failed");
+            }
+
+            // callback to process a single period of audio data
+            if(jack_set_process_callback(_client, &_jackProcessCallback, null)) {
+                throw new AudioError("jack_set_process_callback failed");
+            }
+
+            // activate the client
+            if(jack_activate(_client)) {
+                throw new AudioError("jack_activate failed");
+            }
+
+            // attempt to connect to physical playback ports
+            const(char)** playbackPorts =
+                jack_get_ports(_client, null, null, JackPortFlags.JackPortIsInput | JackPortFlags.JackPortIsPhysical);
+            if(playbackPorts && playbackPorts[1]) {
+                auto status1 = jack_connect(_client, jack_port_name(_mixPort1), playbackPorts[0]);
+                auto status2 = jack_connect(_client, jack_port_name(_mixPort2), playbackPorts[1]);
+                import core.stdc.errno : EEXIST;
+                if((status1 && status2 != EEXIST) || (status2 && status2 != EEXIST)) {
+                    throw new AudioError("jack_connect failed ");
+                }
+            }
+            jack_free(playbackPorts);
+        }
+
+        override void cleanupMixer() {
+            jack_client_close(_client);
+        }
+
+    private:
+        extern(C) static int _jackProcessCallback(jack_nframes_t bufNFrames, void* arg) @nogc nothrow {
+            sample_t* mixBuf1 = cast(sample_t*)(jack_port_get_buffer(_instance._mixPort1, bufNFrames));
+            sample_t* mixBuf2 = cast(sample_t*)(jack_port_get_buffer(_instance._mixPort2, bufNFrames));
+
+            _instance.mixStereoNonInterleaved(bufNFrames, mixBuf1, mixBuf2);
+
+            return 0;
+        };
+
+        __gshared static JackMixer _instance; // there should be only one instance per process
+
+        jack_client_t* _client;
+        jack_port_t* _mixPort1;
+        jack_port_t* _mixPort2;
     }
-
-    override void cleanupMixer() {
-        jack_client_close(_client);
-    }
-
-private:
-    extern(C) static int _jackProcessCallback(jack_nframes_t bufNFrames, void* arg) @nogc nothrow {
-        sample_t* mixBuf1 = cast(sample_t*)(jack_port_get_buffer(_instance._mixPort1, bufNFrames));
-        sample_t* mixBuf2 = cast(sample_t*)(jack_port_get_buffer(_instance._mixPort2, bufNFrames));
-
-        _instance.mixStereoNonInterleaved(bufNFrames, mixBuf1, mixBuf2);
-
-        return 0;
-    };
-
-    __gshared static JackMixer _instance; // there should be only one instance per process
-
-    jack_client_t* _client;
-    jack_port_t* _mixPort1;
-    jack_port_t* _mixPort2;
-}
 
 }
 
 version(HAVE_COREAUDIO) {
+    private extern(C) @nogc nothrow {
+        char* coreAudioErrorString();
+        bool coreAudioInit(nframes_t sampleRate, channels_t nChannels, AudioCallback callback);
+        void coreAudioCleanup();
+        alias AudioCallback = void function(nframes_t, channels_t, sample_t*);
+    }
 
-private extern(C) @nogc nothrow {
-    char* coreAudioErrorString();
-    bool coreAudioInit(nframes_t sampleRate, channels_t nChannels, AudioCallback callback);
-    void coreAudioCleanup();
-    alias AudioCallback = void function(nframes_t, channels_t, sample_t*);
-}
+    final class CoreAudioMixer : Mixer {
+    public:
+        enum outputChannels = 2; // default to stereo
 
-final class CoreAudioMixer : Mixer {
-public:
-    enum outputChannels = 2; // default to stereo
-
-    this(string appName, nframes_t sampleRate = 44100) {
-        if(_instance !is null) {
-            throw new AudioError("Only one CoreAudioMixer instance may be constructed per process");
+        this(string appName, nframes_t sampleRate = 44100) {
+            if(_instance !is null) {
+                throw new AudioError("Only one CoreAudioMixer instance may be constructed per process");
+            }
+            _instance = this;
+            _sampleRate = sampleRate;
+            super(appName);
         }
-        _instance = this;
-        _sampleRate = sampleRate;
-        super(appName);
-    }
 
-    ~this() {
-        _instance = null;
-    }
-
-    @property override nframes_t sampleRate() { return _sampleRate; }
-
-protected:
-    override void initializeMixer() {
-        if(!coreAudioInit(sampleRate, outputChannels, &_coreAudioProcessCallback)) {
-            throw new AudioError(to!string(coreAudioErrorString()));
+        ~this() {
+            _instance = null;
         }
+
+        @property override nframes_t sampleRate() { return _sampleRate; }
+
+    protected:
+        override void initializeMixer() {
+            if(!coreAudioInit(sampleRate, outputChannels, &_coreAudioProcessCallback)) {
+                throw new AudioError(to!string(coreAudioErrorString()));
+            }
+        }
+
+        override void cleanupMixer() {
+            coreAudioCleanup();
+        }
+
+    private:
+        extern(C) static void _coreAudioProcessCallback(nframes_t bufNFrames,
+                                                        channels_t nChannels,
+                                                        sample_t* mixBuffer) @nogc nothrow {
+            _instance.mixStereoInterleaved(bufNFrames, nChannels, mixBuffer);
+        }
+
+        __gshared static CoreAudioMixer _instance; // there should be only one instance per process
+
+        nframes_t _sampleRate;
     }
-
-    override void cleanupMixer() {
-        coreAudioCleanup();
-    }
-
-private:
-    extern(C) static void _coreAudioProcessCallback(nframes_t bufNFrames,
-                                                    channels_t nChannels,
-                                                    sample_t* mixBuffer) @nogc nothrow {
-        _instance.mixStereoInterleaved(bufNFrames, nChannels, mixBuffer);
-    }
-
-    __gshared static CoreAudioMixer _instance; // there should be only one instance per process
-
-    nframes_t _sampleRate;
-}
 
 }
 
@@ -3603,7 +3602,7 @@ public:
             this.region = region;
             _regionColor = color;
 
-            _arrangeStateHistory = new StateHistory!ArrangeState(ArrangeState());
+            _arrangeStateHistory = new StateHistory!ArrangeState(ArrangeState.emptyState());
             _editStateHistory = new StateHistory!EditState(EditState());
         }
 
@@ -4352,8 +4351,6 @@ public:
 
         @property override string buttonText() const { return "L"; }
         @property override Color enabledColor() const { return Color(1.0, 0.65, 0.0); }
-
-    private:
     }
 
     final class RightButton : TrackButton {
@@ -4599,6 +4596,7 @@ public:
         @property pixels_t minHeightPixels() const { return _minHeightPixels; }
 
         @property RegionView[] regionViews() { return _regionViews; }
+        @property RegionView[] regionViews(RegionView[] newRegionViews) { return (_regionViews = newRegionViews); }
 
         @property string name() const { return _name; }
         @property string name(string newName) { return (_name = newName); }
@@ -4649,406 +4647,6 @@ public:
         TrackButtonStrip _trackButtonStrip;
 
         BoundingBox _boundingBox;
-    }
-
-    static struct Marker {
-        nframes_t offset;
-        string name;
-    }
-
-    TrackView createTrackView(string trackName) {
-        synchronized {
-            TrackView trackView;
-            trackView = new TrackView(_mixer.createTrack(), defaultTrackHeightPixels, trackName);
-
-            // select the new track
-            _selectTrack(trackView);
-            _trackViews ~= trackView;
-            appendArrangeState(currentArrangeState!(ArrangeStateType.tracksEdit));
-
-            _canvas.redraw();
-            _trackStubs.redraw();
-            _arrangeChannelStrip.redraw();
-            return trackView;
-        }
-    }
-
-    void loadRegionsFromFiles(const(string[]) fileNames) {
-        auto progressCallback = progressTaskCallback!(LoadState);
-        void loadRegionTask(string fileName) {
-            auto newSequence = AudioSequence.fromFile(fileName, _mixer.sampleRate, progressCallback);
-            Region newRegion = new Region(newSequence);
-            if(newRegion is null) {
-                ErrorDialog.display(_parentWindow, "Could not load file " ~ baseName(fileName));
-            }
-            else {
-                auto newTrack = createTrackView(newRegion.name);
-                newTrack.addRegion(newRegion);
-            }
-        }
-        alias RegionTask = ProgressTask!(typeof(task(&loadRegionTask, string.init)));
-        auto regionTaskList = appender!(RegionTask[]);
-        foreach(fileName; fileNames) {
-            regionTaskList.put(progressTask(baseName(fileName), task(&loadRegionTask, fileName)));
-        }
-
-        if(regionTaskList.data.length > 0) {
-            beginProgressTask!(LoadState, RegionTask)(regionTaskList.data);
-            _canvas.redraw();
-        }
-    }
-
-    @property nframes_t samplesPerPixel() const { return _samplesPerPixel; }
-    @property nframes_t viewOffset() const { return _viewOffset; }
-    @property nframes_t viewWidthSamples() { return _canvas.viewWidthPixels * _samplesPerPixel; }
-
-    @property nframes_t viewMinSamples() { return 0; }
-    @property nframes_t viewMaxSamples() { return _mixer.lastFrame + viewWidthSamples; }
-
-private:
-    enum _zoomStep = 10;
-    @property size_t _zoomMultiplier() const {
-        if(_samplesPerPixel > 2000) {
-            return 20;
-        }
-        if(_samplesPerPixel > 1000) {
-            return 10;
-        }
-        if(_samplesPerPixel > 700) {
-            return 5;
-        }
-        if(_samplesPerPixel > 400) {
-            return 4;
-        }
-        else if(_samplesPerPixel > 200) {
-            return 3;
-        }
-        else if(_samplesPerPixel > 100) {
-            return 2;
-        }
-        else {
-            return 1;
-        }
-    }
-
-    enum _verticalZoomFactor = 1.2f;
-    enum _verticalZoomFactorMax = _verticalZoomFactor * 3;
-    enum _verticalZoomFactorMin = _verticalZoomFactor / 10;
-
-    void _createArrangeMenu() {
-        _arrangeMenu = new Menu();
-
-        _arrangeMenu.append(new MenuItem(&onImportFile, "Import file..."));
-
-        _arrangeMenu.attachToWidget(this, null);
-    }
-
-    void onImportFile(MenuItem menuItem) {
-        if(_importFileChooser is null) {
-            _importFileChooser = new FileChooserDialog("Import Audio file",
-                                                       _parentWindow,
-                                                       FileChooserAction.OPEN,
-                                                       null,
-                                                       null);
-            _importFileChooser.setSelectMultiple(true);
-        }
-
-        auto fileNames = appender!(string[])();
-        auto response = _importFileChooser.run();
-        if(response == ResponseType.OK) {
-            ListSG fileList = _importFileChooser.getUris();
-            for(auto i = 0; i < fileList.length(); ++i) {
-                string hostname;
-                fileNames.put(URI.filenameFromUri(Str.toString(cast(char*)(fileList.nthData(i))), hostname));
-            }
-            _importFileChooser.hide();
-        }
-        else if(response == ResponseType.CANCEL) {
-            _importFileChooser.hide();
-        }
-        else {
-            _importFileChooser.destroy();
-            _importFileChooser = null;
-        }
-
-        loadRegionsFromFiles(fileNames.data);
-    }
-
-    auto beginProgressTask(ProgressState, ProgressTask, bool cancelButton = true)(ProgressTask[] taskList)
-        if(__traits(isSame, TemplateOf!ProgressState, .ProgressState) &&
-           __traits(isSame, TemplateOf!ProgressTask, .ProgressTask)) {
-            enum progressRefreshRate = 10; // in Hz
-            enum progressMessageTimeout = 10.msecs;
-
-            auto progressDialog = new Dialog();
-            progressDialog.setDefaultSize(400, 75);
-            progressDialog.setTransientFor(_parentWindow);
-
-            auto dialogBox = progressDialog.getContentArea();
-            auto progressBar = new ProgressBar();
-            dialogBox.packStart(progressBar, false, false, 20);
-
-            auto progressLabel = new Label(string.init);
-            dialogBox.packStart(progressLabel, false, false, 10);
-
-            static if(cancelButton) {
-                void onProgressCancel(Button button) {
-                    progressDialog.response(ResponseType.CANCEL);
-                }
-                dialogBox.packEnd(ArrangeDialog.createCancelButton(&onProgressCancel), false, false, 10);
-            }
-
-            if(taskList.length > 0) {
-                setMaxMailboxSize(thisTid,
-                                  LoadState.nStages * LoadState.stepsPerStage,
-                                  OnCrowding.ignore);
-
-                size_t currentTaskIndex = 0;
-                ProgressTask currentTask = taskList[currentTaskIndex];
-
-                void beginTask(ProgressTask currentTask) {
-                    progressDialog.setTitle(currentTask.name);
-                    currentTask.task.executeInNewThread();
-                }
-                beginTask(currentTask);
-
-                static string stageCases() {
-                    string result;
-                    foreach(stage; __traits(allMembers, ProgressState.Stage)[0 .. $ - 1]) {
-                        result ~=
-                            "case ProgressState.Stage." ~ cast(string)(stage) ~ ": " ~
-                            "progressLabel.setText(ProgressState.stageDescriptions[ProgressState.Stage." ~
-                            cast(string)(stage) ~ "] ~ \": \" ~ " ~ "currentTask.name); break;\n";
-                    }
-                    return result;
-                }
-
-                Timeout progressTimeout;
-                bool onProgressRefresh() {
-                    bool currentTaskComplete;
-                    while(receiveTimeout(progressMessageTimeout,
-                                         (ProgressState progressState) {
-                                             progressBar.setFraction(progressState.completionFraction);
-
-                                             final switch(progressState.stage) {
-                                                 mixin(stageCases());
-
-                                                 case ProgressState.complete:
-                                                     currentTaskComplete = true;
-                                                     break;
-                                             }
-                                         })) {}
-                    if(currentTaskComplete) {
-                        ++currentTaskIndex;
-                        if(currentTaskIndex < taskList.length) {
-                            currentTask = taskList[currentTaskIndex];
-                            beginTask(currentTask);
-                        }
-                        else {
-                            if(progressDialog.getWidgetStruct() !is null) {
-                                progressDialog.response(ResponseType.ACCEPT);
-                            }
-                            progressTimeout.destroy();
-                        }
-                    }
-
-                    return true;
-                }
-                progressTimeout = new Timeout(cast(uint)(1.0 / progressRefreshRate * 1000),
-                                              &onProgressRefresh,
-                                              false);
-
-                progressDialog.showAll();
-                progressDialog.run();
-            }
-
-            if(progressDialog.getWidgetStruct() !is null) {
-                progressDialog.destroy();
-            }
-        }
-
-    void beginProgressTask(ProgressState, ProgressTask, bool cancelButton = true)(ProgressTask task) {
-        ProgressTask[] taskList = new ProgressTask[](1);
-        taskList[0] = task;
-        beginProgressTask!(ProgressState, ProgressTask, cancelButton)(taskList);
-    }
-
-    void _createTrackMenu() {
-        _trackMenu = new Menu();
-
-        _trackMenu.append(new MenuItem(delegate void(MenuItem) { new RenameTrackDialog(); },
-                                       "Rename Track..."));
-
-        _trackMenu.attachToWidget(this, null);
-    }
-
-    void _createEditRegionMenu() {
-        _editRegionMenu = new Menu();
-
-        _stretchSelectionMenuItem = new MenuItem(delegate void(MenuItem) { new StretchSelectionDialog(); },
-                                                 "Stretch Selection...");
-        _editRegionMenu.append(_stretchSelectionMenuItem);
-
-        _editRegionMenu.append(new MenuItem(delegate void (MenuItem) { new NormalizeDialog(); },
-                                            "Normalize..."));
-
-        _showOnsetsMenuItem = new CheckMenuItem("Show Onsets");
-        _showOnsetsMenuItem.addOnToggled(&onShowOnsets);
-        _editRegionMenu.append(_showOnsetsMenuItem);
-
-        _onsetDetectionMenuItem = new MenuItem(delegate void(MenuItem) { new OnsetDetectionDialog(); },
-                                               "Onset Detection...");
-        _editRegionMenu.append(_onsetDetectionMenuItem);
-
-        _linkChannelsMenuItem = new CheckMenuItem("Link Channels");
-        _linkChannelsMenuItem.addOnToggled(&onLinkChannels);
-        _editRegionMenu.append(_linkChannelsMenuItem);
-
-        _editRegionMenu.attachToWidget(this, null);
-    }
-
-    void onShowOnsets(CheckMenuItem showOnsets) {
-        _editRegion.showOnsets = showOnsets.getActive();
-        _canvas.redraw();
-    }
-
-    void onLinkChannels(CheckMenuItem linkChannels) {
-        _editRegion.linkChannels = linkChannels.getActive();
-        _canvas.redraw();
-    }
-
-    void _zoomIn() {
-        auto zoomCount = _zoomMultiplier;
-        for(auto i = 0; i < zoomCount; ++i) {
-            auto step = _zoomStep;
-            _samplesPerPixel = max(_samplesPerPixel - step, 10);
-        }
-        _canvas.redraw();
-        _hScroll.reconfigure();
-    }
-    void _zoomOut() {
-        auto zoomCount = _zoomMultiplier;
-        for(auto i = 0; i < zoomCount; ++i) {
-            auto step = _zoomStep;
-            _samplesPerPixel += step;
-        }
-        _canvas.redraw();
-        _hScroll.reconfigure();
-    }
-
-    void _zoomInVertical() {
-        auto newVerticalScaleFactor = max(_verticalScaleFactor / _verticalZoomFactor, _verticalZoomFactorMin);
-        bool validZoom = true;
-        foreach(trackView; _trackViews) {
-            if(!trackView.validZoom(newVerticalScaleFactor)) {
-                validZoom = false;
-                break;
-            }
-        }
-        if(validZoom) {
-            _verticalScaleFactor = newVerticalScaleFactor;
-            _canvas.redraw();
-            _trackStubs.redraw();
-            _vScroll.reconfigure();
-        }
-    }
-    void _zoomOutVertical() {
-        _verticalScaleFactor = min(_verticalScaleFactor * _verticalZoomFactor, _verticalZoomFactorMax);
-        _canvas.redraw();
-        _trackStubs.redraw();
-        _vScroll.reconfigure();
-    }
-
-    void _setCursor() {
-        static Cursor cursorMoving;
-        static Cursor cursorMovingOnset;
-
-        void setCursorByType(Cursor cursor, CursorType cursorType) {
-            if(cursor is null) {
-                cursor = new Cursor(Display.getDefault(), cursorType);
-            }
-            getWindow().setCursor(cursor);
-        }
-        void setCursorDefault() {
-            getWindow().setCursor(null);
-        }
-
-        switch(_action) {
-            case Action.moveMarker:
-            case Action.moveRegion:
-                setCursorByType(cursorMoving, CursorType.FLEUR);
-                break;
-
-            case Action.shrinkRegionStart:
-            case Action.shrinkRegionEnd:
-            case Action.moveOnset:
-                setCursorByType(cursorMovingOnset, CursorType.SB_H_DOUBLE_ARROW);
-                break;
-
-            default:
-                setCursorDefault();
-                break;
-        }
-    }
-
-    void _setAction(Action action) {
-        _action = action;
-        _setCursor();
-    }
-
-    void _setMode(Mode mode) {
-        switch(mode) {
-            case Mode.editRegion:
-                // enable edit mode for the first selected region
-                _editRegion = null;
-                foreach(regionView; _selectedRegions) {
-                    regionView.editMode = true;
-                    _editRegion = regionView;
-                    break;
-                }
-                if(_editRegion is null) {
-                    return;
-                }
-                break;
-
-            default:
-                // if the last mode was editRegion, unset the edit mode flag for the edited region
-                if(_mode == Mode.editRegion) {
-                    _editRegion.editMode = false;
-                    _editRegion = null;
-                }
-                break;
-        }
-
-        _mode = mode;
-        _canvas.redraw();
-    }
-
-    void _computeEarliestSelectedRegion() {
-        _earliestSelectedRegion = null;
-        nframes_t minOffset = nframes_t.max;
-        foreach(regionView; _selectedRegions) {
-            regionView.selectedOffset = regionView.offset;
-            if(regionView.offset < minOffset) {
-                minOffset = regionView.offset;
-                _earliestSelectedRegion = regionView;
-            }
-        }
-    }
-
-    TrackView _mouseOverTrack() {
-        foreach(trackView; _trackViews) {
-            if(_mouseY >= trackView.boundingBox.y0 && _mouseY < trackView.boundingBox.y1) {
-                return trackView;
-            }
-        }
-
-        return null;
-    }
-
-    void _selectTrack(TrackView trackView) {
-        _selectedTrack = trackView;
-        _arrangeChannelStrip.update();
     }
 
     final class ChannelStrip {
@@ -6600,35 +6198,44 @@ private:
                                 }
 
                                 if(!newAction) {
-                                    // if shift is not currently pressed, deselect all regions
-                                    if(!shiftPressed) {
-                                        foreach(regionView; _selectedRegions) {
-                                            regionView.selected = false;
-                                        }
-                                        _earliestSelectedRegion = null;
-                                    }
-
-                                    _selectedRegionsApp.clear();
+                                    // find the region that the mouse is currently over
+                                    RegionView mouseOverRegion;
                                     foreach(regionView; _regionViews) {
                                         if(_mouseX >= regionView.boundingBox.x0 &&
                                            _mouseX < regionView.boundingBox.x1 &&
                                            _mouseY >= regionView.boundingBox.y0 &&
                                            _mouseY < regionView.boundingBox.y1) {
-                                            // if the region is already selected and shift is pressed, deselect it
-                                            regionView.selected = !(regionView.selected && shiftPressed);
-                                            newAction = true;
+                                            mouseOverRegion = regionView;
                                             break;
                                         }
                                     }
-                                    foreach(regionView; _regionViews) {
-                                        if(regionView.selected) {
-                                            _selectedRegionsApp.put(regionView);
-                                        }
-                                    }
-                                    _computeEarliestSelectedRegion();
-                                    _setAction(Action.selectRegion);
 
-                                    appendArrangeState(currentArrangeState!(ArrangeStateType.selectedRegionEdit));
+                                    // if this region is the only region currently selected, do nothing
+                                    if(!(_selectedRegions.length == 1 && _selectedRegions[0] is mouseOverRegion)) {
+                                        // if shift is not currently pressed, deselect all regions
+                                        if(!shiftPressed) {
+                                            foreach(regionView; _selectedRegions) {
+                                                regionView.selected = false;
+                                            }
+                                            _earliestSelectedRegion = null;
+                                        }
+
+                                        _selectedRegionsApp.clear();
+                                        if(mouseOverRegion !is null) {
+                                            // if the region is already selected and shift is pressed, deselect it
+                                            mouseOverRegion.selected = !(mouseOverRegion.selected && shiftPressed);
+                                            newAction = true;
+                                            if(mouseOverRegion.selected) {
+                                                _selectedRegionsApp.put(mouseOverRegion);
+                                            }
+                                        }
+
+                                        _computeEarliestSelectedRegion();
+                                        _setAction(Action.selectRegion);
+
+                                        appendArrangeState(
+                                            currentArrangeState!(ArrangeStateType.selectedRegionsEdit));
+                                    }
                                 }
                                 break;
 
@@ -6734,10 +6341,10 @@ private:
                     case Action.shrinkRegionStart:
                     case Action.shrinkRegionEnd:
                         _setAction(Action.none);
-                        appendArrangeState(currentArrangeState!(ArrangeStateType.selectedRegionEdit));
+                        appendArrangeState(currentArrangeState!(ArrangeStateType.selectedRegionsEdit));
                         break;
 
-                    // select a subregion
+                        // select a subregion
                     case Action.selectSubregion:
                         _editRegion.subregionSelected =
                             !(_editRegion.subregionStartFrame == _editRegion.subregionEndFrame);
@@ -6748,7 +6355,7 @@ private:
                         redraw();
                         break;
 
-                    // select all regions within the selection box drawn with the mouse
+                        // select all regions within the selection box drawn with the mouse
                     case Action.selectBox:
                         if(_mode == Mode.arrange) {
                             BoundingBox selectBox = BoundingBox(_selectMouseX, _selectMouseY, _mouseX, _mouseY);
@@ -6763,14 +6370,14 @@ private:
                             _computeEarliestSelectedRegion();
 
                             if(regionFound) {
-                                appendArrangeState(currentArrangeState!(ArrangeStateType.selectedRegionEdit));
+                                appendArrangeState(currentArrangeState!(ArrangeStateType.selectedRegionsEdit));
                             }
                         }
                         _setAction(Action.none);
                         redraw();
                         break;
 
-                    // move a region by setting its global frame offset
+                        // move a region by setting its global frame offset
                     case Action.moveRegion:
                         _setAction(Action.none);
                         bool regionModified;
@@ -6783,18 +6390,18 @@ private:
                         }
 
                         if(regionModified) {
-                            appendArrangeState(currentArrangeState!(ArrangeStateType.selectedRegionEdit));
+                            appendArrangeState(currentArrangeState!(ArrangeStateType.selectedRegionsEdit));
                         }
 
                         redraw();
                         break;
 
-                    // stop moving a marker
+                        // stop moving a marker
                     case Action.moveMarker:
                         _setAction(Action.none);
                         break;
 
-                    // stretch the audio inside a region
+                        // stretch the audio inside a region
                     case Action.moveOnset:
                         immutable nframes_t onsetFrameStart =
                             _editRegion.getPrevOnset(_moveOnsetIndex, _moveOnsetChannel);
@@ -7023,7 +6630,7 @@ private:
                         redraw();
                         break;
 
-                    // Shift + Alt + <
+                        // Shift + Alt + <
                     case GdkKeysyms.GDK_macron:
                         // move the transport and view to the beginning of the project
                         _mixer.transportOffset = 0;
@@ -7031,7 +6638,7 @@ private:
                         redraw();
                         break;
 
-                    // Shift + Alt + >
+                        // Shift + Alt + >
                     case GdkKeysyms.GDK_breve:
                         // move the transport to end of the project and center the view on the transport
                         _mixer.transportOffset = _mixer.lastFrame;
@@ -7041,7 +6648,7 @@ private:
                         redraw();
                         break;
 
-                    // Alt + f
+                        // Alt + f
                     case GdkKeysyms.GDK_function:
                         // seek the transport forward (large increment)
                         _mixer.transportOffset = min(_mixer.lastFrame,
@@ -7049,7 +6656,7 @@ private:
                         redraw();
                         break;
 
-                    // Alt + b
+                        // Alt + b
                     case GdkKeysyms.GDK_integral:
                         // seek the transport backward (large increment)
                         _mixer.transportOffset = _mixer.transportOffset > largeSeekIncrement ?
@@ -7058,10 +6665,34 @@ private:
                         break;
 
                     case GdkKeysyms.GDK_BackSpace:
-                        if(_mode == Mode.editRegion && _editRegion.subregionSelected) {
+                        if(_mode == Mode.arrange && _selectedRegions.length > 0) {
+                            // remove the selected regions from their respective tracks
+                            foreach(trackView; _trackViews) {
+                                auto regionViewsApp = appender!(RegionView[]);
+                                foreach(regionView; trackView.regionViews) {
+                                    if(!regionView.selected) {
+                                        regionViewsApp.put(regionView);
+                                    }
+                                }
+                                trackView.regionViews = regionViewsApp.data;
+                            }
+
+                            // remove the selected regions from the global list of regions
+                            auto regionViewsApp = appender!(RegionView[]);
+                            foreach(regionView; _regionViews) {
+                                if(!regionView.selected) {
+                                    regionViewsApp.put(regionView);
+                                }
+                            }
+                            _regionViews = regionViewsApp.data;
+                            appendArrangeState(currentArrangeState!(ArrangeStateType.tracksEdit));
+
+                            redraw();
+                        }
+                        else if(_mode == Mode.editRegion && _editRegion.subregionSelected) {
                             // remove the selected subregion
                             _editRegion.region.removeLocal(_editRegion.subregionStartFrame,
-                                                            _editRegion.subregionEndFrame);
+                                                           _editRegion.subregionEndFrame);
 
                             _editRegion.subregionSelected = false;
 
@@ -7300,19 +6931,202 @@ private:
         }
     }
 
+    static struct Marker {
+        nframes_t offset;
+        string name;
+    }
+
+    void createTrackView(string trackName) {
+        _createTrackView(trackName);
+        appendArrangeState(currentArrangeState!(ArrangeStateType.tracksEdit));
+    }
+
+    void createTrackView(string trackName, Region region) {
+        auto newTrackView = _createTrackView(trackName);
+        newTrackView.addRegion(region);
+        appendArrangeState(currentArrangeState!(ArrangeStateType.tracksEdit));
+    }
+
+    void loadRegionsFromFiles(const(string[]) fileNames) {
+        auto progressCallback = progressTaskCallback!(LoadState);
+        void loadRegionTask(string fileName) {
+            auto newSequence = AudioSequence.fromFile(fileName, _mixer.sampleRate, progressCallback);
+            Region newRegion = new Region(newSequence);
+            if(newRegion is null) {
+                ErrorDialog.display(_parentWindow, "Could not load file " ~ baseName(fileName));
+            }
+            else {
+                createTrackView(newRegion.name, newRegion);
+            }
+        }
+        alias RegionTask = ProgressTask!(typeof(task(&loadRegionTask, string.init)));
+        auto regionTaskList = appender!(RegionTask[]);
+        foreach(fileName; fileNames) {
+            regionTaskList.put(progressTask(baseName(fileName), task(&loadRegionTask, fileName)));
+        }
+
+        if(regionTaskList.data.length > 0) {
+            beginProgressTask!(LoadState, RegionTask)(regionTaskList.data);
+            _canvas.redraw();
+        }
+    }
+
+    void onImportFile(MenuItem menuItem) {
+        if(_importFileChooser is null) {
+            _importFileChooser = new FileChooserDialog("Import Audio file",
+                                                       _parentWindow,
+                                                       FileChooserAction.OPEN,
+                                                       null,
+                                                       null);
+            _importFileChooser.setSelectMultiple(true);
+        }
+
+        auto fileNames = appender!(string[])();
+        auto response = _importFileChooser.run();
+        if(response == ResponseType.OK) {
+            ListSG fileList = _importFileChooser.getUris();
+            for(auto i = 0; i < fileList.length(); ++i) {
+                string hostname;
+                fileNames.put(URI.filenameFromUri(Str.toString(cast(char*)(fileList.nthData(i))), hostname));
+            }
+            _importFileChooser.hide();
+        }
+        else if(response == ResponseType.CANCEL) {
+            _importFileChooser.hide();
+        }
+        else {
+            _importFileChooser.destroy();
+            _importFileChooser = null;
+        }
+
+        loadRegionsFromFiles(fileNames.data);
+    }
+
+    auto beginProgressTask(ProgressState, ProgressTask, bool cancelButton = true)(ProgressTask[] taskList)
+        if(__traits(isSame, TemplateOf!ProgressState, .ProgressState) &&
+           __traits(isSame, TemplateOf!ProgressTask, .ProgressTask)) {
+            enum progressRefreshRate = 10; // in Hz
+            enum progressMessageTimeout = 10.msecs;
+
+            auto progressDialog = new Dialog();
+            progressDialog.setDefaultSize(400, 75);
+            progressDialog.setTransientFor(_parentWindow);
+
+            auto dialogBox = progressDialog.getContentArea();
+            auto progressBar = new ProgressBar();
+            dialogBox.packStart(progressBar, false, false, 20);
+
+            auto progressLabel = new Label(string.init);
+            dialogBox.packStart(progressLabel, false, false, 10);
+
+            static if(cancelButton) {
+                void onProgressCancel(Button button) {
+                    progressDialog.response(ResponseType.CANCEL);
+                }
+                dialogBox.packEnd(ArrangeDialog.createCancelButton(&onProgressCancel), false, false, 10);
+            }
+
+            if(taskList.length > 0) {
+                setMaxMailboxSize(thisTid,
+                                  LoadState.nStages * LoadState.stepsPerStage,
+                                  OnCrowding.ignore);
+
+                size_t currentTaskIndex = 0;
+                ProgressTask currentTask = taskList[currentTaskIndex];
+
+                void beginTask(ProgressTask currentTask) {
+                    progressDialog.setTitle(currentTask.name);
+                    currentTask.task.executeInNewThread();
+                }
+                beginTask(currentTask);
+
+                static string stageCases() {
+                    string result;
+                    foreach(stage; __traits(allMembers, ProgressState.Stage)[0 .. $ - 1]) {
+                        result ~=
+                            "case ProgressState.Stage." ~ cast(string)(stage) ~ ": " ~
+                            "progressLabel.setText(ProgressState.stageDescriptions[ProgressState.Stage." ~
+                            cast(string)(stage) ~ "] ~ \": \" ~ " ~ "currentTask.name); break;\n";
+                    }
+                    return result;
+                }
+
+                Timeout progressTimeout;
+                bool onProgressRefresh() {
+                    bool currentTaskComplete;
+                    while(receiveTimeout(progressMessageTimeout,
+                                         (ProgressState progressState) {
+                                             progressBar.setFraction(progressState.completionFraction);
+
+                                             final switch(progressState.stage) {
+                                                 mixin(stageCases());
+
+                                                 case ProgressState.complete:
+                                                     currentTaskComplete = true;
+                                                     break;
+                                             }
+                                         })) {}
+                    if(currentTaskComplete) {
+                        ++currentTaskIndex;
+                        if(currentTaskIndex < taskList.length) {
+                            currentTask = taskList[currentTaskIndex];
+                            beginTask(currentTask);
+                        }
+                        else {
+                            if(progressDialog.getWidgetStruct() !is null) {
+                                progressDialog.response(ResponseType.ACCEPT);
+                            }
+                            progressTimeout.destroy();
+                        }
+                    }
+
+                    return true;
+                }
+                progressTimeout = new Timeout(cast(uint)(1.0 / progressRefreshRate * 1000),
+                                              &onProgressRefresh,
+                                              false);
+
+                progressDialog.showAll();
+                progressDialog.run();
+            }
+
+            if(progressDialog.getWidgetStruct() !is null) {
+                progressDialog.destroy();
+            }
+        }
+
+    void beginProgressTask(ProgressState, ProgressTask, bool cancelButton = true)(ProgressTask task) {
+        ProgressTask[] taskList = new ProgressTask[](1);
+        taskList[0] = task;
+        beginProgressTask!(ProgressState, ProgressTask, cancelButton)(taskList);
+    }
+
+    void onShowOnsets(CheckMenuItem showOnsets) {
+        _editRegion.showOnsets = showOnsets.getActive();
+        _canvas.redraw();
+    }
+
+    void onLinkChannels(CheckMenuItem linkChannels) {
+        _editRegion.linkChannels = linkChannels.getActive();
+        _canvas.redraw();
+    }
+
     @property ArrangeState currentArrangeState(ArrangeStateType stateType)() {
         static if(stateType == ArrangeStateType.tracksEdit) {
             auto trackStatesApp = appender!(TrackViewState[]);
             foreach(trackView; _trackViews) {
-                trackStatesApp.put(TrackViewState(trackView, trackView.faderGainDB));
+                trackStatesApp.put(TrackViewState(trackView,
+                                                  trackView.regionViews,
+                                                  trackView.faderGainDB));
             }
             return ArrangeState(stateType, TrackViewStateList(_selectedTrack, trackStatesApp.data));
         }
         else if(stateType == ArrangeStateType.selectedTrackEdit) {
-            return ArrangeState(stateType,
-                                TrackViewState(_selectedTrack, _selectedTrack.faderGainDB));
+            return ArrangeState(stateType, TrackViewState(_selectedTrack,
+                                                          _selectedTrack.regionViews,
+                                                          _selectedTrack.faderGainDB));
         }
-        else if(stateType == ArrangeStateType.selectedRegionEdit) {
+        else if(stateType == ArrangeStateType.selectedRegionsEdit) {
             Appender!(RegionViewState[]) regionViewStates;
             foreach(regionView; _selectedRegions) {
                 regionViewStates.put(RegionViewState(regionView,
@@ -7325,41 +7139,101 @@ private:
     }
 
     void updateCurrentArrangeState() {
+        void updateTracks(ArrangeState arrangeState) {
+            auto trackViewsApp = appender!(TrackView[]);
+            auto regionViewsApp = appender!(RegionView[]);
+            foreach(trackViewState; arrangeState.trackStates) {
+                trackViewState.trackView.regionViews = trackViewState.regionViews;
+                trackViewState.trackView.faderGainDB = trackViewState.faderGainDB;
+                trackViewsApp.put(trackViewState.trackView);
+                foreach(regionView; trackViewState.regionViews) {
+                    regionViewsApp.put(regionView);
+                }
+            }
+            _trackViews = trackViewsApp.data;
+            _regionViews = regionViewsApp.data;
+            _selectTrack(arrangeState.trackStates.selectedTrack);
+        }
+
+        void updateSelectedTrack(ArrangeState arrangeState) {
+            // update the selected track
+            _selectTrack(arrangeState.selectedTrackState.trackView);
+            if(_selectedTrack !is null) {
+                _selectedTrack.regionViews = arrangeState.selectedTrackState.regionViews;
+                _selectedTrack.faderGainDB = arrangeState.selectedTrackState.faderGainDB;
+            }
+        }
+
+        void updateSelectedRegions(ArrangeState arrangeState) {
+            // clear the selection flag for all currently selected regions
+            foreach(regionView; _selectedRegions) {
+                regionView.selected = false;
+            }
+            _selectedRegionsApp.clear();
+
+            // update selectd regions
+            foreach(regionViewState; arrangeState.selectedRegionStates) {
+                regionViewState.regionView.selected = true;
+                regionViewState.regionView.offset = regionViewState.offset;
+                regionViewState.regionView.sliceStartFrame = regionViewState.sliceStartFrame;
+                regionViewState.regionView.sliceEndFrame = regionViewState.sliceEndFrame;
+                _selectedRegionsApp.put(regionViewState.regionView);
+                _computeEarliestSelectedRegion();
+            }
+        }
+
+        // update the track state to the last saved state in the undo history
+        void backtrackTracks() {
+            foreach(arrangeState; retro(_arrangeStateHistory.undoHistory[])) {
+                if(arrangeState.stateType == ArrangeStateType.tracksEdit) {
+                    updateTracks(arrangeState);
+                    break;
+                }
+            }
+        }
+
+        // update the selected region state to the last saved state in the undo history
+        void backtrackSelectedRegions() {
+            bool foundState;
+            foreach(arrangeState; retro(_arrangeStateHistory.undoHistory[])) {
+                if(arrangeState.stateType == ArrangeStateType.selectedRegionsEdit) {
+                    updateSelectedRegions(arrangeState);
+                    foundState = true;
+                    break;
+                }
+            }
+            if(!foundState) {
+                foreach(regionView; _selectedRegions) {
+                    regionView.selected = false;
+                }
+                _selectedRegionsApp.clear();
+            }
+        }
+
         final switch(_arrangeStateHistory.currentState.stateType) {
-            case ArrangeStateType.tracksEdit:
-                auto trackViewsApp = appender!(TrackView[]);
-                foreach(trackViewState; _arrangeStateHistory.currentState.trackStates) {
-                    trackViewState.trackView.faderGainDB = trackViewState.faderGainDB;
-                    trackViewsApp.put(trackViewState.trackView);
-                }
-                _trackViews = trackViewsApp.data;
-                _selectTrack(_arrangeStateHistory.currentState.trackStates.selectedTrack);
-                break;
-
-            case ArrangeStateType.selectedTrackEdit:
-                // update the selected track
-                _selectTrack(_arrangeStateHistory.currentState.selectedTrackState.trackView);
-                if(_selectedTrack !is null) {
-                    _selectedTrack.faderGainDB = _arrangeStateHistory.currentState.selectedTrackState.faderGainDB;
-                }
-                break;
-
-            case ArrangeStateType.selectedRegionEdit:
-                // clear the selection flag for all currently selected regions
+            case ArrangeStateType.empty:
                 foreach(regionView; _selectedRegions) {
                     regionView.selected = false;
                 }
                 _selectedRegionsApp.clear();
 
-                // update selectd regions
-                foreach(regionViewState; _arrangeStateHistory.currentState.selectedRegionStates) {
-                    regionViewState.regionView.selected = true;
-                    regionViewState.regionView.offset = regionViewState.offset;
-                    regionViewState.regionView.sliceStartFrame = regionViewState.sliceStartFrame;
-                    regionViewState.regionView.sliceEndFrame = regionViewState.sliceEndFrame;
-                    _selectedRegionsApp.put(regionViewState.regionView);
-                    _computeEarliestSelectedRegion();
-                }
+                _selectedTrack = null;
+                _trackViews = [];
+                break;
+
+            case ArrangeStateType.tracksEdit:
+                backtrackSelectedRegions();
+                updateTracks(_arrangeStateHistory.currentState);
+                break;
+
+            case ArrangeStateType.selectedTrackEdit:
+                backtrackSelectedRegions();
+                updateSelectedTrack(_arrangeStateHistory.currentState);
+                break;
+
+            case ArrangeStateType.selectedRegionsEdit:
+                backtrackTracks();
+                updateSelectedRegions(_arrangeStateHistory.currentState);
                 break;
         }
 
@@ -7388,6 +7262,7 @@ private:
 
     static struct TrackViewState {
         TrackView trackView;
+        RegionView[] regionViews;
         sample_t faderGainDB;
     }
     static struct TrackViewStateList {
@@ -7403,9 +7278,10 @@ private:
     }
 
     enum ArrangeStateType {
+        empty,
         tracksEdit,
         selectedTrackEdit,
-        selectedRegionEdit
+        selectedRegionsEdit
     }
 
     static struct ArrangeState {
@@ -7430,6 +7306,10 @@ private:
             }
         }
 
+        static ArrangeState emptyState() {
+            return ArrangeState();
+        }
+
         @property ArrangeStateType stateType() const { return _stateType; }
         mixin(_stateDataMembers());
 
@@ -7451,6 +7331,236 @@ private:
         ArrangeStateType _stateType;
         StateData _stateData;
     }
+
+    @property nframes_t samplesPerPixel() const { return _samplesPerPixel; }
+    @property nframes_t viewOffset() const { return _viewOffset; }
+    @property nframes_t viewWidthSamples() { return _canvas.viewWidthPixels * _samplesPerPixel; }
+
+    @property nframes_t viewMinSamples() { return 0; }
+    @property nframes_t viewMaxSamples() { return _mixer.lastFrame + viewWidthSamples; }
+
+private:
+    enum _zoomStep = 10;
+    @property size_t _zoomMultiplier() const {
+        if(_samplesPerPixel > 2000) {
+            return 20;
+        }
+        if(_samplesPerPixel > 1000) {
+            return 10;
+        }
+        if(_samplesPerPixel > 700) {
+            return 5;
+        }
+        if(_samplesPerPixel > 400) {
+            return 4;
+        }
+        else if(_samplesPerPixel > 200) {
+            return 3;
+        }
+        else if(_samplesPerPixel > 100) {
+            return 2;
+        }
+        else {
+            return 1;
+        }
+    }
+
+    enum _verticalZoomFactor = 1.2f;
+    enum _verticalZoomFactorMax = _verticalZoomFactor * 3;
+    enum _verticalZoomFactorMin = _verticalZoomFactor / 10;
+
+    void _createArrangeMenu() {
+        _arrangeMenu = new Menu();
+
+        _arrangeMenu.append(new MenuItem(&onImportFile, "Import file..."));
+
+        _arrangeMenu.attachToWidget(this, null);
+    }
+
+    TrackView _createTrackView(string trackName) {
+        synchronized {
+            TrackView trackView;
+            trackView = new TrackView(_mixer.createTrack(), defaultTrackHeightPixels, trackName);
+
+            // select the new track
+            _selectTrack(trackView);
+            _trackViews ~= trackView;
+
+            _canvas.redraw();
+            _trackStubs.redraw();
+            _arrangeChannelStrip.redraw();
+            return trackView;
+        }
+    }
+
+    void _createTrackMenu() {
+        _trackMenu = new Menu();
+
+        _trackMenu.append(new MenuItem(delegate void(MenuItem) { new RenameTrackDialog(); },
+                                       "Rename Track..."));
+
+        _trackMenu.attachToWidget(this, null);
+    }
+
+    void _createEditRegionMenu() {
+        _editRegionMenu = new Menu();
+
+        _stretchSelectionMenuItem = new MenuItem(delegate void(MenuItem) { new StretchSelectionDialog(); },
+                                                 "Stretch Selection...");
+        _editRegionMenu.append(_stretchSelectionMenuItem);
+
+        _editRegionMenu.append(new MenuItem(delegate void (MenuItem) { new NormalizeDialog(); },
+                                            "Normalize..."));
+
+        _showOnsetsMenuItem = new CheckMenuItem("Show Onsets");
+        _showOnsetsMenuItem.addOnToggled(&onShowOnsets);
+        _editRegionMenu.append(_showOnsetsMenuItem);
+
+        _onsetDetectionMenuItem = new MenuItem(delegate void(MenuItem) { new OnsetDetectionDialog(); },
+                                               "Onset Detection...");
+        _editRegionMenu.append(_onsetDetectionMenuItem);
+
+        _linkChannelsMenuItem = new CheckMenuItem("Link Channels");
+        _linkChannelsMenuItem.addOnToggled(&onLinkChannels);
+        _editRegionMenu.append(_linkChannelsMenuItem);
+
+        _editRegionMenu.attachToWidget(this, null);
+    }
+
+    void _zoomIn() {
+        auto zoomCount = _zoomMultiplier;
+        for(auto i = 0; i < zoomCount; ++i) {
+            auto step = _zoomStep;
+            _samplesPerPixel = max(_samplesPerPixel - step, 10);
+        }
+        _canvas.redraw();
+        _hScroll.reconfigure();
+    }
+    void _zoomOut() {
+        auto zoomCount = _zoomMultiplier;
+        for(auto i = 0; i < zoomCount; ++i) {
+            auto step = _zoomStep;
+            _samplesPerPixel += step;
+        }
+        _canvas.redraw();
+        _hScroll.reconfigure();
+    }
+
+    void _zoomInVertical() {
+        auto newVerticalScaleFactor = max(_verticalScaleFactor / _verticalZoomFactor, _verticalZoomFactorMin);
+        bool validZoom = true;
+        foreach(trackView; _trackViews) {
+            if(!trackView.validZoom(newVerticalScaleFactor)) {
+                validZoom = false;
+                break;
+            }
+        }
+        if(validZoom) {
+            _verticalScaleFactor = newVerticalScaleFactor;
+            _canvas.redraw();
+            _trackStubs.redraw();
+            _vScroll.reconfigure();
+        }
+    }
+    void _zoomOutVertical() {
+        _verticalScaleFactor = min(_verticalScaleFactor * _verticalZoomFactor, _verticalZoomFactorMax);
+        _canvas.redraw();
+        _trackStubs.redraw();
+        _vScroll.reconfigure();
+    }
+
+    void _setCursor() {
+        static Cursor cursorMoving;
+        static Cursor cursorMovingOnset;
+
+        void setCursorByType(Cursor cursor, CursorType cursorType) {
+            if(cursor is null) {
+                cursor = new Cursor(Display.getDefault(), cursorType);
+            }
+            getWindow().setCursor(cursor);
+        }
+        void setCursorDefault() {
+            getWindow().setCursor(null);
+        }
+
+        switch(_action) {
+            case Action.moveMarker:
+            case Action.moveRegion:
+                setCursorByType(cursorMoving, CursorType.FLEUR);
+                break;
+
+            case Action.shrinkRegionStart:
+            case Action.shrinkRegionEnd:
+            case Action.moveOnset:
+                setCursorByType(cursorMovingOnset, CursorType.SB_H_DOUBLE_ARROW);
+                break;
+
+            default:
+                setCursorDefault();
+                break;
+        }
+    }
+
+    void _setAction(Action action) {
+        _action = action;
+        _setCursor();
+    }
+
+    void _setMode(Mode mode) {
+        switch(mode) {
+            case Mode.editRegion:
+                // enable edit mode for the first selected region
+                _editRegion = null;
+                foreach(regionView; _selectedRegions) {
+                    regionView.editMode = true;
+                    _editRegion = regionView;
+                    break;
+                }
+                if(_editRegion is null) {
+                    return;
+                }
+                break;
+
+            default:
+                // if the last mode was editRegion, unset the edit mode flag for the edited region
+                if(_mode == Mode.editRegion) {
+                    _editRegion.editMode = false;
+                    _editRegion = null;
+                }
+                break;
+        }
+
+        _mode = mode;
+        _canvas.redraw();
+    }
+
+    void _computeEarliestSelectedRegion() {
+        _earliestSelectedRegion = null;
+        nframes_t minOffset = nframes_t.max;
+        foreach(regionView; _selectedRegions) {
+            regionView.selectedOffset = regionView.offset;
+            if(regionView.offset < minOffset) {
+                minOffset = regionView.offset;
+                _earliestSelectedRegion = regionView;
+            }
+        }
+    }
+
+    TrackView _mouseOverTrack() {
+        foreach(trackView; _trackViews) {
+            if(_mouseY >= trackView.boundingBox.y0 && _mouseY < trackView.boundingBox.y1) {
+                return trackView;
+            }
+        }
+
+        return null;
+    }
+
+    void _selectTrack(TrackView trackView) {
+        _selectedTrack = trackView;
+        _arrangeChannelStrip.update();
+    }
+
     StateHistory!ArrangeState _arrangeStateHistory;
 
     Window _parentWindow;
