@@ -1867,68 +1867,101 @@ public:
         _resizeSlice(prevNFrames, newNFrames);
     }
 
+    static struct ShrinkResult {
+        bool success;
+        nframes_t delta;
+    }
+
     // modifies (within limits) the start of the region, in global frames
-    void shrinkStart(nframes_t newStartFrameGlobal) {
+    // returns true if the shrink operation was successful
+    ShrinkResult shrinkStart(nframes_t newStartFrameGlobal) {
+        // by default, the result should indicate the operation was unsuccessful
+        ShrinkResult result;
+
         if(newStartFrameGlobal < offset) {
             auto immutable delta = offset - newStartFrameGlobal;
             if(delta < _sliceStartFrame) {
+                result = ShrinkResult(true, delta);
                 _offset -= delta;
                 _sliceStartFrame -= delta;
             }
             else if(offset >= _sliceStartFrame) {
+                result = ShrinkResult(true, _sliceStartFrame);
                 _offset -= _sliceStartFrame;
                 _sliceStartFrame = 0;
             }
             else {
-                return;
+                return result;
             }
         }
         else if(newStartFrameGlobal > offset) {
             auto immutable delta = newStartFrameGlobal - offset;
             if(_sliceStartFrame + delta < _sliceEndFrame) {
+                result = ShrinkResult(true, delta);
                 _offset += delta;
                 _sliceStartFrame += delta;
             }
-            else {
+            else if(_sliceStartFrame != _sliceEndFrame) {
+                result = ShrinkResult(true, _sliceEndFrame - _sliceStartFrame);
                 _offset += _sliceEndFrame - _sliceStartFrame;
                 _sliceStartFrame = _sliceEndFrame;
             }
+            else {
+                return result;
+            }
         }
         else {
-            return;
+            return result;
         }
 
         _audioSlice = _audioSeq[_sliceStartFrame * nChannels .. _sliceEndFrame * nChannels];
+        return result;
     }
+
     // modifies (within limits) the end of the region, in global frames
-    void shrinkEnd(nframes_t newEndFrameGlobal) {
+    // returns true if the shrink operation was successful
+    ShrinkResult shrinkEnd(nframes_t newEndFrameGlobal) {
+        // by default, the result should indicate the operation was unsuccessful
+        ShrinkResult result;
+
         auto immutable endFrameGlobal = _offset + cast(nframes_t)(_audioSlice.length / nChannels);
         if(newEndFrameGlobal < endFrameGlobal) {
             auto immutable delta = endFrameGlobal - newEndFrameGlobal;
             if(_sliceEndFrame > _sliceStartFrame + delta) {
+                result = ShrinkResult(true, delta);
                 _sliceEndFrame -= delta;
             }
-            else {
+            else if(_sliceEndFrame != _sliceStartFrame) {
+                result = ShrinkResult(true, _sliceEndFrame - _sliceStartFrame);
                 _sliceEndFrame = _sliceStartFrame;
+            }
+            else {
+                return result;
             }
         }
         else if(newEndFrameGlobal > endFrameGlobal) {
             auto immutable delta = newEndFrameGlobal - endFrameGlobal;
             if(_sliceEndFrame + delta <= _audioSeq.nframes) {
+                result = ShrinkResult(true, delta);
                 _sliceEndFrame += delta;
                 if(resizeDelegate !is null) {
                     resizeDelegate(offset + nframes);
                 }
             }
-            else {
+            else if(_sliceEndFrame != _audioSeq.nframes) {
+                result = ShrinkResult(true, _audioSeq.nframes - _sliceEndFrame);
                 _sliceEndFrame = _audioSeq.nframes;
+            }
+            else {
+                return result;
             }
         }
         else {
-            return;
+            return result;
         }
 
         _audioSlice = _audioSeq[_sliceStartFrame * nChannels .. _sliceEndFrame * nChannels];
+        return result;
     }
 
     // slice start and end frames are relative to start of sequence
@@ -3510,13 +3543,19 @@ public:
             }
         }
 
-        void shrinkStart(nframes_t newStartFrameGlobal) {
-            _sliceChanged = true;
-            region.shrinkStart(newStartFrameGlobal);
+        auto shrinkStart(nframes_t newStartFrameGlobal) {
+            auto result = region.shrinkStart(newStartFrameGlobal);
+            if(result.success) {
+                _sliceChanged = true;
+            }
+            return result;
         }
-        void shrinkEnd(nframes_t newEndFrameGlobal) {
-            _sliceChanged = true;
-            region.shrinkEnd(newEndFrameGlobal);
+        auto shrinkEnd(nframes_t newEndFrameGlobal) {
+            auto result = region.shrinkEnd(newEndFrameGlobal);
+            if(result.success) {
+                _sliceChanged = true;
+            }
+            return result;
         }
 
         // slice start and end frames are relative to start of sequence
@@ -5155,8 +5194,8 @@ public:
             }
         }
 
-        void updateFaderFromMouse() {
-            _faderAdjustmentPixels = clamp(_mouseY - _faderYOffset, 0, meterHeightPixels);
+        void updateFaderFromMouse(pixels_t mouseY) {
+            _faderAdjustmentPixels = clamp(mouseY - _faderYOffset, 0, meterHeightPixels);
             if(_track !is null) {
                 _track.faderGainDB =
                     _deflectInverse6Db(1 - cast(float)(_faderAdjustmentPixels) / cast(float)(meterHeightPixels));
@@ -5390,7 +5429,7 @@ public:
                 _mouseY = cast(typeof(_mouseX))(event.motion.y);
 
                 if(_selectedTrackChannelStrip !is null && _selectedTrackFaderMoving) {
-                    _selectedTrackChannelStrip.updateFaderFromMouse();
+                    _selectedTrackChannelStrip.updateFaderFromMouse(_mouseY);
                     redraw();
                 }
             }
@@ -5448,6 +5487,9 @@ public:
         ChannelStrip _selectedTrackChannelStrip;
         bool _selectedTrackFaderMoving;
         sample_t _selectedTrackFaderStartGainDB;
+
+        pixels_t _mouseX;
+        pixels_t _mouseY;
     }
 
     final class TrackStubs : DrawingArea {
@@ -5516,7 +5558,7 @@ public:
 
         bool onButtonPress(Event event, Widget widget) {
             if(event.type == EventType.BUTTON_PRESS) {
-                TrackView trackView = _mouseOverTrack();
+                TrackView trackView = _mouseOverTrack(_mouseY);
 
                 if(event.button.button == leftButton) {
                     if(trackView !is null) {
@@ -5573,6 +5615,10 @@ public:
             }
             return false;
         }
+
+    private:
+        pixels_t _mouseX;
+        pixels_t _mouseY;
     }
 
     final class Canvas : DrawingArea {
@@ -6019,17 +6065,78 @@ public:
                         break;
 
                     case Action.shrinkRegionStart:
+                        immutable nframes_t prevMouseFrame = viewOffset + max(prevMouseX, 0) * samplesPerPixel;
                         immutable nframes_t mouseFrame = viewOffset + max(_mouseX, 0) * samplesPerPixel;
-                        immutable nframes_t minRegionWidth = RegionView.cornerRadius * 2 * samplesPerPixel;
-                        _shrinkRegion.shrinkStart(
-                            min(mouseFrame, _shrinkRegion.offset + _shrinkRegion.nframes - minRegionWidth));
-                        redraw();
+
+                        // find the region that ends earliest
+                        RegionView earliestEnd;
+                        foreach(regionView; _selectedRegions) {
+                            if(earliestEnd is null ||
+                               earliestEnd.offset + earliestEnd.sliceEndFrame >
+                               regionView.offset + regionView.sliceEndFrame) {
+                                earliestEnd = regionView;
+                            }
+                        }
+
+                        // shrink selected regions from the left
+                        if(earliestEnd !is null) {
+                            immutable nframes_t minRegionWidth = RegionView.cornerRadius * 2 * samplesPerPixel;
+
+                            immutable nframes_t earliestEndStartFrame = mouseFrame > prevMouseFrame ?
+                                earliestEnd.offset + (mouseFrame - prevMouseFrame) :
+                                earliestEnd.offset - min(prevMouseFrame - mouseFrame, earliestEnd.offset);
+                            auto shrinkResult = earliestEnd.shrinkStart(min(earliestEndStartFrame,
+                                                                            earliestEnd.offset +
+                                                                            earliestEnd.nframes - minRegionWidth));
+                            if(shrinkResult.success) {
+                                foreach(regionView; _selectedRegions) {
+                                    if(regionView !is earliestEnd) {
+                                        immutable nframes_t startFrame = mouseFrame > prevMouseFrame ?
+                                            regionView.offset + shrinkResult.delta :
+                                            regionView.offset - shrinkResult.delta;
+                                        regionView.shrinkStart(min(startFrame,
+                                                                   regionView.offset +
+                                                                   regionView.nframes - minRegionWidth));
+                                    }
+                                }
+                            }
+
+                            redraw();
+                        }
                         break;
 
                     case Action.shrinkRegionEnd:
+                        immutable nframes_t prevMouseFrame = viewOffset + max(prevMouseX, 0) * samplesPerPixel;
                         immutable nframes_t mouseFrame = viewOffset + max(_mouseX, 0) * samplesPerPixel;
-                        _shrinkRegion.shrinkEnd(mouseFrame);
-                        redraw();
+
+                        // find the region that starts latest
+                        RegionView latestStart;
+                        foreach(regionView; _selectedRegions) {
+                            if(latestStart is null || latestStart.offset < regionView.offset) {
+                                latestStart = regionView;
+                            }
+                        }
+
+                        // shrink selected regions from the right
+                        if(latestStart !is null) {
+                            immutable nframes_t latestStartEndFrame = mouseFrame > prevMouseFrame ?
+                                latestStart.offset + latestStart.sliceEndFrame + (mouseFrame - prevMouseFrame) :
+                                latestStart.offset + latestStart.sliceEndFrame -
+                                min(prevMouseFrame - mouseFrame, latestStart.sliceEndFrame);
+                            auto shrinkResult = latestStart.shrinkEnd(latestStartEndFrame);
+                            if(shrinkResult.success) {
+                                foreach(regionView; _selectedRegions) {
+                                    if(regionView !is latestStart) {
+                                        immutable nframes_t endFrame = mouseFrame > prevMouseFrame ?
+                                            regionView.offset + regionView.sliceEndFrame + shrinkResult.delta :
+                                            regionView.offset + regionView.sliceEndFrame - shrinkResult.delta;
+                                        regionView.shrinkEnd(endFrame);
+                                    }
+                                }
+                            }
+
+                            redraw();
+                        }
                         break;
 
                     case Action.selectSubregion:
@@ -6134,7 +6241,7 @@ public:
                         switch(_mode) {
                             // implement different behaviors for button presses depending on the current mode
                             case Mode.arrange:
-                                TrackView trackView = _mouseOverTrack();
+                                TrackView trackView = _mouseOverTrack(_mouseY);
                                 if(trackView !is null) {
                                     RegionView mouseOverRegion;
                                     RegionView mouseOverRegionStart;
@@ -6165,25 +6272,25 @@ public:
                                     if(!shiftPressed) {
                                         if(mouseOverRegionStart !is null) {
                                             // select the region
+                                            if(!mouseOverRegionStart.selected) {
+                                                _selectedRegionsApp.put(mouseOverRegionStart);
+                                            }
                                             mouseOverRegionStart.selected = true;
-                                            _selectedRegionsApp.clear();
-                                            _selectedRegionsApp.put(mouseOverRegionStart);
-                                            _earliestSelectedRegion = mouseOverRegionStart;
+                                            _computeEarliestSelectedRegion();
 
-                                            // begin shrinking the start of the region
-                                            _shrinkRegion = mouseOverRegionStart;
+                                            // begin shrinking the start of the selected regions
                                             _setAction(Action.shrinkRegionStart);
                                             newAction = true;
                                         }
                                         else if(mouseOverRegionEnd !is null) {
                                             // select the region
+                                            if(!mouseOverRegionEnd.selected) {
+                                                _selectedRegionsApp.put(mouseOverRegionEnd);
+                                            }
                                             mouseOverRegionEnd.selected = true;
-                                            _selectedRegionsApp.clear();
-                                            _selectedRegionsApp.put(mouseOverRegionEnd);
-                                            _earliestSelectedRegion = mouseOverRegionEnd;
 
-                                            // begin shrinking the end of the region
-                                            _shrinkRegion = mouseOverRegionEnd;
+                                            // begin shrinking the end of the selected regions
+                                            _computeEarliestSelectedRegion();
                                             _setAction(Action.shrinkRegionEnd);
                                             newAction = true;
                                         }
@@ -6344,7 +6451,7 @@ public:
                         appendArrangeState(currentArrangeState!(ArrangeStateType.selectedRegionsEdit));
                         break;
 
-                        // select a subregion
+                    // select a subregion
                     case Action.selectSubregion:
                         _editRegion.subregionSelected =
                             !(_editRegion.subregionStartFrame == _editRegion.subregionEndFrame);
@@ -6355,7 +6462,7 @@ public:
                         redraw();
                         break;
 
-                        // select all regions within the selection box drawn with the mouse
+                    // select all regions within the selection box drawn with the mouse
                     case Action.selectBox:
                         if(_mode == Mode.arrange) {
                             BoundingBox selectBox = BoundingBox(_selectMouseX, _selectMouseY, _mouseX, _mouseY);
@@ -6377,7 +6484,7 @@ public:
                         redraw();
                         break;
 
-                        // move a region by setting its global frame offset
+                    // move a region by setting its global frame offset
                     case Action.moveRegion:
                         _setAction(Action.none);
                         bool regionModified;
@@ -6396,12 +6503,12 @@ public:
                         redraw();
                         break;
 
-                        // stop moving a marker
+                    // stop moving a marker
                     case Action.moveMarker:
                         _setAction(Action.none);
                         break;
 
-                        // stretch the audio inside a region
+                    // stretch the audio inside a region
                     case Action.moveOnset:
                         immutable nframes_t onsetFrameStart =
                             _editRegion.getPrevOnset(_moveOnsetIndex, _moveOnsetChannel);
@@ -6630,7 +6737,7 @@ public:
                         redraw();
                         break;
 
-                        // Shift + Alt + <
+                    // Shift + Alt + <
                     case GdkKeysyms.GDK_macron:
                         // move the transport and view to the beginning of the project
                         _mixer.transportOffset = 0;
@@ -6638,7 +6745,7 @@ public:
                         redraw();
                         break;
 
-                        // Shift + Alt + >
+                    // Shift + Alt + >
                     case GdkKeysyms.GDK_breve:
                         // move the transport to end of the project and center the view on the transport
                         _mixer.transportOffset = _mixer.lastFrame;
@@ -6648,7 +6755,7 @@ public:
                         redraw();
                         break;
 
-                        // Alt + f
+                    // Alt + f
                     case GdkKeysyms.GDK_function:
                         // seek the transport forward (large increment)
                         _mixer.transportOffset = min(_mixer.lastFrame,
@@ -6656,7 +6763,7 @@ public:
                         redraw();
                         break;
 
-                        // Alt + b
+                    // Alt + b
                     case GdkKeysyms.GDK_integral:
                         // seek the transport backward (large increment)
                         _mixer.transportOffset = _mixer.transportOffset > largeSeekIncrement ?
@@ -6929,6 +7036,12 @@ public:
             }
             return false;
         }
+
+    private:
+        pixels_t _mouseX;
+        pixels_t _mouseY;
+        pixels_t _selectMouseX;
+        pixels_t _selectMouseY;
     }
 
     static struct Marker {
@@ -7546,9 +7659,9 @@ private:
         }
     }
 
-    TrackView _mouseOverTrack() {
+    TrackView _mouseOverTrack(pixels_t mouseY) {
         foreach(trackView; _trackViews) {
-            if(_mouseY >= trackView.boundingBox.y0 && _mouseY < trackView.boundingBox.y1) {
+            if(mouseY >= trackView.boundingBox.y0 && mouseY < trackView.boundingBox.y1) {
                 return trackView;
             }
         }
@@ -7573,7 +7686,6 @@ private:
     Appender!(RegionView[]) _selectedRegionsApp;
     @property RegionView[] _selectedRegions() { return _selectedRegionsApp.data; }
     RegionView _earliestSelectedRegion;
-    RegionView _shrinkRegion;
     RegionView _editRegion;
 
     Marker[uint] _markers;
@@ -7621,10 +7733,6 @@ private:
     Mode _mode;
     Action _action;
     bool _centeredView;
-    pixels_t _mouseX;
-    pixels_t _mouseY;
-    pixels_t _selectMouseX;
-    pixels_t _selectMouseY;
     MonoTime _doubleClickTime;
 
     size_t _moveOnsetIndex;
