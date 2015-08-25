@@ -1297,6 +1297,8 @@ public:
     this(AudioSegment originalBuffer, nframes_t sampleRate, channels_t nChannels, string name) {
         sequence = new Sequence!(AudioSegment)(originalBuffer);
 
+        _mutex = new Mutex;
+
         _sampleRate = sampleRate;
         _nChannels = nChannels;
         _name = name;
@@ -1385,12 +1387,41 @@ public:
     alias sequence this;
     alias PieceTable = Sequence!(AudioSegment).PieceTable;
 
+    void addSoftLink(Region region) {
+        synchronized(_mutex) {
+            _softLinks.insertBack(region);
+        }
+    }
+    void removeSoftLink(Region region) {
+        synchronized(_mutex) {
+            auto softLinkRange = _softLinks[];
+            for(; !softLinkRange.empty; softLinkRange.popFront()) {
+                if(softLinkRange.front is region) {
+                    _softLinks.linearRemove(take(softLinkRange, 1));
+                    break;
+                }
+            }
+        }
+    }
+
+    void updateSoftLinks() {
+        synchronized(_mutex) {
+            auto softLinkRange = _softLinks[];
+            for(; !softLinkRange.empty; softLinkRange.popFront()) {
+                softLinkRange.front.updateSlice();
+            }
+        }
+    }
+
     @property nframes_t nframes() { return cast(nframes_t)(sequence.length / nChannels); }
     @property nframes_t sampleRate() const { return _sampleRate; }
     @property channels_t nChannels() const { return _nChannels; }
     @property string name() const { return _name; }
 
 private:
+    Mutex _mutex;
+    DList!Region _softLinks;
+
     nframes_t _sampleRate;
     channels_t _nChannels;
     string _name;
@@ -1422,12 +1453,23 @@ public:
         _name = name;
 
         _audioSeq = audioSeq;
+        _audioSeq.addSoftLink(this);
+
         _sliceStartFrame = 0;
         _sliceEndFrame = audioSeq.nframes;
-        _audioSlice = audioSeq[_sliceStartFrame * nChannels .. _sliceEndFrame * nChannels];
+        updateSlice();
     }
     this(AudioSequence audioSeq) {
         this(audioSeq, audioSeq.name);
+    }
+
+    // create a copy using the same underlying audio sequence
+    Region softCopy() {
+        Region newRegion = new Region(_audioSeq, name);
+        newRegion._sliceStartFrame = _sliceStartFrame;
+        newRegion._sliceEndFrame = _sliceEndFrame;
+        newRegion.updateSlice();
+        return newRegion;
     }
 
     // returns an array of frames at which an onset occurs, with frames given locally for this region
@@ -1542,7 +1584,7 @@ public:
                           (_sliceStartFrame + localStartFrame) * nChannels,
                           (_sliceStartFrame + localEndFrame) * nChannels);
         auto immutable newNFrames = _audioSeq.nframes;
-        _resizeSlice(prevNFrames, newNFrames);
+        _sequenceChanged(prevNFrames, newNFrames);
 
         return localStartFrame + subregionOutputLength;
     }
@@ -1735,7 +1777,7 @@ public:
         auto immutable prevNFrames = _audioSeq.nframes;
         _audioSeq.replace(AudioSegment(outputBuffer, nChannels), removeStartIndex, removeEndIndex);
         auto immutable newNFrames = _audioSeq.nframes;
-        _resizeSlice(prevNFrames, newNFrames);
+        _sequenceChanged(prevNFrames, newNFrames);
     }
 
     // normalize subregion from startFrame to endFrame to the given maximum gain, in dBFS
@@ -1756,7 +1798,7 @@ public:
                           (_sliceStartFrame + localStartFrame) * nChannels,
                           (_sliceStartFrame + localEndFrame) * nChannels);
         auto immutable newNFrames = _audioSeq.nframes;
-        _resizeSlice(prevNFrames, newNFrames);
+        _sequenceChanged(prevNFrames, newNFrames);
 
         if(progressCallback !is null) {
             progressCallback(NormalizeState.complete, 1);
@@ -1776,7 +1818,7 @@ public:
         auto immutable prevNFrames = _audioSeq.nframes;
         _audioSeq.replace(AudioSegment(audioBuffer, nChannels), 0, _audioSeq.length);
         auto immutable newNFrames = _audioSeq.nframes;
-        _resizeSlice(prevNFrames, newNFrames);
+        _sequenceChanged(prevNFrames, newNFrames);
 
         if(progressCallback !is null) {
             progressCallback(NormalizeState.complete, 1);
@@ -1833,7 +1875,7 @@ public:
             auto immutable prevNFrames = _audioSeq.nframes;
             _audioSeq.insert(insertSlice, (_sliceStartFrame + localFrameOffset) * nChannels);
             auto immutable newNFrames = _audioSeq.nframes;
-            _resizeSlice(prevNFrames, newNFrames);
+            _sequenceChanged(prevNFrames, newNFrames);
         }
     }
 
@@ -1847,7 +1889,7 @@ public:
             _audioSeq.remove((_sliceStartFrame + localFrameStart) * nChannels,
                              (_sliceStartFrame + localFrameEnd) * nChannels);
             auto immutable newNFrames = _audioSeq.nframes;
-            _resizeSlice(prevNFrames, newNFrames);
+            _sequenceChanged(prevNFrames, newNFrames);
         }
     }
 
@@ -1856,7 +1898,7 @@ public:
         auto immutable prevNFrames = _audioSeq.nframes;
         _audioSeq.undo();
         auto immutable newNFrames = _audioSeq.nframes;
-        _resizeSlice(prevNFrames, newNFrames);
+        _sequenceChanged(prevNFrames, newNFrames);
     }
 
     // redo the last edit operation
@@ -1864,7 +1906,7 @@ public:
         auto immutable prevNFrames = _audioSeq.nframes;
         _audioSeq.redo();
         auto immutable newNFrames = _audioSeq.nframes;
-        _resizeSlice(prevNFrames, newNFrames);
+        _sequenceChanged(prevNFrames, newNFrames);
     }
 
     static struct ShrinkResult {
@@ -1914,7 +1956,7 @@ public:
             return result;
         }
 
-        _audioSlice = _audioSeq[_sliceStartFrame * nChannels .. _sliceEndFrame * nChannels];
+        updateSlice();
         return result;
     }
 
@@ -1960,21 +2002,21 @@ public:
             return result;
         }
 
-        _audioSlice = _audioSeq[_sliceStartFrame * nChannels .. _sliceEndFrame * nChannels];
+        updateSlice();
         return result;
     }
 
     // slice start and end frames are relative to start of sequence
     @property nframes_t sliceStartFrame() const { return _sliceStartFrame; }
     @property nframes_t sliceStartFrame(nframes_t newSliceStartFrame) {
-        _sliceStartFrame = min(newSliceStartFrame, _audioSeq.nframes - 1);
-        _audioSlice = _audioSeq[_sliceStartFrame * nChannels .. _sliceEndFrame * nChannels];
+        _sliceStartFrame = min(newSliceStartFrame, _sliceEndFrame);
+        updateSlice();
         return _sliceStartFrame;
     }
     @property nframes_t sliceEndFrame() const { return _sliceEndFrame; }
     @property nframes_t sliceEndFrame(nframes_t newSliceEndFrame) {
         _sliceEndFrame = min(newSliceEndFrame, _audioSeq.nframes);
-        _audioSlice = _audioSeq[_sliceStartFrame * nChannels .. _sliceEndFrame * nChannels];
+        updateSlice();
         if(resizeDelegate !is null) {
             resizeDelegate(offset + nframes);
         }        
@@ -1995,6 +2037,11 @@ public:
     @property string name(string newName) { return (_name = newName); }
 
 package:
+    // recompute the current audio slice from the audio sequence for this region
+    void updateSlice() {
+        _audioSlice = _audioSeq[_sliceStartFrame * nChannels .. _sliceEndFrame * nChannels];
+    }
+
     ResizeDelegate resizeDelegate;
 
 private:
@@ -2124,8 +2171,9 @@ private:
     }
 
     // arguments are the total number of frames in the audio sequence before/after a modification
-    // adjusts the ending frame accordingly
-    void _resizeSlice(nframes_t prevNFrames, nframes_t newNFrames) {
+    // this function adjusts the ending frame of the current slice accordingly
+    // it also updates all other regions linked to this region's audio sequence
+    void _sequenceChanged(nframes_t prevNFrames, nframes_t newNFrames) {
         if(newNFrames > prevNFrames) {
             _sliceEndFrame += (newNFrames - prevNFrames);
             if(resizeDelegate !is null) {
@@ -2137,7 +2185,8 @@ private:
                 _sliceEndFrame - (prevNFrames - newNFrames) : _sliceStartFrame;
         }
 
-        _audioSlice = _audioSeq[_sliceStartFrame * nChannels .. _sliceEndFrame * nChannels];
+        // update all regions that are linked to the audio sequence for this region
+        _audioSeq.updateSoftLinks();
     }
 
     // wrap the piece table into a reference type
@@ -3220,7 +3269,7 @@ public:
             if(_region !is null) {
                 auto progressCallback = progressTaskCallback!(NormalizeState);
                 auto progressTask = progressTask(
-                    _region.region.name,
+                    _region.name,
                     delegate void() {
                         if(_region.subregionSelected && selectionOnly) {
                             _region.region.normalize(_region.subregionStartFrame,
@@ -3558,6 +3607,12 @@ public:
             return result;
         }
 
+        @property TrackView trackView() { return _trackView; }
+        @property TrackView trackView(TrackView newTrackView) {
+            _regionColor = newTrackView.color;
+            return (_trackView = newTrackView);
+        }
+
         // slice start and end frames are relative to start of sequence
         @property nframes_t sliceStartFrame() const { return region.sliceStartFrame; }
         @property nframes_t sliceStartFrame(nframes_t newSliceStartFrame) {
@@ -3572,6 +3627,8 @@ public:
         @property nframes_t nframes() const @nogc nothrow { return region.nframes; }
         @property nframes_t offset() const @nogc nothrow { return region.offset; }
         @property nframes_t offset(nframes_t newOffset) { return (region.offset = newOffset); }
+
+        @property string name() const { return region.name; }
 
         bool selected;
         nframes_t selectedOffset;
@@ -3633,13 +3690,17 @@ public:
 
         @property ref const(BoundingBox) boundingBox() const { return _boundingBox; }
 
+        override string toString() {
+            return name;
+        }
+
     protected:
         Region region;
 
     private:
-        this(Region region, Color* color) {
+        this(TrackView trackView, Region region) {
+            this.trackView = trackView;
             this.region = region;
-            _regionColor = color;
 
             _arrangeStateHistory = new StateHistory!ArrangeState(ArrangeState.emptyState());
             _editStateHistory = new StateHistory!EditState(EditState());
@@ -4129,6 +4190,8 @@ public:
         StateHistory!ArrangeState _arrangeStateHistory;
         StateHistory!EditState _editStateHistory;
 
+        TrackView _trackView;
+
         bool _editMode;
         bool _sliceChanged;
         bool _showOnsets;
@@ -4140,7 +4203,7 @@ public:
         OnsetSequence[] _onsets; // indexed as [channel][onset]
         OnsetSequence _onsetsLinked; // indexed as [onset]
 
-        Color* _regionColor;
+        Color _regionColor;
 
         Pattern _regionGradient;
         pixels_t _prevYOffset;
@@ -4422,25 +4485,29 @@ public:
 
     final class TrackView {
     public:
-        void addRegion(Region region, nframes_t sampleRate) {
+        RegionView addRegion(RegionView regionView) {
             synchronized {
-                _track.addRegion(region);
+                _track.addRegion(regionView.region);
 
-                RegionView regionView = new RegionView(region, &_trackColor);
+                if(regionView.trackView !is this) {
+                    regionView.trackView = this;
+                }
                 _regionViews ~= regionView;
                 this.outer._regionViews ~= regionView;
             }
 
             _hScroll.reconfigure();
             _vScroll.reconfigure();
+
+            return regionView;
         }
-        void addRegion(Region region) {
-            addRegion(region, _mixer.sampleRate);
+        RegionView addRegion(Region region) {
+            auto newRegionView = new RegionView(this, region);
+            return addRegion(newRegionView);
         }
 
         void drawRegions(ref Scoped!Context cr, pixels_t yOffset) {
             foreach(regionView; _regionViews) {
-                Region r = regionView.region;
                 if(_action == Action.moveRegion && regionView.selected) {
                     regionView.drawRegionMoving(cr, yOffset, heightPixels);
                 }
@@ -4641,6 +4708,12 @@ public:
         @property string name(string newName) { return (_name = newName); }
 
         @property ref const(BoundingBox) boundingBox() const { return _boundingBox; }
+
+        @property Color color() { return _trackColor; }
+
+        override string toString() {
+            return name;
+        }
 
     private:
         this(Track track, pixels_t heightPixels, string name) {
@@ -6120,16 +6193,16 @@ public:
                         // shrink selected regions from the right
                         if(latestStart !is null) {
                             immutable nframes_t latestStartEndFrame = mouseFrame > prevMouseFrame ?
-                                latestStart.offset + latestStart.sliceEndFrame + (mouseFrame - prevMouseFrame) :
-                                latestStart.offset + latestStart.sliceEndFrame -
-                                min(prevMouseFrame - mouseFrame, latestStart.sliceEndFrame);
+                                latestStart.offset + latestStart.nframes + (mouseFrame - prevMouseFrame) :
+                                latestStart.offset + latestStart.nframes -
+                                min(prevMouseFrame - mouseFrame, latestStart.nframes);
                             auto shrinkResult = latestStart.shrinkEnd(latestStartEndFrame);
                             if(shrinkResult.success) {
                                 foreach(regionView; _selectedRegions) {
                                     if(regionView !is latestStart) {
                                         immutable nframes_t endFrame = mouseFrame > prevMouseFrame ?
-                                            regionView.offset + regionView.sliceEndFrame + shrinkResult.delta :
-                                            regionView.offset + regionView.sliceEndFrame - shrinkResult.delta;
+                                            regionView.offset + regionView.nframes + shrinkResult.delta :
+                                            regionView.offset + regionView.nframes - shrinkResult.delta;
                                         regionView.shrinkEnd(endFrame);
                                     }
                                 }
@@ -6241,14 +6314,15 @@ public:
                         switch(_mode) {
                             // implement different behaviors for button presses depending on the current mode
                             case Mode.arrange:
-                                TrackView trackView = _mouseOverTrack(_mouseY);
-                                if(trackView !is null) {
-                                    RegionView mouseOverRegion;
-                                    RegionView mouseOverRegionStart;
-                                    RegionView mouseOverRegionEnd;
+                                RegionView mouseOverRegion;
+                                RegionView mouseOverRegionStart;
+                                RegionView mouseOverRegionEnd;
 
+                                TrackView trackView = _mouseOverTrack(_mouseY);
+
+                                if(trackView !is null) {
                                     // detect if the mouse is over an audio region
-                                    foreach(regionView; trackView.regionViews) {
+                                    foreach(regionView; retro(trackView.regionViews)) {
                                         if(_mouseY >= regionView.boundingBox.y0 + RegionView.headerHeight) {
                                             if(_mouseX >= regionView.boundingBox.x0 - mouseOverThreshold &&
                                                _mouseX <= regionView.boundingBox.x0 + mouseOverThreshold) {
@@ -6271,11 +6345,17 @@ public:
                                     // if so, begin adjusting that endpoint
                                     if(!shiftPressed) {
                                         if(mouseOverRegionStart !is null) {
-                                            // select the region
                                             if(!mouseOverRegionStart.selected) {
+                                                // deselect all other regions
+                                                foreach(regionView; _selectedRegions) {
+                                                    regionView.selected = false;
+                                                }
+                                                _selectedRegionsApp.clear();
+
+                                                // select this region
                                                 _selectedRegionsApp.put(mouseOverRegionStart);
+                                                mouseOverRegionStart.selected = true;
                                             }
-                                            mouseOverRegionStart.selected = true;
                                             _computeEarliestSelectedRegion();
 
                                             // begin shrinking the start of the selected regions
@@ -6285,12 +6365,18 @@ public:
                                         else if(mouseOverRegionEnd !is null) {
                                             // select the region
                                             if(!mouseOverRegionEnd.selected) {
+                                                // deselect all other regions
+                                                foreach(regionView; _selectedRegions) {
+                                                    regionView.selected = false;
+                                                }
+                                                _selectedRegionsApp.clear();
+
                                                 _selectedRegionsApp.put(mouseOverRegionEnd);
+                                                mouseOverRegionEnd.selected = true;
                                             }
-                                            mouseOverRegionEnd.selected = true;
+                                            _computeEarliestSelectedRegion();
 
                                             // begin shrinking the end of the selected regions
-                                            _computeEarliestSelectedRegion();
                                             _setAction(Action.shrinkRegionEnd);
                                             newAction = true;
                                         }
@@ -6305,16 +6391,9 @@ public:
                                 }
 
                                 if(!newAction) {
-                                    // find the region that the mouse is currently over
-                                    RegionView mouseOverRegion;
-                                    foreach(regionView; _regionViews) {
-                                        if(_mouseX >= regionView.boundingBox.x0 &&
-                                           _mouseX < regionView.boundingBox.x1 &&
-                                           _mouseY >= regionView.boundingBox.y0 &&
-                                           _mouseY < regionView.boundingBox.y1) {
-                                            mouseOverRegion = regionView;
-                                            break;
-                                        }
+                                    // if the mouse is not over a region and no region is selected, do nothing
+                                    if(mouseOverRegion is null && _selectedRegions.empty) {
+                                        break;
                                     }
 
                                     // if this region is the only region currently selected, do nothing
@@ -6372,12 +6451,15 @@ public:
                                         }
                                         else {
                                             // move the edit point and start selecting a subregion
+                                            immutable auto oldEditPointOffset = _editRegion.editPointOffset;
                                             _editRegion.editPointOffset =
                                                 cast(nframes_t)(_mouseX * samplesPerPixel) + viewOffset -
                                                 _editRegion.offset;
-                                            _editRegion.subregionStartFrame = _editRegion.editPointOffset;
-                                            _editRegion.subregionEndFrame = _editRegion.editPointOffset;
-                                            _setAction(Action.selectSubregion);
+                                            if(_editRegion.editPointOffset != oldEditPointOffset) {
+                                                _editRegion.subregionStartFrame = _editRegion.editPointOffset;
+                                                _editRegion.subregionEndFrame = _editRegion.editPointOffset;
+                                                _setAction(Action.selectSubregion);
+                                            }
                                             newAction = true;
                                         }
                                     }
@@ -6773,27 +6855,7 @@ public:
 
                     case GdkKeysyms.GDK_BackSpace:
                         if(_mode == Mode.arrange && _selectedRegions.length > 0) {
-                            // remove the selected regions from their respective tracks
-                            foreach(trackView; _trackViews) {
-                                auto regionViewsApp = appender!(RegionView[]);
-                                foreach(regionView; trackView.regionViews) {
-                                    if(!regionView.selected) {
-                                        regionViewsApp.put(regionView);
-                                    }
-                                }
-                                trackView.regionViews = regionViewsApp.data;
-                            }
-
-                            // remove the selected regions from the global list of regions
-                            auto regionViewsApp = appender!(RegionView[]);
-                            foreach(regionView; _regionViews) {
-                                if(!regionView.selected) {
-                                    regionViewsApp.put(regionView);
-                                }
-                            }
-                            _regionViews = regionViewsApp.data;
-                            appendArrangeState(currentArrangeState!(ArrangeStateType.tracksEdit));
-
+                            _removeSelectedRegions();
                             redraw();
                         }
                         else if(_mode == Mode.editRegion && _editRegion.subregionSelected) {
@@ -6832,10 +6894,16 @@ public:
                         break;
 
                     case GdkKeysyms.GDK_c:
-                        if(controlPressed && _mode == Mode.editRegion && _editRegion.subregionSelected) {
-                            // save the selected subregion
-                            _copyBuffer = _editRegion.region.getSliceLocal(_editRegion.subregionStartFrame,
-                                                                           _editRegion.subregionEndFrame);
+                        if(controlPressed) {
+                            if(_mode == Mode.arrange && _selectedRegions.length > 0) {
+                                // save the selected regions to the copy buffer
+                                _copiedRegions = _selectedRegions.dup;
+                            }
+                            else if(_mode == Mode.editRegion && _editRegion.subregionSelected) {
+                                // save the selected subregion
+                                _copyBuffer = _editRegion.region.getSliceLocal(_editRegion.subregionStartFrame,
+                                                                               _editRegion.subregionEndFrame);
+                            }
                         }
                         break;
 
@@ -6967,42 +7035,81 @@ public:
                         break;
 
                     case GdkKeysyms.GDK_v:
-                        if(controlPressed && _mode == Mode.editRegion && _copyBuffer.length > 0) {
-                            // paste the copy buffer
-                            _editRegion.region.insertLocal(_copyBuffer,
-                                                           _editRegion.editPointOffset);
+                        if(controlPressed) {
+                            if(_mode == Mode.arrange && _copiedRegions.length > 0) {
+                                // deselect all currently selected regions
+                                foreach(regionView; _selectedRegions) {
+                                    regionView.selected = false;
+                                }
+                                _selectedRegionsApp.clear();
 
-                            // select the pasted region
-                            _editRegion.subregionSelected = true;
-                            _editRegion.subregionStartFrame = _editRegion.editPointOffset;
-                            _editRegion.subregionEndFrame = _editRegion.editPointOffset +
-                                cast(nframes_t)(_copyBuffer.length / _editRegion.nChannels);
+                                // insert the copied regions at the transport offset
+                                immutable auto earliestOffset = _getEarliestRegion(_copiedRegions).offset;
+                                immutable auto copyOffset = earliestOffset > _mixer.transportOffset ?
+                                    earliestOffset - _mixer.transportOffset :
+                                    _mixer.transportOffset - earliestOffset;
+                                foreach(regionView; _copiedRegions) {
+                                    auto trackView = regionView.trackView;
+                                    auto newRegionView = trackView.addRegion(regionView.region.softCopy());
+                                    newRegionView.selected = true;
+                                    _selectedRegionsApp.put(newRegionView);
+                                    newRegionView.offset = earliestOffset > _mixer.transportOffset ?
+                                        regionView.offset - copyOffset :
+                                        regionView.offset + copyOffset;
+                                    _mixer.resizeIfNecessary(newRegionView.offset + newRegionView.nframes);
+                                }
 
-                            if(_editRegion.showOnsets) {
-                                _editRegion.computeOnsets();
+                                _computeEarliestSelectedRegion();
+                                appendArrangeState(currentArrangeState!(ArrangeStateType.tracksEdit));
+
+                                redraw();
                             }
-                            _editRegion.appendEditState(_editRegion.currentEditState(true, true));
+                            else if(_mode == Mode.editRegion && _copyBuffer.length > 0) {
+                                // paste the copy buffer
+                                _editRegion.region.insertLocal(_copyBuffer,
+                                                               _editRegion.editPointOffset);
 
-                            redraw();
+                                // select the pasted region
+                                _editRegion.subregionSelected = true;
+                                _editRegion.subregionStartFrame = _editRegion.editPointOffset;
+                                _editRegion.subregionEndFrame = _editRegion.editPointOffset +
+                                    cast(nframes_t)(_copyBuffer.length / _editRegion.nChannels);
+
+                                if(_editRegion.showOnsets) {
+                                    _editRegion.computeOnsets();
+                                }
+                                _editRegion.appendEditState(_editRegion.currentEditState(true, true));
+
+                                redraw();
+                            }
                         }
                         break;
 
                     case GdkKeysyms.GDK_x:
-                        if(controlPressed && _mode == Mode.editRegion && _editRegion.subregionSelected) {
-                            // copy the selected subregion, then remove it
-                            _copyBuffer = _editRegion.region.getSliceLocal(_editRegion.subregionStartFrame,
-                                                                           _editRegion.subregionEndFrame);
-                            _editRegion.region.removeLocal(_editRegion.subregionStartFrame,
-                                                           _editRegion.subregionEndFrame);
+                        if(controlPressed) {
+                            if(_mode == Mode.arrange && _selectedRegions.length > 0) {
+                                // save the selected regions to the copy buffer
+                                _copiedRegions = _selectedRegions.dup;
 
-                            _editRegion.subregionSelected = false;
-
-                            if(_editRegion.showOnsets) {
-                                _editRegion.computeOnsets();
+                                _removeSelectedRegions();
+                                redraw();
                             }
-                            _editRegion.appendEditState(_editRegion.currentEditState(true, true));
+                            else if(_mode == Mode.editRegion && _editRegion.subregionSelected) {
+                                // copy the selected subregion, then remove it
+                                _copyBuffer = _editRegion.region.getSliceLocal(_editRegion.subregionStartFrame,
+                                                                               _editRegion.subregionEndFrame);
+                                _editRegion.region.removeLocal(_editRegion.subregionStartFrame,
+                                                               _editRegion.subregionEndFrame);
 
-                            redraw();
+                                _editRegion.subregionSelected = false;
+
+                                if(_editRegion.showOnsets) {
+                                    _editRegion.computeOnsets();
+                                }
+                                _editRegion.appendEditState(_editRegion.currentEditState(true, true));
+
+                                redraw();
+                            }
                         }
                         break;
 
@@ -7284,7 +7391,7 @@ public:
             }
             _selectedRegionsApp.clear();
 
-            // update selectd regions
+            // update selected regions
             foreach(regionViewState; arrangeState.selectedRegionStates) {
                 regionViewState.regionView.selected = true;
                 regionViewState.regionView.offset = regionViewState.offset;
@@ -7647,16 +7754,21 @@ private:
         _canvas.redraw();
     }
 
-    void _computeEarliestSelectedRegion() {
-        _earliestSelectedRegion = null;
+    RegionView _getEarliestRegion(RegionView[] regionViews) {
+        RegionView earliestRegion = null;
         nframes_t minOffset = nframes_t.max;
-        foreach(regionView; _selectedRegions) {
+        foreach(regionView; regionViews) {
             regionView.selectedOffset = regionView.offset;
             if(regionView.offset < minOffset) {
                 minOffset = regionView.offset;
-                _earliestSelectedRegion = regionView;
+                earliestRegion = regionView;
             }
         }
+        return earliestRegion;
+    }
+
+    void _computeEarliestSelectedRegion() {
+        _earliestSelectedRegion = _getEarliestRegion(_selectedRegions);
     }
 
     TrackView _mouseOverTrack(pixels_t mouseY) {
@@ -7674,6 +7786,30 @@ private:
         _arrangeChannelStrip.update();
     }
 
+    void _removeSelectedRegions() {
+        // remove the selected regions from their respective tracks
+        foreach(trackView; _trackViews) {
+            auto regionViewsApp = appender!(RegionView[]);
+            foreach(regionView; trackView.regionViews) {
+                if(!regionView.selected) {
+                    regionViewsApp.put(regionView);
+                }
+            }
+            trackView.regionViews = regionViewsApp.data;
+        }
+
+        // remove the selected regions from the global list of regions
+        auto regionViewsApp = appender!(RegionView[]);
+        foreach(regionView; _regionViews) {
+            if(!regionView.selected) {
+                regionViewsApp.put(regionView);
+            }
+        }
+        _regionViews = regionViewsApp.data;
+
+        appendArrangeState(currentArrangeState!(ArrangeStateType.tracksEdit));
+    }
+
     StateHistory!ArrangeState _arrangeStateHistory;
 
     Window _parentWindow;
@@ -7687,6 +7823,7 @@ private:
     @property RegionView[] _selectedRegions() { return _selectedRegionsApp.data; }
     RegionView _earliestSelectedRegion;
     RegionView _editRegion;
+    RegionView[] _copiedRegions;
 
     Marker[uint] _markers;
     Marker* _moveMarker;
