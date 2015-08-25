@@ -79,6 +79,11 @@ def configure( ctx ):
                       mandatory = not found_audio_driver ):
         ctx.define( "HAVE_PORTAUDIO", 1 )
         ctx.env.DFLAGS.append( "-version=HAVE_PORTAUDIO" )
+        # remove -pthread flag
+        if "-pthread" in ctx.env.LIB_portaudio:
+            ctx.env.LIB_portaudio.remove( "-pthread" )
+        if "-pthread" in ctx.env.LINKFLAGS_portaudio:
+            ctx.env.LINKFLAGS_portaudio.remove( "-pthread" )
 
     # Check for libsndfile
     ctx.check_cfg( package = "sndfile",
@@ -121,18 +126,27 @@ def configure( ctx ):
                    uselib_store = "gtkd",
                    mandatory = True )
 
-    # Configure GtkD on OSX
-    if sys.platform == "darwin":
-        # Try to fix the output from the gtkd-3 pkg-config entry on OSX
+    # Try to fix the output from the gtkd-3 pkg-config entry on OSX and Linux
+    if sys.platform == "darwin" or sys.platform == "linux2":
         ctx.env.LIB_gtkd = map(lambda x: x[2:], filter(lambda x: x[:2] == "-l", ctx.env.LIBPATH_gtkd))
         ctx.env.LIBPATH_gtkd = map(lambda x: x[2:], filter(lambda x: x[:2] == "-L", ctx.env.LIBPATH_gtkd))
 
+    # Configure GtkD on OSX
+    if sys.platform == "darwin":
         # Add flags for GTK-OSX
         home = os.getenv("HOME")
         ctx.env.LIBPATH_gtkd = [ home + "/gtk/inst/lib" ]
         ctx.env.append_value( "LIB_gtkd", [ "gtk-3", "gdk-3", "atk-1.0", "gio-2.0",
                                             "pangocairo-1.0", "gdk_pixbuf-2.0", "cairo-gobject",
                                             "pango-1.0", "cairo", "gobject-2.0", "glib-2.0" ] )
+    # Configure GtkD on Linux
+    elif sys.platform == "linux2":
+        ctx.check_cfg( package = "gtk+-x11-3.0",
+                       args = [ "--cflags", "--libs" ],
+                       uselib_store = "gtkd",
+                       mandatory = True )
+        if "-pthread" in ctx.env.LINKFLAGS_gtkd:
+            ctx.env.LINKFLAGS_gtkd.remove( "-pthread" )
 
 def build( ctx ):
     use_libs = [ "gtkd" ]

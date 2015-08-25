@@ -20,7 +20,7 @@ module meters.TruePeakDSP;
 private import std.math;
 private import core.stdc.stdlib;
 
-import meters.JmeterDSP;
+import meters.jmeterdsp;
 private import meters.resampler;
 
 class TruePeakDSP : JmeterDSP {
