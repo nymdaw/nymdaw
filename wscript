@@ -52,13 +52,16 @@ def configure( ctx ):
     if opts.unittest:
         ctx.env.append_value( "DFLAGS", "-unittest" )
 
+    found_audio_driver = False
+
     # Check for jack
     if ctx.check_cfg( package = "jack",
                       args = [ "jack >= 0.120.0", "--cflags", "--libs" ],
                       uselib_store = "jack",
-                      mandatory = False if sys.platform == "darwin" else True ):
+                      mandatory = False ):
         ctx.define( "HAVE_JACK", 1 )
         ctx.env.DFLAGS.append( "-version=HAVE_JACK" )
+        found_audio_driver = True
 
     # Configure CoreAudio on OSX
     if sys.platform == "darwin":
@@ -67,6 +70,15 @@ def configure( ctx ):
             # Pass OSX frameworks to DMD
             ctx.env.LINKFLAGS_dprogram.extend( [ "-L-framework", "-LCoreAudio", "-L-framework", "-LAudioUnit" ] )
             ctx.env.DFLAGS.append( "-version=HAVE_COREAUDIO" )
+            found_audio_driver = True
+
+    # Check for portaudio
+    if ctx.check_cfg( package = "portaudio-2.0",
+                      args = [ "--cflags", "--libs" ],
+                      uselib_store = "portaudio",
+                      mandatory = not found_audio_driver ):
+        ctx.define( "HAVE_PORTAUDIO", 1 )
+        ctx.env.DFLAGS.append( "-version=HAVE_PORTAUDIO" )
 
     # Check for libsndfile
     ctx.check_cfg( package = "sndfile",
@@ -140,6 +152,14 @@ def build( ctx ):
                    target = "coreaudio" )
         use_libs.append( "coreaudio" )
         ctx.env.append_value( "LINKFLAGS_coreaudio", [ "framework", "CoreAudio", "framework", "AudioUnit" ] )
+
+    # Build PortAudio wrapper
+    if "HAVE_PORTAUDIO" in ctx.env.define_key:
+        dlang_portaudio_dir = os.path.join( deps_dir, "portaudio" )
+        ctx.stlib( source = ctx.path.ant_glob( os.path.join( dlang_portaudio_dir, "**", "*.d" ) ),
+                   includes = deps_dir,
+                   target = "dlang_portaudio" )
+        use_libs.extend( [ "portaudio", "dlang_portaudio" ] )
 
     # Build libsndfile wrapper
     dlang_sndfile_dir = os.path.join( deps_dir, "sndfile" )

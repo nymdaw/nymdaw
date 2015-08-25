@@ -28,6 +28,9 @@ import core.atomic;
 version(HAVE_JACK) {
     import jack.jack;
 }
+version(HAVE_PORTAUDIO) {
+    import portaudio.portaudio;
+}
 
 import sndfile;
 import samplerate;
@@ -2652,7 +2655,7 @@ public:
 
 protected:
     void initializeMixer();
-    void cleanupMixer();
+    void cleanupMixer() nothrow;
 
 private:
     // stop playing if the transport is at the end of the project
@@ -2737,7 +2740,7 @@ version(HAVE_JACK) {
             jack_free(playbackPorts);
         }
 
-        override void cleanupMixer() {
+        override void cleanupMixer() nothrow {
             jack_client_close(_client);
         }
 
@@ -2757,7 +2760,6 @@ version(HAVE_JACK) {
         jack_port_t* _mixPort1;
         jack_port_t* _mixPort2;
     }
-
 }
 
 version(HAVE_COREAUDIO) {
@@ -2794,7 +2796,7 @@ version(HAVE_COREAUDIO) {
             }
         }
 
-        override void cleanupMixer() {
+        override void cleanupMixer() nothrow {
             coreAudioCleanup();
         }
 
@@ -2809,7 +2811,86 @@ version(HAVE_COREAUDIO) {
 
         nframes_t _sampleRate;
     }
+}
 
+version(HAVE_PORTAUDIO) {
+    final class PortAudioMixer : Mixer {
+    public:
+        enum outputChannels = 2; // default to stereo
+
+        this(string appName, nframes_t sampleRate = 44100) {
+            if(_instance !is null) {
+                throw new AudioError("Only one PortAudioMixer instance may be constructed per process");
+            }
+            _instance = this;
+            _sampleRate = sampleRate;
+            super(appName);
+        }
+
+        ~this() {
+            _instance = null;
+        }
+
+        @property override nframes_t sampleRate() { return _sampleRate; }
+
+    protected:
+        static struct Phase {
+            sample_t left = 0;
+            sample_t right = 0;
+        }
+
+        override void initializeMixer() {
+            PaError err;
+            Phase phaseData;
+
+            if((err = Pa_Initialize()) != paNoError) {
+                throw new AudioError(to!string(Pa_GetErrorText(err)));
+            }
+
+            static assert(is(sample_t == float));
+            immutable auto sampleFormat = paFloat32;
+
+            if((err = Pa_OpenDefaultStream(&_stream,
+                                           0,
+                                           outputChannels,
+                                           sampleFormat,
+                                           cast(double)(_sampleRate),
+                                           cast(ulong)(paFramesPerBufferUnspecified),
+                                           &_audioCallback,
+                                           cast(void*)(&phaseData)))
+               != paNoError) {
+                throw new AudioError(to!string(Pa_GetErrorText(err)));
+            }
+
+            if((err = Pa_StartStream(_stream)) != paNoError) {
+                throw new AudioError(to!string(Pa_GetErrorText(err)));
+            }
+        }
+
+        override void cleanupMixer() nothrow {
+            Pa_StopStream(_stream);
+            Pa_CloseStream(_stream);
+            Pa_Terminate();
+        }
+
+    private:
+        extern(C) static int _audioCallback(const(void)* inputBuffer,
+                                            void* outputBuffer,
+                                            size_t framesPerBuffer,
+                                            const(PaStreamCallbackTimeInfo)* timeInfo,
+                                            PaStreamCallbackFlags statusFlags,
+                                            void* userData) @nogc nothrow {
+            _instance.mixStereoInterleaved(cast(nframes_t)(framesPerBuffer * outputChannels),
+                                           outputChannels,
+                                           cast(sample_t*)(outputBuffer));
+            return paContinue;
+        }
+
+        __gshared static PortAudioMixer _instance; // there should be only one instance per process
+
+        nframes_t _sampleRate;
+        PaStream* _stream;
+    }
 }
 
 enum Direction {
@@ -7916,6 +7997,9 @@ void main(string[] args) {
     version(HAVE_COREAUDIO) {
         availableAudioDrivers ~= "CoreAudio";
     }
+    version(HAVE_PORTAUDIO) {
+        availableAudioDrivers ~= "PortAudio";
+    }
     assert(availableAudioDrivers.length > 0);
     string audioDriver;
 
@@ -7950,17 +8034,28 @@ void main(string[] args) {
                     break;
             }
 
+            version(HAVE_PORTAUDIO) {
+                case "PORTAUDIO":
+                    mixer = new PortAudioMixer(appName);
+                    break;
+            }
+
             default:
                 version(OSX) {
                     version(HAVE_COREAUDIO) {
                         mixer = new CoreAudioMixer(appName);
                     }
                     else {
-                        mixer = new JackMixer(appName);
+                        mixer = new PortAudioMixer(appName);
                     }
                 }
                 else {
-                    mixer = new JackMixer(appName);
+                    version(HAVE_PORTAUDIO) {
+                        mixer = new PortAudioMixer(appName);
+                    }
+                    else {
+                        static assert(0, "Could not find a default audio driver");
+                    }
                 }
         }
         assert(mixer !is null);
