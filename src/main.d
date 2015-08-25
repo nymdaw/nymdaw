@@ -2987,6 +2987,10 @@ public:
         shrinkRegionStart,
         shrinkRegionEnd,
         selectSubregion,
+        mouseOverSubregionStart,
+        mouseOverSubregionEnd,
+        shrinkSubregionStart,
+        shrinkSubregionEnd,
         selectBox,
         moveOnset,
         moveRegion,
@@ -3770,6 +3774,7 @@ public:
         }
 
         @property ref const(BoundingBox) boundingBox() const { return _boundingBox; }
+        @property ref const(BoundingBox) subregionBox() const { return _subregionBox; }
 
         override string toString() {
             return name;
@@ -4222,6 +4227,12 @@ public:
                         cr.rectangle(x0, yOffset, x1 - x0, headerHeight + height);
                         cr.setSourceRgba(0.0, 1.0, 0.0, 0.5);
                         cr.fill();
+
+                        // compute the bounding box for the selected subregion
+                        _subregionBox.x0 = x0;
+                        _subregionBox.y0 = yOffset;
+                        _subregionBox.x1 = x1;
+                        _subregionBox.y1 = yOffset + headerHeight + height;
                     }
 
                     // draw the edit point
@@ -4290,6 +4301,7 @@ public:
         pixels_t _prevYOffset;
 
         BoundingBox _boundingBox;
+        BoundingBox _subregionBox;
     }
 
     abstract class TrackButton {
@@ -6169,7 +6181,7 @@ public:
         }
 
         void onSelectSubregion() {
-            if(_editRegion) {
+            if(_editRegion !is null) {
                 immutable nframes_t mouseFrame =
                     clamp(_mouseX, _editRegion.boundingBox.x0, _editRegion.boundingBox.x1) * samplesPerPixel +
                     viewOffset;
@@ -6199,6 +6211,52 @@ public:
                                       _editRegion.subregionEndFrame + _editRegion.offset);
                 }
 
+                redraw();
+            }
+        }
+
+        void onShrinkSubregionStart() {
+            if(_editRegion !is null) {
+                immutable nframes_t mouseFrame =
+                    clamp(_mouseX, _editRegion.boundingBox.x0, _editRegion.boundingBox.x1) * samplesPerPixel +
+                    viewOffset;
+                if(mouseFrame < _editRegion.subregionEndFrame + _editRegion.offset) {
+                    immutable nframes_t newStartFrame = mouseFrame - _editRegion.offset;
+                    if(_editRegion.editPointOffset == _editRegion.subregionStartFrame) {
+                        _editRegion.editPointOffset = newStartFrame;
+                    }
+                    _editRegion.subregionStartFrame = newStartFrame;
+                }
+                else {
+                    immutable nframes_t newStartFrame = _editRegion.subregionEndFrame;
+                    if(_editRegion.editPointOffset == _editRegion.subregionStartFrame) {
+                        _editRegion.editPointOffset = newStartFrame;
+                    }
+                    _editRegion.subregionStartFrame = newStartFrame;
+                }
+                redraw();
+            }
+        }
+
+        void onShrinkSubregionEnd() {
+            if(_editRegion !is null) {
+                immutable nframes_t mouseFrame =
+                    clamp(_mouseX, _editRegion.boundingBox.x0, _editRegion.boundingBox.x1) * samplesPerPixel +
+                    viewOffset;
+                if(mouseFrame > _editRegion.subregionStartFrame + _editRegion.offset) {
+                    immutable nframes_t newEndFrame = mouseFrame - _editRegion.offset;
+                    if(_editRegion.editPointOffset == _editRegion.subregionEndFrame) {
+                        _editRegion.editPointOffset = newEndFrame;
+                    }
+                    _editRegion.subregionEndFrame = newEndFrame;
+                }
+                else {
+                    immutable nframes_t newEndFrame = _editRegion.subregionStartFrame;
+                    if(_editRegion.editPointOffset == _editRegion.subregionEndFrame) {
+                        _editRegion.editPointOffset = newEndFrame;
+                    }
+                    _editRegion.subregionEndFrame = newEndFrame;
+                }
                 redraw();
             }
         }
@@ -6297,6 +6355,19 @@ public:
                         onSelectSubregion();
                         break;
 
+                    case Action.shrinkSubregionStart:
+                        onShrinkSubregionStart();
+                        break;
+
+                    case Action.shrinkSubregionEnd:
+                        onShrinkSubregionEnd();
+                        break;
+
+                    case Action.mouseOverSubregionStart:
+                    case Action.mouseOverSubregionEnd:
+                        _mouseOverSubregionEndpoints();
+                        break;
+
                     case Action.selectBox:
                         redraw();
                         break;
@@ -6356,6 +6427,9 @@ public:
 
                     case Action.none:
                     default:
+                        if(_mode == Mode.editRegion) {
+                            _mouseOverSubregionEndpoints();
+                        }
                         break;
                 }
             }
@@ -6507,41 +6581,52 @@ public:
                                 break;
 
                             case Mode.editRegion:
-                                if(_editRegion && _editRegion.showOnsets) {
-                                    // detect if the mouse is over an onset
-                                    _moveOnsetChannel = _editRegion.mouseOverChannel(_mouseY);
-                                    if(_editRegion.getOnset(viewOffset + _mouseX * samplesPerPixel -
-                                                            _editRegion.offset,
-                                                            mouseOverThreshold * samplesPerPixel,
-                                                            _moveOnsetFrameSrc,
-                                                            _moveOnsetIndex,
-                                                            _moveOnsetChannel)) {
-                                        _moveOnsetFrameDest = _moveOnsetFrameSrc;
-                                        _setAction(Action.moveOnset);
+                                if(_editRegion !is null) {
+                                    if(_action == Action.mouseOverSubregionStart) {
+                                        _setAction(Action.shrinkSubregionStart);
                                         newAction = true;
                                     }
-                                }
+                                    else if(_action == Action.mouseOverSubregionEnd) {
+                                        _setAction(Action.shrinkSubregionEnd);
+                                        newAction = true;
+                                    }
 
-                                if(!newAction) {
-                                    if(_editRegion.boundingBox.containsPoint(_mouseX, _mouseY)) {
-                                        if(_editRegion.subregionSelected && shiftPressed) {
-                                            // append to the selected subregion
-                                            onSelectSubregion();
-                                            _setAction(Action.selectSubregion);
+                                    if(_editRegion.showOnsets) {
+                                        // detect if the mouse is over an onset
+                                        _moveOnsetChannel = _editRegion.mouseOverChannel(_mouseY);
+                                        if(_editRegion.getOnset(viewOffset + _mouseX * samplesPerPixel -
+                                                                _editRegion.offset,
+                                                                mouseOverThreshold * samplesPerPixel,
+                                                                _moveOnsetFrameSrc,
+                                                                _moveOnsetIndex,
+                                                                _moveOnsetChannel)) {
+                                            _moveOnsetFrameDest = _moveOnsetFrameSrc;
+                                            _setAction(Action.moveOnset);
                                             newAction = true;
                                         }
-                                        else {
-                                            // move the edit point and start selecting a subregion
-                                            immutable auto oldEditPointOffset = _editRegion.editPointOffset;
-                                            _editRegion.editPointOffset =
-                                                cast(nframes_t)(_mouseX * samplesPerPixel) + viewOffset -
-                                                _editRegion.offset;
-                                            if(_editRegion.editPointOffset != oldEditPointOffset) {
-                                                _editRegion.subregionStartFrame = _editRegion.editPointOffset;
-                                                _editRegion.subregionEndFrame = _editRegion.editPointOffset;
+                                    }
+
+                                    if(!newAction) {
+                                        if(_editRegion.boundingBox.containsPoint(_mouseX, _mouseY)) {
+                                            if(_editRegion.subregionSelected && shiftPressed) {
+                                                // append to the selected subregion
+                                                onSelectSubregion();
                                                 _setAction(Action.selectSubregion);
+                                                newAction = true;
                                             }
-                                            newAction = true;
+                                            else {
+                                                // move the edit point and start selecting a subregion
+                                                immutable auto oldEditPointOffset = _editRegion.editPointOffset;
+                                                _editRegion.editPointOffset =
+                                                    cast(nframes_t)(_mouseX * samplesPerPixel) + viewOffset -
+                                                    _editRegion.offset;
+                                                if(_editRegion.editPointOffset != oldEditPointOffset) {
+                                                    _editRegion.subregionStartFrame = _editRegion.editPointOffset;
+                                                    _editRegion.subregionEndFrame = _editRegion.editPointOffset;
+                                                    _setAction(Action.selectSubregion);
+                                                }
+                                                newAction = true;
+                                            }
                                         }
                                     }
                                 }
@@ -6623,6 +6708,17 @@ public:
 
                         _setAction(Action.none);
                         redraw();
+                        break;
+
+                    // move the endpoints of the selected subregion
+                    case Action.shrinkSubregionStart:
+                        _setAction(Action.none);
+                        _mouseOverSubregionEndpoints();
+                        break;
+
+                    case Action.shrinkSubregionEnd:
+                        _setAction(Action.none);
+                        _mouseOverSubregionEndpoints();
                         break;
 
                     // select all regions within the selection box drawn with the mouse
@@ -7226,6 +7322,28 @@ public:
         }
 
     private:
+        void _mouseOverSubregionEndpoints() {
+            if(_mode == Mode.editRegion &&
+               _editRegion !is null &&
+               _editRegion.subregionSelected &&
+               _action != Action.shrinkSubregionStart &&
+               _action != Action.shrinkSubregionEnd) {
+                // check if the mouse is near the ends of the selected subregion
+                if(_mouseX >= _editRegion.subregionBox.x1 - mouseOverThreshold &&
+                        _mouseX <= _editRegion.subregionBox.x1 + mouseOverThreshold) {
+                    _setAction(Action.mouseOverSubregionEnd);
+                }
+                else if(_mouseX >= _editRegion.subregionBox.x0 - mouseOverThreshold &&
+                   _mouseX <= _editRegion.subregionBox.x0 + mouseOverThreshold) {
+                    _setAction(Action.mouseOverSubregionStart);
+                }
+                else if(_action == Action.mouseOverSubregionStart ||
+                        _action == Action.mouseOverSubregionEnd) {
+                    _setAction(Action.none);
+                }
+            }
+        }
+
         pixels_t _mouseX;
         pixels_t _mouseY;
         pixels_t _selectMouseX;
@@ -7771,8 +7889,10 @@ private:
     }
 
     void _setCursor() {
-        static Cursor cursorMoving;
-        static Cursor cursorMovingOnset;
+        static Cursor cursorMove;
+        static Cursor cursorMoveOnset;
+        static Cursor cursorShrinkSubregionStart;
+        static Cursor cursorShrinkSubregionEnd;
 
         void setCursorByType(Cursor cursor, CursorType cursorType) {
             if(cursor is null) {
@@ -7787,13 +7907,23 @@ private:
         switch(_action) {
             case Action.moveMarker:
             case Action.moveRegion:
-                setCursorByType(cursorMoving, CursorType.FLEUR);
+                setCursorByType(cursorMove, CursorType.FLEUR);
                 break;
 
             case Action.shrinkRegionStart:
             case Action.shrinkRegionEnd:
             case Action.moveOnset:
-                setCursorByType(cursorMovingOnset, CursorType.SB_H_DOUBLE_ARROW);
+                setCursorByType(cursorMoveOnset, CursorType.SB_H_DOUBLE_ARROW);
+                break;
+
+            case Action.mouseOverSubregionStart:
+            case Action.shrinkSubregionStart:
+                setCursorByType(cursorShrinkSubregionStart, CursorType.LEFT_SIDE);
+                break;
+
+            case Action.mouseOverSubregionEnd:
+            case Action.shrinkSubregionEnd:
+                setCursorByType(cursorShrinkSubregionEnd, CursorType.RIGHT_SIDE);
                 break;
 
             default:
