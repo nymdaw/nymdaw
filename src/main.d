@@ -59,6 +59,8 @@ import gtk.MessageDialog;
 import gtk.ProgressBar;
 import gtk.RadioButton;
 import gtk.Entry;
+import gtk.MenuBar;
+import gtk.AccelGroup;
 
 import gtkc.gtktypes;
 
@@ -2532,6 +2534,16 @@ public:
         cleanupMixer();
     }
 
+    final void reset() {
+        _tracks = [];
+        _nframes = 0;
+        _transportOffset = 0;
+        _playing = false;
+        _looping = false;
+        _soloTrack = false;
+        _loopStart = _loopEnd = 0;
+    }
+
     final Track createTrack() {
         Track track = new Track(sampleRate);
         track.resizeDelegate = &resizeIfNecessary;
@@ -3005,18 +3017,22 @@ public:
 
     this(string appName, Window parentWindow, Mixer mixer) {
         _parentWindow = parentWindow;
+        _accelGroup = new AccelGroup();
+
         _mixer = mixer;
         _samplesPerPixel = defaultSamplesPerPixel;
 
         _arrangeStateHistory = new StateHistory!ArrangeState(ArrangeState());
 
+        _menuBar = new ArrangeMenuBar();
         _canvas = new Canvas();
         _arrangeChannelStrip = new ArrangeChannelStrip();
         _trackStubs = new TrackStubs();
         _hScroll = new ArrangeHScroll();
         _vScroll = new ArrangeVScroll();
 
-        super(Orientation.HORIZONTAL, 0);
+        super(Orientation.VERTICAL, 0);
+
         auto vBox = new Box(Orientation.VERTICAL, 0);
         vBox.packStart(_canvas, true, true, 0);
         vBox.packEnd(_hScroll, false, false, 0);
@@ -3031,10 +3047,187 @@ public:
         hBox.packStart(channelStripBox, false, false, 0);
         hBox.packStart(trackStubsBox, false, false, 0);
         hBox.packEnd(vBox, true, true, 0);
-        packStart(hBox, true, true, 0);
-        packEnd(_vScroll, false, false, 0);
+
+        auto vBox2 = new Box(Orientation.HORIZONTAL, 0);
+        vBox2.packStart(hBox, true, true, 0);
+        vBox2.packEnd(_vScroll, false, false, 0);
+
+        auto menuBarBox = new Box(Orientation.VERTICAL, 0);
+        menuBarBox.packStart(_menuBar, true, true, 0);
+
+        packStart(menuBarBox, false, false, 0);
+        packEnd(vBox2, true, true, 0);
 
         showAll();
+    }
+
+    final class ArrangeMenuBar : MenuBar {
+    public:
+        this() {
+            super();
+
+            Menu fileMenu = append("_File");
+            fileMenu.append(new MenuItem(&onNew, "_New...", "file.new", true, _accelGroup, 'n'));
+            fileMenu.append(new MenuItem(&onImportFile, "_Import Audio...", "file.import", true, _accelGroup, 'i'));
+            fileMenu.append(new MenuItem(&onQuit, "_Quit", "file.quit", true, _accelGroup, 'q'));
+
+            Menu editMenu = append("_Edit");
+            _undoMenuItem = new MenuItem(&onUndo, "_Undo", "edit.undo", true,
+                                         _accelGroup, 'z', GdkModifierType.CONTROL_MASK);
+            editMenu.append(_undoMenuItem);
+            _redoMenuItem = new MenuItem(&onRedo, "_Redo", "edit.redo", true,
+                                         _accelGroup, 'y', GdkModifierType.CONTROL_MASK);
+            editMenu.append(_redoMenuItem);
+            editMenu.append(new MenuItem(&onCopy, "_Copy", "edit.copy", true,
+                                         _accelGroup, 'c', GdkModifierType.CONTROL_MASK));
+            editMenu.append(new MenuItem(&onCut, "_Cut", "edit.cut", true,
+                                         _accelGroup, 'x', GdkModifierType.CONTROL_MASK));
+            editMenu.append(new MenuItem(&onPaste, "_Paste", "edit.paste", true,
+                                         _accelGroup, 'v', GdkModifierType.CONTROL_MASK));
+            editMenu.addOnDraw(delegate bool(Scoped!Context context, Widget widget) {
+                    _undoMenuItem.setSensitive(queryUndoArrange());
+                    _redoMenuItem.setSensitive(queryRedoArrange());
+                    return false;
+                });
+
+            Menu trackMenu = append("_Track");
+            trackMenu.append(new MenuItem(&onNewTrack, "_New Track", "track.new", true));
+            trackMenu.append(new MenuItem(&onDeleteTrack, "_Delete Track", "track.delete", true));
+
+            Menu regionMenu = append("_Region");
+            _createEditRegionMenu(regionMenu,
+                                  _stretchSelectionMenuItem,
+                                  _normalizeMenuItem,
+                                  _showOnsetsMenuItem,
+                                  _onsetDetectionMenuItem,
+                                  _linkChannelsMenuItem);
+            regionMenu.addOnDraw(delegate bool(Scoped!Context context, Widget widget) {
+                    updateRegionMenu();
+                    return false; });
+        }
+
+        void onNew(MenuItem menuItem) {
+            if(!_savedState) {
+                MessageDialog dialog = new MessageDialog(_parentWindow,
+                                                         GtkDialogFlags.MODAL,
+                                                         MessageType.QUESTION,
+                                                         ButtonsType.OK_CANCEL,
+                                                         "Are you sure? All unsaved changes will be lost.");
+
+                auto response = dialog.run();
+                if(response == ResponseType.OK) {
+                    _resetArrangeView();
+                }
+
+                dialog.destroy();
+            }
+            else {
+                _resetArrangeView();
+            }
+        }
+
+        void onQuit(MenuItem menuItem) {
+            if(!_savedState) {
+                MessageDialog dialog = new MessageDialog(_parentWindow,
+                                                         GtkDialogFlags.MODAL,
+                                                         MessageType.QUESTION,
+                                                         ButtonsType.OK_CANCEL,
+                                                         "Are you sure? All unsaved changes will be lost.");
+
+                auto response = dialog.run();
+                if(response == ResponseType.OK) {
+                    Main.quit();
+                }
+
+                dialog.destroy();
+            }
+            else {
+                Main.quit();
+            }
+        }
+
+        void onUndo(MenuItem menuItem) {
+            if(_mode == Mode.arrange) {
+                undoArrange();
+            }
+        }
+
+        void onRedo(MenuItem menuItem) {
+            if(_mode == Mode.arrange) {
+                redoArrange();
+            }
+        }
+
+        void onCopy(MenuItem menuItem) {
+            if(_mode == Mode.arrange) {
+                arrangeCopy();
+            }
+        }
+
+        void onCut(MenuItem menuItem) {
+            if(_mode == Mode.arrange) {
+                arrangeCut();
+            }
+        }
+
+        void onPaste(MenuItem menuItem) {
+            if(_mode == Mode.arrange) {
+                arrangePaste();
+            }
+        }
+
+        void onNewTrack(MenuItem menuItem) {
+            immutable string prefix = "New Track ";
+            static assert(prefix.length > 0);
+
+            int trackNumber;
+            foreach(trackView; _trackViews) {
+                if(trackView.name.length > prefix.length &&
+                   trackView.name[0 .. prefix.length] == prefix) {
+                    try {
+                        auto currentTrackNumber = to!int(trackView.name[prefix.length .. $]);
+                        if(currentTrackNumber > trackNumber) {
+                            trackNumber = currentTrackNumber;
+                        }
+                    }
+                    catch(ConvException) {
+                    }
+                }
+            }
+
+            createTrackView(prefix ~ to!string(trackNumber + 1));
+        }
+
+        void onDeleteTrack(MenuItem menuItem) {
+            auto tempTrack = _selectedTrack;
+            _selectedTrack = null;
+            deleteTrackView(tempTrack);
+        }
+
+        void updateRegionMenu() {
+            _updateEditRegionMenu(_stretchSelectionMenuItem,
+                                  _normalizeMenuItem,
+                                  _showOnsetsMenuItem,
+                                  _onsetDetectionMenuItem,
+                                  _linkChannelsMenuItem);
+
+            immutable bool editMode = _mode == Mode.editRegion;
+            _stretchSelectionMenuItem.setSensitive(editMode && _stretchSelectionMenuItem.getSensitive());
+            _normalizeMenuItem.setSensitive(editMode && _normalizeMenuItem.getSensitive());
+            _showOnsetsMenuItem.setSensitive(editMode && _showOnsetsMenuItem.getSensitive());
+            _onsetDetectionMenuItem.setSensitive(editMode && _onsetDetectionMenuItem.getSensitive());
+            _linkChannelsMenuItem.setSensitive(editMode && _linkChannelsMenuItem.getSensitive());
+        }
+
+    private:
+        MenuItem _undoMenuItem;
+        MenuItem _redoMenuItem;
+
+        MenuItem _stretchSelectionMenuItem;
+        MenuItem _normalizeMenuItem;
+        CheckMenuItem _showOnsetsMenuItem;
+        MenuItem _onsetDetectionMenuItem;
+        CheckMenuItem _linkChannelsMenuItem;
     }
 
     final class ArrangeHScroll : Scrollbar {
@@ -3182,7 +3375,6 @@ public:
         }
 
     private:
-
         Dialog _dialog;
     }
 
@@ -5010,7 +5202,7 @@ public:
             immutable pixels_t windowHeight = cast(pixels_t)(getWindow().getHeight());
 
             pixels_t xOffset = 20;
-            _faderYOffset = windowHeight - (meterHeightPixels + faderHeightPixels / 2);
+            _faderYOffset = windowHeight - (meterHeightPixels + faderHeightPixels / 2 + 25);
 
             drawFader(cr, xOffset, _faderYOffset);
             xOffset += faderBackgroundWidthPixels + 30;
@@ -6451,7 +6643,7 @@ public:
                             markerHeadWidthPixels / 2 <= _mouseX) &&
                            (cast(pixels_t)((marker.offset - viewOffset) / samplesPerPixel) +
                             markerHeadWidthPixels / 2 >= _mouseX)) {
-                            _moveMarker = &marker;
+                            _moveMarker = marker;
                             _setAction(Action.moveMarker);
                             break;
                         }
@@ -6660,18 +6852,22 @@ public:
 
                     case Mode.editRegion:
                         if(_editRegionMenu is null) {
-                            _createEditRegionMenu();
+                            _editRegionMenu = new Menu();
+                            _createEditRegionMenu(_editRegionMenu,
+                                                  _stretchSelectionMenuItem,
+                                                  _normalizeMenuItem,
+                                                  _showOnsetsMenuItem,
+                                                  _onsetDetectionMenuItem,
+                                                  _linkChannelsMenuItem);
+                            _editRegionMenu.attachToWidget(this, null);
                         }
 
-                        _showOnsetsMenuItem.setActive(_editRegion.showOnsets);
-
-                        _onsetDetectionMenuItem.setSensitive(_editRegion.showOnsets);
-
-                        _linkChannelsMenuItem.setSensitive(_editRegion.nChannels > 1 &&
-                                                           _editRegion.showOnsets);
-                        _linkChannelsMenuItem.setActive(_editRegion.linkChannels);
-
-                        _stretchSelectionMenuItem.setSensitive(_editRegion.subregionSelected);
+                        _updateEditRegionMenu(_stretchSelectionMenuItem,
+                                              _normalizeMenuItem,
+                                              _showOnsetsMenuItem,
+                                              _onsetDetectionMenuItem,
+                                              _linkChannelsMenuItem);
+                        _menuBar.updateRegionMenu();
 
                         _editRegionMenu.popup(buttonEvent.button, buttonEvent.time);
                         _editRegionMenu.showAll();
@@ -6923,7 +7119,7 @@ public:
                         _setAction(Action.none);
                         wchar keyval = cast(wchar)(Keymap.keyvalToUnicode(event.key.keyval));
                         if(isAlpha(keyval) || isNumber(keyval)) {
-                            _markers[event.key.keyval] = Marker(_mixer.transportOffset, to!string(keyval));
+                            _markers[event.key.keyval] = new Marker(_mixer.transportOffset, to!string(keyval));
                             redraw();
                         }
                         return false;
@@ -7072,9 +7268,8 @@ public:
 
                     case GdkKeysyms.GDK_c:
                         if(controlPressed) {
-                            if(_mode == Mode.arrange && _selectedRegions.length > 0) {
-                                // save the selected regions to the copy buffer
-                                _copiedRegions = _selectedRegions.dup;
+                            if(_mode == Mode.arrange) {
+                                arrangeCopy();
                             }
                             else if(_mode == Mode.editRegion && _editRegion.subregionSelected) {
                                 // save the selected subregion
@@ -7213,33 +7408,8 @@ public:
 
                     case GdkKeysyms.GDK_v:
                         if(controlPressed) {
-                            if(_mode == Mode.arrange && _copiedRegions.length > 0) {
-                                // deselect all currently selected regions
-                                foreach(regionView; _selectedRegions) {
-                                    regionView.selected = false;
-                                }
-                                _selectedRegionsApp.clear();
-
-                                // insert the copied regions at the transport offset
-                                immutable auto earliestOffset = _getEarliestRegion(_copiedRegions).offset;
-                                immutable auto copyOffset = earliestOffset > _mixer.transportOffset ?
-                                    earliestOffset - _mixer.transportOffset :
-                                    _mixer.transportOffset - earliestOffset;
-                                foreach(regionView; _copiedRegions) {
-                                    auto trackView = regionView.trackView;
-                                    auto newRegionView = trackView.addRegion(regionView.region.softCopy());
-                                    newRegionView.selected = true;
-                                    _selectedRegionsApp.put(newRegionView);
-                                    newRegionView.offset = earliestOffset > _mixer.transportOffset ?
-                                        regionView.offset - copyOffset :
-                                        regionView.offset + copyOffset;
-                                    _mixer.resizeIfNecessary(newRegionView.offset + newRegionView.nframes);
-                                }
-
-                                _computeEarliestSelectedRegion();
-                                appendArrangeState(currentArrangeState!(ArrangeStateType.tracksEdit));
-
-                                redraw();
+                            if(_mode == Mode.arrange) {
+                                arrangePaste();
                             }
                             else if(_mode == Mode.editRegion && _copyBuffer.length > 0) {
                                 // paste the copy buffer
@@ -7264,12 +7434,8 @@ public:
 
                     case GdkKeysyms.GDK_x:
                         if(controlPressed) {
-                            if(_mode == Mode.arrange && _selectedRegions.length > 0) {
-                                // save the selected regions to the copy buffer
-                                _copiedRegions = _selectedRegions.dup;
-
-                                _removeSelectedRegions();
-                                redraw();
+                            if(_mode == Mode.arrange) {
+                                arrangeCut();
                             }
                             else if(_mode == Mode.editRegion && _editRegion.subregionSelected) {
                                 // copy the selected subregion, then remove it
@@ -7305,12 +7471,10 @@ public:
                     case GdkKeysyms.GDK_z:
                         if(_mode == Mode.arrange) {
                             undoArrange();
-                            redraw();
                         }
                         else if(_mode == Mode.editRegion) {
                             // undo the last edit
                             _editRegion.undoEdit();
-                            redraw();
                         }
                         break;
 
@@ -7350,7 +7514,13 @@ public:
         pixels_t _selectMouseY;
     }
 
-    static struct Marker {
+    static class Marker {
+    public:
+        this(nframes_t offset, string name) {
+            this.offset = offset;
+            this.name = name;
+        }
+
         nframes_t offset;
         string name;
     }
@@ -7363,6 +7533,27 @@ public:
     void createTrackView(string trackName, Region region) {
         auto newTrackView = _createTrackView(trackName);
         newTrackView.addRegion(region);
+        appendArrangeState(currentArrangeState!(ArrangeStateType.tracksEdit));
+    }
+
+    void deleteTrackView(TrackView deleteTrack) {
+        auto regionViewsApp = appender!(RegionView[]);
+        foreach(regionView; _regionViews) {
+            if(regionView.trackView !is deleteTrack) {
+                regionViewsApp.put(regionView);
+            }
+        }
+        _regionViews = regionViewsApp.data;
+
+        auto trackViewsApp = appender!(TrackView[]);
+        foreach(trackView; _trackViews) {
+            if(trackView !is deleteTrack) {
+                trackViewsApp.put(trackView);
+            }
+        }
+        _trackViews = trackViewsApp.data;
+
+        _redrawAll();
         appendArrangeState(currentArrangeState!(ArrangeStateType.tracksEdit));
     }
 
@@ -7419,6 +7610,12 @@ public:
         }
 
         loadRegionsFromFiles(fileNames.data);
+    }
+
+    void onEditRegion(MenuItem menuItem) {
+        if(_mode != Mode.editRegion) {
+            _setMode(Mode.editRegion);
+        }
     }
 
     auto beginProgressTask(ProgressState, ProgressTask, bool cancelButton = true)(ProgressTask[] taskList)
@@ -7528,6 +7725,52 @@ public:
     void onLinkChannels(CheckMenuItem linkChannels) {
         _editRegion.linkChannels = linkChannels.getActive();
         _canvas.redraw();
+    }
+
+    void arrangeCopy() {
+        if(_mode == Mode.arrange && _selectedRegions.length > 0) {
+            // save the selected regions to the copy buffer
+            _copiedRegions = _selectedRegions.dup;
+        }
+    }
+
+    void arrangeCut() {
+        if(_mode == Mode.arrange && _selectedRegions.length > 0) {
+            arrangeCopy();
+            _removeSelectedRegions();
+            _canvas.redraw();
+        }
+    }
+
+    void arrangePaste() {
+        if(_mode == Mode.arrange && _copiedRegions.length > 0) {
+            // deselect all currently selected regions
+            foreach(regionView; _selectedRegions) {
+                regionView.selected = false;
+            }
+            _selectedRegionsApp.clear();
+
+            // insert the copied regions at the transport offset
+            immutable auto earliestOffset = _getEarliestRegion(_copiedRegions).offset;
+            immutable auto copyOffset = earliestOffset > _mixer.transportOffset ?
+                earliestOffset - _mixer.transportOffset :
+                _mixer.transportOffset - earliestOffset;
+            foreach(regionView; _copiedRegions) {
+                auto trackView = regionView.trackView;
+                auto newRegionView = trackView.addRegion(regionView.region.softCopy());
+                newRegionView.selected = true;
+                _selectedRegionsApp.put(newRegionView);
+                newRegionView.offset = earliestOffset > _mixer.transportOffset ?
+                    regionView.offset - copyOffset :
+                    regionView.offset + copyOffset;
+                _mixer.resizeIfNecessary(newRegionView.offset + newRegionView.nframes);
+            }
+
+            _computeEarliestSelectedRegion();
+            appendArrangeState(currentArrangeState!(ArrangeStateType.tracksEdit));
+
+            _canvas.redraw();
+        }
     }
 
     @property ArrangeState currentArrangeState(ArrangeStateType stateType)() {
@@ -7664,16 +7907,24 @@ public:
 
     void appendArrangeState(ArrangeState arrangeState) {
         _arrangeStateHistory.appendState(arrangeState);
+        _savedState = false;
+    }
+
+    bool queryUndoArrange() {
+        return _arrangeStateHistory.queryUndo();
+    }
+    bool queryRedoArrange() {
+        return _arrangeStateHistory.queryRedo();
     }
 
     void undoArrange() {
-        if(_arrangeStateHistory.queryUndo()) {
+        if(queryUndoArrange()) {
             _arrangeStateHistory.undo();
             updateCurrentArrangeState();
         }
     }
     void redoArrange() {
-        if(_arrangeStateHistory.queryRedo()) {
+        if(queryRedoArrange()) {
             _arrangeStateHistory.redo();
             updateCurrentArrangeState();
         }
@@ -7791,7 +8042,9 @@ private:
     void _createArrangeMenu() {
         _arrangeMenu = new Menu();
 
-        _arrangeMenu.append(new MenuItem(&onImportFile, "Import file..."));
+        _arrangeMenu.append(new MenuItem(&onImportFile, "_Import file...", true));
+        _arrangeMenu.append(new MenuItem(&onEditRegion, "_Edit Region", "arrange.editRegion", true,
+                                         _accelGroup, 'e', cast(GdkModifierType)(0)));
 
         _arrangeMenu.attachToWidget(this, null);
     }
@@ -7805,9 +8058,8 @@ private:
             _selectTrack(trackView);
             _trackViews ~= trackView;
 
-            _canvas.redraw();
-            _trackStubs.redraw();
-            _arrangeChannelStrip.redraw();
+            _redrawAll();
+
             return trackView;
         }
     }
@@ -7821,29 +8073,52 @@ private:
         _trackMenu.attachToWidget(this, null);
     }
 
-    void _createEditRegionMenu() {
-        _editRegionMenu = new Menu();
-
-        _stretchSelectionMenuItem = new MenuItem(delegate void(MenuItem) { new StretchSelectionDialog(); },
+    void _createEditRegionMenu(ref Menu editRegionMenu,
+                               ref MenuItem stretchSelectionMenuItem,
+                               ref MenuItem normalizeMenuItem,
+                               ref CheckMenuItem showOnsetsMenuItem,
+                               ref MenuItem onsetDetectionMenuItem,
+                               ref CheckMenuItem linkChannelsMenuItem) {
+        stretchSelectionMenuItem = new MenuItem(delegate void(MenuItem) { new StretchSelectionDialog(); },
                                                  "Stretch Selection...");
-        _editRegionMenu.append(_stretchSelectionMenuItem);
+        editRegionMenu.append(stretchSelectionMenuItem);
 
-        _editRegionMenu.append(new MenuItem(delegate void (MenuItem) { new NormalizeDialog(); },
-                                            "Normalize..."));
+        normalizeMenuItem = new MenuItem(delegate void (MenuItem) { new NormalizeDialog(); },
+                                         "Normalize...");
+        editRegionMenu.append(normalizeMenuItem);
 
-        _showOnsetsMenuItem = new CheckMenuItem("Show Onsets");
-        _showOnsetsMenuItem.addOnToggled(&onShowOnsets);
-        _editRegionMenu.append(_showOnsetsMenuItem);
+        showOnsetsMenuItem = new CheckMenuItem("Show Onsets");
+        showOnsetsMenuItem.addOnToggled(&onShowOnsets);
+        editRegionMenu.append(showOnsetsMenuItem);
 
-        _onsetDetectionMenuItem = new MenuItem(delegate void(MenuItem) { new OnsetDetectionDialog(); },
+        onsetDetectionMenuItem = new MenuItem(delegate void(MenuItem) { new OnsetDetectionDialog(); },
                                                "Onset Detection...");
-        _editRegionMenu.append(_onsetDetectionMenuItem);
+        editRegionMenu.append(onsetDetectionMenuItem);
 
-        _linkChannelsMenuItem = new CheckMenuItem("Link Channels");
-        _linkChannelsMenuItem.addOnToggled(&onLinkChannels);
-        _editRegionMenu.append(_linkChannelsMenuItem);
+        linkChannelsMenuItem = new CheckMenuItem("Link Channels");
+        linkChannelsMenuItem.addOnToggled(&onLinkChannels);
+        editRegionMenu.append(linkChannelsMenuItem);
+    }
 
-        _editRegionMenu.attachToWidget(this, null);
+    void _updateEditRegionMenu(ref MenuItem stretchSelectionMenuItem,
+                               ref MenuItem normalizeMenuItem,
+                               ref CheckMenuItem showOnsetsMenuItem,
+                               ref MenuItem onsetDetectionMenuItem,
+                               ref CheckMenuItem linkChannelsMenuItem) {
+        if(_editRegion !is null) {
+            stretchSelectionMenuItem.setSensitive(_editRegion.subregionSelected);
+
+            normalizeMenuItem.setSensitive(true);
+
+            showOnsetsMenuItem.setSensitive(true);
+            showOnsetsMenuItem.setActive(_editRegion.showOnsets);
+
+            onsetDetectionMenuItem.setSensitive(_editRegion.showOnsets);
+
+            linkChannelsMenuItem.setSensitive(_editRegion.nChannels > 1 &&
+                                              _editRegion.showOnsets);
+            linkChannelsMenuItem.setActive(_editRegion.linkChannels);
+        }
     }
 
     void _zoomIn() {
@@ -7962,6 +8237,7 @@ private:
         }
 
         _mode = mode;
+        _setAction(Action.none);
         _canvas.redraw();
     }
 
@@ -8021,9 +8297,46 @@ private:
         appendArrangeState(currentArrangeState!(ArrangeStateType.tracksEdit));
     }
 
+    void _redrawAll() {
+        _hScroll.reconfigure();
+        _vScroll.reconfigure();
+
+        _canvas.redraw();
+        _trackStubs.redraw();
+        _arrangeChannelStrip.update();
+        _arrangeChannelStrip.redraw();
+    }
+
+    void _resetArrangeView() {
+        _arrangeStateHistory = new StateHistory!ArrangeState(ArrangeState());
+        _savedState = true;
+
+        _mixer.reset();
+        _trackViews = [];
+        _regionViews = [];
+
+        _selectedTrack = null;
+        _selectedRegionsApp.clear();
+        _earliestSelectedRegion = null;
+        _editRegion = null;
+
+        _markers = _markers.init;
+        _moveMarker = null;
+
+        _viewOffset = 0;
+
+        _setMode(Mode.arrange);
+        _setAction(Action.none);
+
+        _redrawAll();
+    }
+
     StateHistory!ArrangeState _arrangeStateHistory;
+    bool _savedState = true;
 
     Window _parentWindow;
+    AccelGroup _accelGroup;
+    ArrangeMenuBar _menuBar;
 
     Mixer _mixer;
     TrackView[] _trackViews;
@@ -8037,7 +8350,7 @@ private:
     RegionView[] _copiedRegions;
 
     Marker[uint] _markers;
-    Marker* _moveMarker;
+    Marker _moveMarker;
 
     bool _mixerPlaying;
 
@@ -8068,6 +8381,7 @@ private:
     Menu _trackMenu;
     Menu _editRegionMenu;
     MenuItem _stretchSelectionMenuItem;
+    MenuItem _normalizeMenuItem;
     CheckMenuItem _showOnsetsMenuItem;
     MenuItem _onsetDetectionMenuItem;
     CheckMenuItem _linkChannelsMenuItem;

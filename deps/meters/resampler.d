@@ -20,6 +20,7 @@
 module meters.resampler;
 
 import std.math;
+import core.sync.mutex;
 import core.stdc.stdlib;
 import core.stdc.stdio;
 import core.stdc.string;
@@ -70,7 +71,7 @@ public:
 
 private:
     static this() {
-        _mutex = new ResamplerMutex();
+        _mutex = new Mutex;
     }
 
     this(double fr, uint hl, uint np) {
@@ -94,10 +95,6 @@ private:
         }
     }
 
-    ~this() {
-        _ctab.destroy();
-    }
-
     ResamplerTable _next;
     uint _refc;
     float[] _ctab;
@@ -105,7 +102,7 @@ private:
     uint _hl;
     uint _np;
 
-    static ResamplerTable create(double fr, uint hl, uint np) {
+    static ResamplerTable createTable(double fr, uint hl, uint np) {
         ResamplerTable P;
 
         synchronized(_mutex) {
@@ -125,11 +122,7 @@ private:
         return P;
     }
 
-    void destroy() {
-        super.destroy();
-    }
-
-    static void destroy(ResamplerTable T) {
+    static void destroyTable(ResamplerTable T) {
         ResamplerTable P, Q;
 
         synchronized(_mutex) {
@@ -155,18 +148,13 @@ private:
 
     static ResamplerTable _list;
 
-    static class ResamplerMutex {}
-    static ResamplerMutex _mutex;
+    static Mutex _mutex;
 }
 
 class Resampler {
 public:
     this() {
         reset();
-    }
-
-    ~this() {
-        clear();
     }
 
     int setup(uint fs_inp,
@@ -204,7 +192,7 @@ public:
                     h = cast(uint)(ceil (h / r));
                     k = cast(uint)(ceil (k / r));
                 }
-                T = ResamplerTable.create(frel, h, n);
+                T = ResamplerTable.createTable(frel, h, n);
                 B = new float[](nchan * (2 * h - 1 + k));
             }
         }
@@ -222,7 +210,7 @@ public:
     }
 
     void clear() {
-        ResamplerTable.destroy(_table);
+        ResamplerTable.destroyTable(_table);
         _buff.destroy();
         _buff = null;
         _table = null;
