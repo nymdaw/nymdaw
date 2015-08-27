@@ -7925,7 +7925,14 @@ public:
     void arrangeCopy() {
         if(_mode == Mode.arrange && _selectedRegions.length > 0) {
             // save the selected regions to the copy buffer
-            _copiedRegions = _selectedRegions.dup;
+            _copiedRegionStatesApp.clear();
+            _copiedRegionStatesApp.reserve(_selectedRegions.length);
+            foreach(regionView; _selectedRegions) {
+                _copiedRegionStatesApp.put(RegionViewState(regionView,
+                                                           regionView.offset,
+                                                           regionView.sliceStartFrame,
+                                                           regionView.sliceEndFrame));
+            }
         }
     }
 
@@ -7938,7 +7945,7 @@ public:
     }
 
     void arrangePaste() {
-        if(_mode == Mode.arrange && _copiedRegions.length > 0) {
+        if(_mode == Mode.arrange && _copiedRegionStates.length > 0) {
             // deselect all currently selected regions
             foreach(regionView; _selectedRegions) {
                 regionView.selected = false;
@@ -7946,13 +7953,17 @@ public:
             _selectedRegionsApp.clear();
 
             // insert the copied regions at the transport offset
-            immutable auto earliestOffset = _getEarliestRegion(_copiedRegions).offset;
+            immutable auto earliestOffset = _getEarliestRegion(_copiedRegionStates).offset;
             immutable auto copyOffset = earliestOffset > _mixer.transportOffset ?
                 earliestOffset - _mixer.transportOffset :
                 _mixer.transportOffset - earliestOffset;
-            foreach(regionView; _copiedRegions) {
+            foreach(regionViewState; _copiedRegionStates) {
+                auto regionView = regionViewState.regionView;
+
                 auto trackView = regionView.trackView;
                 auto newRegionView = trackView.addRegion(regionView.region.softCopy());
+                newRegionView.sliceStartFrame = regionViewState.sliceStartFrame;
+                newRegionView.sliceEndFrame = regionViewState.sliceEndFrame;
                 newRegionView.selected = true;
                 _selectedRegionsApp.put(newRegionView);
                 newRegionView.offset = earliestOffset > _mixer.transportOffset ?
@@ -8450,6 +8461,19 @@ private:
         }
         return earliestRegion;
     }
+    RegionView _getEarliestRegion(RegionViewState[] regionViewStates) {
+        RegionView earliestRegion = null;
+        nframes_t minOffset = nframes_t.max;
+        foreach(regionViewState; regionViewStates) {
+            auto regionView = regionViewState.regionView;
+            regionView.previewOffset = regionView.offset;
+            if(regionView.offset < minOffset) {
+                minOffset = regionView.offset;
+                earliestRegion = regionView;
+            }
+        }
+        return earliestRegion;
+    }
 
     void _computeEarliestSelectedRegion() {
         _earliestSelectedRegion = _getEarliestRegion(_selectedRegions);
@@ -8600,7 +8624,8 @@ private:
     @property RegionView[] _selectedRegions() { return _selectedRegionsApp.data; }
     RegionView _earliestSelectedRegion;
     RegionView _editRegion;
-    RegionView[] _copiedRegions;
+    Appender!(RegionViewState[]) _copiedRegionStatesApp;
+    @property RegionViewState[] _copiedRegionStates() { return _copiedRegionStatesApp.data; }
     RegionView _mouseOverRegionStart;
     RegionView _mouseOverRegionEnd;
     Nullable!size_t _moveTrackIndex;
