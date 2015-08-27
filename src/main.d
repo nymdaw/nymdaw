@@ -2590,6 +2590,7 @@ public:
         _playing = true;
     }
     final void pause() nothrow {
+        disableLoop();
         _playing = false;
 
         GC.enable(); // enable garbage collection while paused
@@ -2996,6 +2997,8 @@ public:
     enum Action {
         none,
         selectRegion,
+        mouseOverRegionStart,
+        mouseOverRegionEnd,
         shrinkRegionStart,
         shrinkRegionEnd,
         selectSubregion,
@@ -3067,9 +3070,25 @@ public:
             super();
 
             Menu fileMenu = append("_File");
-            fileMenu.append(new MenuItem(&onNew, "_New...", "file.new", true, _accelGroup, 'n'));
-            fileMenu.append(new MenuItem(&onImportFile, "_Import Audio...", "file.import", true, _accelGroup, 'i'));
-            fileMenu.append(new MenuItem(&onQuit, "_Quit", "file.quit", true, _accelGroup, 'q'));
+            fileMenu.append(new MenuItem(&onNew, "_New...", "file.new", true,
+                                         _accelGroup, 'n'));
+            fileMenu.append(new MenuItem(&onImportFile, "_Import Audio...", "file.import", true,
+                                         _accelGroup, 'i'));
+            fileMenu.append(new MenuItem(&onQuit, "_Quit", "file.quit", true,
+                                         _accelGroup, 'q'));
+
+            Menu mixerMenu = append("_Mixer");
+            _playMenuItem = new MenuItem(&onPlay, "_Play", "mixer.play", true,
+                                         _accelGroup, ' ', cast(GdkModifierType)(0));
+            mixerMenu.append(_playMenuItem);
+            _pauseMenuItem = new MenuItem(&onPause, "_Pause", "mixer.pause", true,
+                                          _accelGroup, ' ', cast(GdkModifierType)(0));
+            mixerMenu.append(_pauseMenuItem);
+            mixerMenu.addOnDraw(delegate bool(Scoped!Context context, Widget widget) {
+                    _playMenuItem.setSensitive(!_mixer.playing);
+                    _pauseMenuItem.setSensitive(_mixer.playing);
+                    return false;
+                });
 
             Menu editMenu = append("_Edit");
             _undoMenuItem = new MenuItem(&onUndo, "_Undo", "edit.undo", true,
@@ -3146,6 +3165,14 @@ public:
             }
         }
 
+        void onPlay(MenuItem menuItem) {
+            _mixer.play();
+        }
+
+        void onPause(MenuItem menuItem) {
+            _mixer.pause();
+        }
+
         void onUndo(MenuItem menuItem) {
             if(_mode == Mode.arrange) {
                 undoArrange();
@@ -3220,6 +3247,9 @@ public:
         }
 
     private:
+        MenuItem _playMenuItem;
+        MenuItem _pauseMenuItem;
+
         MenuItem _undoMenuItem;
         MenuItem _redoMenuItem;
 
@@ -3587,15 +3617,21 @@ public:
         enum headerFont = "Arial 10"; // font family and size to use for the region's label
 
         void drawRegion(ref Scoped!Context cr,
-                        pixels_t yOffset,
-                        pixels_t heightPixels) {
-            _drawRegion(cr, yOffset, heightPixels, region.offset, 1.0);
+                        pixels_t yOffset) {
+            _drawRegion(cr, _trackView, yOffset, _trackView.heightPixels, region.offset, 1.0);
         }
 
         void drawRegionMoving(ref Scoped!Context cr,
-                              pixels_t yOffset,
-                              pixels_t heightPixels) {
-            _drawRegion(cr, yOffset, heightPixels, selectedOffset, 0.5);
+                              pixels_t yOffset) {
+            TrackView trackView;
+            if(previewTrackIndex >= 0 && previewTrackIndex < _trackViews.length) {
+                trackView = _trackViews[previewTrackIndex];
+                yOffset = trackView.stubBox.y0;
+            }
+            else {
+                trackView = _trackView;
+            }
+            _drawRegion(cr, trackView, yOffset, trackView.heightPixels, previewOffset, 0.5);
         }
 
         void computeOnsetsIndependentChannels() {
@@ -3886,7 +3922,7 @@ public:
 
         @property TrackView trackView() { return _trackView; }
         @property TrackView trackView(TrackView newTrackView) {
-            _regionColor = newTrackView.color;
+            _newTrackView = true;
             return (_trackView = newTrackView);
         }
 
@@ -3908,7 +3944,8 @@ public:
         @property string name() const { return region.name; }
 
         bool selected;
-        nframes_t selectedOffset;
+        nframes_t previewOffset;
+        size_t previewTrackIndex;
         OnsetParams onsetParams;
 
         nframes_t editPointOffset; // locally indexed for this region
@@ -3985,6 +4022,7 @@ public:
         }
 
         void _drawRegion(ref Scoped!Context cr,
+                         TrackView trackView,
                          pixels_t yOffset,
                          pixels_t heightPixels,
                          nframes_t regionOffset,
@@ -4084,7 +4122,9 @@ public:
                 }
 
                 // fill the region background with a gradient
-                if(yOffset != _prevYOffset) {
+                if(yOffset != _prevYOffset || _newTrackView) {
+                    _newTrackView = false;
+
                     enum gradientScale1 = 0.80;
                     enum gradientScale2 = 0.65;
 
@@ -4093,14 +4133,14 @@ public:
                     }
                     _regionGradient = Pattern.createLinear(0, yOffset, 0, yOffset + height);
                     _regionGradient.addColorStopRgba(0,
-                                                     _regionColor.r * gradientScale1,
-                                                     _regionColor.g * gradientScale1,
-                                                     _regionColor.b * gradientScale1,
+                                                     trackView.color.r * gradientScale1,
+                                                     trackView.color.g * gradientScale1,
+                                                     trackView.color.b * gradientScale1,
                                                      alpha);
                     _regionGradient.addColorStopRgba(1,
-                                                     _regionColor.r - gradientScale2,
-                                                     _regionColor.g - gradientScale2,
-                                                     _regionColor.b - gradientScale2,
+                                                     trackView.color.r - gradientScale2,
+                                                     trackView.color.g - gradientScale2,
+                                                     trackView.color.b - gradientScale2,
                                                      alpha);
                 }
                 _prevYOffset = yOffset;
@@ -4159,9 +4199,9 @@ public:
                 void drawRegionLabel() {
                     if(selected) {
                         enum labelColorScale = 0.5;
-                        cr.setSourceRgba(_regionColor.r * labelColorScale,
-                                         _regionColor.g * labelColorScale,
-                                         _regionColor.b * labelColorScale, alpha);
+                        cr.setSourceRgba(trackView.color.r * labelColorScale,
+                                         trackView.color.g * labelColorScale,
+                                         trackView.color.b * labelColorScale, alpha);
                     }
                     else {
                         cr.setSourceRgba(1.0, 1.0, 1.0, alpha);
@@ -4475,6 +4515,7 @@ public:
         StateHistory!EditState _editStateHistory;
 
         TrackView _trackView;
+        bool _newTrackView;
 
         bool _editMode;
         bool _sliceChanged;
@@ -4486,8 +4527,6 @@ public:
 
         OnsetSequence[] _onsets; // indexed as [channel][onset]
         OnsetSequence _onsetsLinked; // indexed as [onset]
-
-        Color _regionColor;
 
         Pattern _regionGradient;
         pixels_t _prevYOffset;
@@ -4794,10 +4833,10 @@ public:
         void drawRegions(ref Scoped!Context cr, pixels_t yOffset) {
             foreach(regionView; _regionViews) {
                 if(_action == Action.moveRegion && regionView.selected) {
-                    regionView.drawRegionMoving(cr, yOffset, heightPixels);
+                    regionView.drawRegionMoving(cr, yOffset);
                 }
                 else {
-                    regionView.drawRegion(cr, yOffset, heightPixels);
+                    regionView.drawRegion(cr, yOffset);
                 }
             }
         }
@@ -4816,11 +4855,11 @@ public:
             cr.save();
             cr.setOperator(cairo_operator_t.OVER);
 
-            // compute the bounding box for this track
-            _boundingBox.x0 = 0;
-            _boundingBox.x1 = _trackStubWidth;
-            _boundingBox.y0 = yOffset;
-            _boundingBox.y1 = yOffset + heightPixels;
+            // compute the bounding box for this track stub
+            _stubBox.x0 = 0;
+            _stubBox.x1 = _trackStubWidth;
+            _stubBox.y0 = yOffset;
+            _stubBox.y1 = yOffset + heightPixels;
 
             // draw the track stub background
             cr.rectangle(0, yOffset, _trackStubWidth, heightPixels);
@@ -4992,7 +5031,7 @@ public:
         @property string name() const { return _name; }
         @property string name(string newName) { return (_name = newName); }
 
-        @property ref const(BoundingBox) boundingBox() const { return _boundingBox; }
+        @property ref const(BoundingBox) stubBox() const { return _stubBox; }
 
         @property Color color() { return _trackColor; }
 
@@ -5043,7 +5082,7 @@ public:
 
         TrackButtonStrip _trackButtonStrip;
 
-        BoundingBox _boundingBox;
+        BoundingBox _stubBox;
     }
 
     final class ChannelStrip {
@@ -5994,6 +6033,7 @@ public:
             addOnDraw(&drawCallback);
             addOnSizeAllocate(&onSizeAllocate);
             addOnMotionNotify(&onMotionNotify);
+            addOnLeaveNotify(&onLeaveNotify);
             addOnButtonPress(&onButtonPress);
             addOnButtonRelease(&onButtonRelease);
             addOnScroll(&onScroll);
@@ -6463,9 +6503,20 @@ public:
                 switch(_action) {
                     case Action.selectRegion:
                         if(!_selectedRegions.empty) {
+                            _moveTrackIndex = _mouseOverTrackIndex(_mouseY);
+                            _minMoveTrackIndex = _minPreviewTrackIndex(_selectedRegions);
+                            _maxMoveTrackIndex = _maxPreviewTrackIndex(_selectedRegions);
+                            foreach(regionView; _selectedRegions) {
+                                regionView.previewTrackIndex = _trackIndex(regionView.trackView);
+                            }
                             _setAction(Action.moveRegion);
                             redraw();
                         }
+                        break;
+
+                    case Action.mouseOverRegionStart:
+                    case Action.mouseOverRegionEnd:
+                        _mouseOverRegionEndpoints();
                         break;
 
                     case Action.shrinkRegionStart:
@@ -6565,20 +6616,51 @@ public:
                         break;
 
                     case Action.moveRegion:
+                        if(!_moveTrackIndex.isNull) {
+                            auto newMoveTrackIndex = _mouseOverTrackIndex(_mouseY);
+                            if(!newMoveTrackIndex.isNull() && newMoveTrackIndex != _moveTrackIndex) {
+                                if(newMoveTrackIndex > _moveTrackIndex) {
+                                    // move the selected regions down one track, if possible
+                                    auto delta = newMoveTrackIndex - _moveTrackIndex;
+                                    if(_maxMoveTrackIndex + delta < _trackViews.length) {
+                                        _moveTrackIndex += delta;
+                                        foreach(regionView; _selectedRegions) {
+                                            regionView.previewTrackIndex += delta;
+                                        }
+                                        _minMoveTrackIndex = _minPreviewTrackIndex(_selectedRegions);
+                                        _maxMoveTrackIndex = _maxPreviewTrackIndex(_selectedRegions);
+                                    }
+                                }
+                                else {
+                                    // move the selected regions up one track, if possible
+                                    auto delta = _moveTrackIndex - newMoveTrackIndex;
+                                    if(_minMoveTrackIndex >= delta) {
+                                        _moveTrackIndex -= delta;
+                                        foreach(regionView; _selectedRegions) {
+                                            regionView.previewTrackIndex -= delta;
+                                        }
+                                        _minMoveTrackIndex = _minPreviewTrackIndex(_selectedRegions);
+                                        _maxMoveTrackIndex = _maxPreviewTrackIndex(_selectedRegions);
+                                    }
+                                }
+                            }
+                        }
+
                         foreach(regionView; _selectedRegions) {
                             immutable nframes_t deltaXSamples = abs(_mouseX - prevMouseX) * samplesPerPixel;
                             if(_mouseX > prevMouseX) {
-                                regionView.selectedOffset += deltaXSamples;
+                                regionView.previewOffset += deltaXSamples;
                             }
-                            else if(_earliestSelectedRegion.selectedOffset > abs(deltaXSamples)) {
-                                regionView.selectedOffset -= deltaXSamples;
+                            else if(_earliestSelectedRegion.previewOffset > abs(deltaXSamples)) {
+                                regionView.previewOffset -= deltaXSamples;
                             }
                             else {
-                                regionView.selectedOffset =
+                                regionView.previewOffset =
                                     regionView.offset > _earliestSelectedRegion.offset ?
                                     regionView.offset - _earliestSelectedRegion.offset : 0;
                             }
                         }
+
                         redraw();
                         break;
 
@@ -6619,13 +6701,32 @@ public:
 
                     case Action.none:
                     default:
-                        if(_mode == Mode.editRegion) {
+                        if(_mode == Mode.arrange) {
+                            _mouseOverRegionEndpoints();
+                        }
+                        else if(_mode == Mode.editRegion) {
                             _mouseOverSubregionEndpoints();
                         }
                         break;
                 }
             }
             return true;
+        }
+
+        bool onLeaveNotify(GdkEventCrossing* eventCrossing, Widget widget) {
+            switch(_action) {
+                case Action.mouseOverRegionStart:
+                case Action.mouseOverRegionEnd:
+                case Action.mouseOverSubregionStart:
+                case Action.mouseOverSubregionEnd:
+                    _setAction(Action.none);
+                    break;
+
+                default:
+                    break;
+            }
+
+            return false;
         }
 
         bool onButtonPress(Event event, Widget widget) {
@@ -6653,7 +6754,9 @@ public:
                 // if the mouse was not over a marker
                 if(_action != Action.moveMarker) {
                     // if the mouse is over the time strip, move the transport
-                    if(_mouseY >= 0 && _mouseY < timeStripHeightPixels + markerHeightPixels) {
+                    if(_mouseY >= 0 && _mouseY <
+                       ((_vScroll.pixelsOffset < timeStripHeightPixels + markerHeightPixels) ?
+                        timeStripHeightPixels + markerHeightPixels - _vScroll.pixelsOffset : timeStripHeightPixels)) {
                         _setAction(Action.moveTransport);
                     }
                     else {
@@ -6661,26 +6764,12 @@ public:
                         switch(_mode) {
                             // implement different behaviors for button presses depending on the current mode
                             case Mode.arrange:
-                                RegionView mouseOverRegion;
-                                RegionView mouseOverRegionStart;
-                                RegionView mouseOverRegionEnd;
-
                                 TrackView trackView = _mouseOverTrack(_mouseY);
 
+                                RegionView mouseOverRegion;
                                 if(trackView !is null) {
                                     // detect if the mouse is over an audio region
                                     foreach(regionView; retro(trackView.regionViews)) {
-                                        if(_mouseY >= regionView.boundingBox.y0 + RegionView.headerHeight) {
-                                            if(_mouseX >= regionView.boundingBox.x0 - mouseOverThreshold &&
-                                               _mouseX <= regionView.boundingBox.x0 + mouseOverThreshold) {
-                                                mouseOverRegionStart = regionView;
-                                            }
-                                            else if(_mouseX >= regionView.boundingBox.x1 - mouseOverThreshold &&
-                                                    _mouseX <= regionView.boundingBox.x1 + mouseOverThreshold) {
-                                                mouseOverRegionEnd = regionView;
-                                            }
-                                        }
-
                                         if(_mouseX >= regionView.boundingBox.x0 &&
                                            _mouseX < regionView.boundingBox.x1) {
                                             mouseOverRegion = regionView;
@@ -6691,8 +6780,9 @@ public:
                                     // detect if the mouse is near one of the endpoints of a region;
                                     // if so, begin adjusting that endpoint
                                     if(!shiftPressed) {
-                                        if(mouseOverRegionStart !is null) {
-                                            if(!mouseOverRegionStart.selected) {
+                                        if(_action == Action.mouseOverRegionStart &&
+                                           _mouseOverRegionStart !is null) {
+                                            if(!_mouseOverRegionStart.selected) {
                                                 // deselect all other regions
                                                 foreach(regionView; _selectedRegions) {
                                                     regionView.selected = false;
@@ -6700,8 +6790,8 @@ public:
                                                 _selectedRegionsApp.clear();
 
                                                 // select this region
-                                                _selectedRegionsApp.put(mouseOverRegionStart);
-                                                mouseOverRegionStart.selected = true;
+                                                _selectedRegionsApp.put(_mouseOverRegionStart);
+                                                _mouseOverRegionStart.selected = true;
                                             }
                                             _computeEarliestSelectedRegion();
 
@@ -6709,17 +6799,18 @@ public:
                                             _setAction(Action.shrinkRegionStart);
                                             newAction = true;
                                         }
-                                        else if(mouseOverRegionEnd !is null) {
+                                        else if(_action == Action.mouseOverRegionEnd &&
+                                                _mouseOverRegionEnd !is null) {
                                             // select the region
-                                            if(!mouseOverRegionEnd.selected) {
+                                            if(!_mouseOverRegionEnd.selected) {
                                                 // deselect all other regions
                                                 foreach(regionView; _selectedRegions) {
                                                     regionView.selected = false;
                                                 }
                                                 _selectedRegionsApp.clear();
 
-                                                _selectedRegionsApp.put(mouseOverRegionEnd);
-                                                mouseOverRegionEnd.selected = true;
+                                                _selectedRegionsApp.put(_mouseOverRegionEnd);
+                                                _mouseOverRegionEnd.selected = true;
                                             }
                                             _computeEarliestSelectedRegion();
 
@@ -6943,18 +7034,32 @@ public:
                     case Action.moveRegion:
                         _setAction(Action.none);
                         bool regionModified;
+                        bool tracksModified;
                         foreach(regionView; _selectedRegions) {
-                            if(regionView.offset != regionView.selectedOffset) {
+                            if(regionView.offset != regionView.previewOffset) {
+                                regionView.offset = regionView.previewOffset;
+                                _mixer.resizeIfNecessary(regionView.offset + regionView.nframes);
                                 regionModified = true;
                             }
-                            regionView.offset = regionView.selectedOffset;
-                            _mixer.resizeIfNecessary(regionView.offset + regionView.nframes);
+
+                            if(regionView.previewTrackIndex >= 0 &&
+                               regionView.previewTrackIndex < _trackViews.length) {
+                                regionView.trackView = _trackViews[regionView.previewTrackIndex];
+                                tracksModified = true;
+                            }
                         }
 
-                        if(regionModified) {
+                        if(tracksModified) {
+                            appendArrangeState(currentArrangeState!(ArrangeStateType.tracksEdit));
+                        }
+                        else if(regionModified) {
                             appendArrangeState(currentArrangeState!(ArrangeStateType.selectedRegionsEdit));
                         }
+                        else {
+                            break;
+                        }
 
+                        _recomputeTrackViewRegions();
                         redraw();
                         break;
 
@@ -7158,7 +7263,6 @@ public:
                         else {
                             // toggle play/pause for the mixer
                             if(_mixer.playing) {
-                                _mixer.disableLoop();
                                 _mixer.pause();
                             }
                             else {
@@ -7486,6 +7590,39 @@ public:
         }
 
     private:
+        void _mouseOverRegionEndpoints() {
+            if(_mode == Mode.arrange) {
+                _mouseOverRegionStart = null;
+                _mouseOverRegionEnd = null;
+
+                bool foundRegion;
+                TrackView trackView = _mouseOverTrack(_mouseY);
+                if(trackView !is null) {
+                    foreach(regionView; retro(trackView.regionViews)) {
+                        if(_mouseY >= regionView.boundingBox.y0 + RegionView.headerHeight) {
+                            if(_mouseX >= regionView.boundingBox.x0 - mouseOverThreshold &&
+                               _mouseX <= regionView.boundingBox.x0 + mouseOverThreshold) {
+                                _mouseOverRegionStart = regionView;
+                                _setAction(Action.mouseOverRegionStart);
+                                foundRegion = true;
+                            }
+                            else if(_mouseX >= regionView.boundingBox.x1 - mouseOverThreshold &&
+                                    _mouseX <= regionView.boundingBox.x1 + mouseOverThreshold) {
+                                _mouseOverRegionEnd = regionView;
+                                _setAction(Action.mouseOverRegionEnd);
+                                foundRegion = true;
+                            }
+                        }
+                    }
+                }
+
+                if(!foundRegion &&
+                   (_action == Action.mouseOverRegionStart || _action == Action.mouseOverRegionEnd)) {
+                    _setAction(Action.none);
+                }
+            }
+        }
+
         void _mouseOverSubregionEndpoints() {
             if(_mode == Mode.editRegion &&
                _editRegion !is null &&
@@ -8185,6 +8322,8 @@ private:
                 setCursorByType(cursorMove, CursorType.FLEUR);
                 break;
 
+            case Action.mouseOverRegionStart:
+            case Action.mouseOverRegionEnd:
             case Action.shrinkRegionStart:
             case Action.shrinkRegionEnd:
             case Action.moveOnset:
@@ -8245,7 +8384,7 @@ private:
         RegionView earliestRegion = null;
         nframes_t minOffset = nframes_t.max;
         foreach(regionView; regionViews) {
-            regionView.selectedOffset = regionView.offset;
+            regionView.previewOffset = regionView.offset;
             if(regionView.offset < minOffset) {
                 minOffset = regionView.offset;
                 earliestRegion = regionView;
@@ -8260,12 +8399,68 @@ private:
 
     TrackView _mouseOverTrack(pixels_t mouseY) {
         foreach(trackView; _trackViews) {
-            if(mouseY >= trackView.boundingBox.y0 && mouseY < trackView.boundingBox.y1) {
+            if(mouseY >= trackView.stubBox.y0 && mouseY < trackView.stubBox.y1) {
                 return trackView;
             }
         }
 
         return null;
+    }
+
+    Nullable!size_t _mouseOverTrackIndex(pixels_t mouseY) {
+        Nullable!size_t result;
+        foreach(trackIndex, trackView; _trackViews) {
+            if(mouseY >= trackView.stubBox.y0 && mouseY < trackView.stubBox.y1) {
+                result = trackIndex;
+                break;
+            }
+        }
+        return result;
+    }
+
+    Nullable!size_t _trackIndex(TrackView trackView) {
+        Nullable!size_t result;
+        foreach(trackIndex, track; _trackViews) {
+            if(track is trackView) {
+                result = trackIndex;
+                break;
+            }
+        }
+        return result;
+    }
+
+    Nullable!size_t _minPreviewTrackIndex(RegionView[] regionViews) {
+        Nullable!size_t result;
+        foreach(regionView; regionViews) {
+            if(result.isNull() ||
+               result > regionView.previewTrackIndex) {
+                result = regionView.previewTrackIndex;
+            }
+        }
+        return result;
+    }
+
+    Nullable!size_t _maxPreviewTrackIndex(RegionView[] regionViews) {
+        Nullable!size_t result;
+        foreach(regionView; regionViews) {
+            if((result.isNull() ||
+                result < regionView.previewTrackIndex)) {
+                result = regionView.previewTrackIndex;
+            }
+        }
+        return result;
+    }
+
+    void _recomputeTrackViewRegions() {
+        foreach(trackView; _trackViews) {
+            auto regionViewsApp = appender!(RegionView[]);
+            foreach(regionView; _regionViews) {
+                if(regionView.trackView is trackView) {
+                    regionViewsApp.put(regionView);
+                }
+            }
+            trackView.regionViews = regionViewsApp.data;
+        }
     }
 
     void _selectTrack(TrackView trackView) {
@@ -8348,6 +8543,11 @@ private:
     RegionView _earliestSelectedRegion;
     RegionView _editRegion;
     RegionView[] _copiedRegions;
+    RegionView _mouseOverRegionStart;
+    RegionView _mouseOverRegionEnd;
+    Nullable!size_t _moveTrackIndex;
+    Nullable!size_t _minMoveTrackIndex;
+    Nullable!size_t _maxMoveTrackIndex;
 
     Marker[uint] _markers;
     Marker _moveMarker;
