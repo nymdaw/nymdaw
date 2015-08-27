@@ -3104,8 +3104,14 @@ public:
             editMenu.append(new MenuItem(&onPaste, "_Paste", "edit.paste", true,
                                          _accelGroup, 'v', GdkModifierType.CONTROL_MASK));
             editMenu.addOnDraw(delegate bool(Scoped!Context context, Widget widget) {
-                    _undoMenuItem.setSensitive(queryUndoArrange());
-                    _redoMenuItem.setSensitive(queryRedoArrange());
+                    if(_mode == Mode.arrange) {
+                        _undoMenuItem.setSensitive(queryUndoArrange());
+                        _redoMenuItem.setSensitive(queryRedoArrange());
+                    }
+                    else if(_mode == Mode.editRegion && _editRegion !is null) {
+                        _undoMenuItem.setSensitive(_editRegion.queryUndoEdit());
+                        _redoMenuItem.setSensitive(_editRegion.queryRedoEdit());
+                    }
                     return false;
                 });
 
@@ -3175,13 +3181,20 @@ public:
 
         void onUndo(MenuItem menuItem) {
             if(_mode == Mode.arrange) {
-                undoArrange();
+                arrangeUndo();
+            }
+            else if(_mode == Mode.editRegion) {
+                _editRegion.undoEdit();
+                _canvas.redraw();
             }
         }
 
         void onRedo(MenuItem menuItem) {
             if(_mode == Mode.arrange) {
-                redoArrange();
+                arrangeRedo();
+            }
+            else if(_mode == Mode.editRegion) {
+                editRegionRedo();
             }
         }
 
@@ -3189,17 +3202,26 @@ public:
             if(_mode == Mode.arrange) {
                 arrangeCopy();
             }
+            else if(_mode == Mode.editRegion) {
+                editRegionCopy();
+            }
         }
 
         void onCut(MenuItem menuItem) {
             if(_mode == Mode.arrange) {
                 arrangeCut();
             }
+            else if(_mode == Mode.editRegion) {
+                editRegionCut();
+            }
         }
 
         void onPaste(MenuItem menuItem) {
             if(_mode == Mode.arrange) {
                 arrangePaste();
+            }
+            else if(_mode == Mode.editRegion) {
+                editRegionPaste();
             }
         }
 
@@ -3856,8 +3878,15 @@ public:
             _editStateHistory.appendState(editState);
         }
 
+        bool queryUndoEdit() {
+            return _editStateHistory.queryUndo();
+        }
+        bool queryRedoEdit() {
+            return _editStateHistory.queryRedo();
+        }
+
         void undoEdit() {
-            if(_editStateHistory.queryUndo()) {
+            if(queryUndoEdit()) {
                 if(_editStateHistory.currentState.audioEdited) {
                     region.undoEdit();
                 }
@@ -3881,7 +3910,7 @@ public:
             }
         }
         void redoEdit() {
-            if(_editStateHistory.queryRedo()) {
+            if(queryRedoEdit()) {
                 _editStateHistory.redo();
                 if(_editStateHistory.currentState.audioEdited) {
                     region.redoEdit();
@@ -7375,10 +7404,8 @@ public:
                             if(_mode == Mode.arrange) {
                                 arrangeCopy();
                             }
-                            else if(_mode == Mode.editRegion && _editRegion.subregionSelected) {
-                                // save the selected subregion
-                                _copyBuffer = _editRegion.region.getSliceLocal(_editRegion.subregionStartFrame,
-                                                                               _editRegion.subregionEndFrame);
+                            else if(_mode == Mode.editRegion) {
+                                editRegionCopy();
                             }
                         }
                         break;
@@ -7516,22 +7543,7 @@ public:
                                 arrangePaste();
                             }
                             else if(_mode == Mode.editRegion && _copyBuffer.length > 0) {
-                                // paste the copy buffer
-                                _editRegion.region.insertLocal(_copyBuffer,
-                                                               _editRegion.editPointOffset);
-
-                                // select the pasted region
-                                _editRegion.subregionSelected = true;
-                                _editRegion.subregionStartFrame = _editRegion.editPointOffset;
-                                _editRegion.subregionEndFrame = _editRegion.editPointOffset +
-                                    cast(nframes_t)(_copyBuffer.length / _editRegion.nChannels);
-
-                                if(_editRegion.showOnsets) {
-                                    _editRegion.computeOnsets();
-                                }
-                                _editRegion.appendEditState(_editRegion.currentEditState(true, true));
-
-                                redraw();
+                                editRegionPaste();
                             }
                         }
                         break;
@@ -7542,43 +7554,27 @@ public:
                                 arrangeCut();
                             }
                             else if(_mode == Mode.editRegion && _editRegion.subregionSelected) {
-                                // copy the selected subregion, then remove it
-                                _copyBuffer = _editRegion.region.getSliceLocal(_editRegion.subregionStartFrame,
-                                                                               _editRegion.subregionEndFrame);
-                                _editRegion.region.removeLocal(_editRegion.subregionStartFrame,
-                                                               _editRegion.subregionEndFrame);
-
-                                _editRegion.subregionSelected = false;
-
-                                if(_editRegion.showOnsets) {
-                                    _editRegion.computeOnsets();
-                                }
-                                _editRegion.appendEditState(_editRegion.currentEditState(true, true));
-
-                                redraw();
+                                editRegionCut();
                             }
                         }
                         break;
 
                     case GdkKeysyms.GDK_y:
                         if(_mode == Mode.arrange) {
-                            redoArrange();
+                            arrangeRedo();
                             redraw();
                         }
                         else if(_mode == Mode.editRegion) {
-                            // redo the last edit
-                            _editRegion.redoEdit();
-                            redraw();
+                            editRegionRedo();
                         }
                         break;
 
                     case GdkKeysyms.GDK_z:
                         if(_mode == Mode.arrange) {
-                            undoArrange();
+                            arrangeUndo();
                         }
                         else if(_mode == Mode.editRegion) {
-                            // undo the last edit
-                            _editRegion.undoEdit();
+                            editRegionUndo();
                         }
                         break;
 
@@ -7864,6 +7860,68 @@ public:
         _canvas.redraw();
     }
 
+    void editRegionUndo() {
+        if(_editRegion !is null) {
+            _editRegion.undoEdit();
+            _canvas.redraw();
+        }
+    }
+
+    void editRegionRedo() {
+        if(_editRegion !is null) {
+            _editRegion.redoEdit();
+            _canvas.redraw();
+        }
+    }
+
+    void editRegionCopy() {
+        if(_editRegion !is null && _editRegion.subregionSelected) {
+            // save the selected subregion
+            _copyBuffer = _editRegion.region.getSliceLocal(_editRegion.subregionStartFrame,
+                                                           _editRegion.subregionEndFrame);
+        }
+    }
+
+    void editRegionCut() {
+        if(_editRegion !is null) {
+            // copy the selected subregion, then remove it
+            _copyBuffer = _editRegion.region.getSliceLocal(_editRegion.subregionStartFrame,
+                                                           _editRegion.subregionEndFrame);
+            _editRegion.region.removeLocal(_editRegion.subregionStartFrame,
+                                           _editRegion.subregionEndFrame);
+
+            _editRegion.subregionSelected = false;
+
+            if(_editRegion.showOnsets) {
+                _editRegion.computeOnsets();
+            }
+            _editRegion.appendEditState(_editRegion.currentEditState(true, true));
+
+            _canvas.redraw();
+        }
+    }
+
+    void editRegionPaste() {
+        if(_editRegion !is null && _copyBuffer.length > 0) {
+            // paste the copy buffer
+            _editRegion.region.insertLocal(_copyBuffer,
+                                           _editRegion.editPointOffset);
+
+            // select the pasted region
+            _editRegion.subregionSelected = true;
+            _editRegion.subregionStartFrame = _editRegion.editPointOffset;
+            _editRegion.subregionEndFrame = _editRegion.editPointOffset +
+                cast(nframes_t)(_copyBuffer.length / _editRegion.nChannels);
+
+            if(_editRegion.showOnsets) {
+                _editRegion.computeOnsets();
+            }
+            _editRegion.appendEditState(_editRegion.currentEditState(true, true));
+
+            _canvas.redraw();
+        }
+    }
+
     void arrangeCopy() {
         if(_mode == Mode.arrange && _selectedRegions.length > 0) {
             // save the selected regions to the copy buffer
@@ -8054,13 +8112,13 @@ public:
         return _arrangeStateHistory.queryRedo();
     }
 
-    void undoArrange() {
+    void arrangeUndo() {
         if(queryUndoArrange()) {
             _arrangeStateHistory.undo();
             updateCurrentArrangeState();
         }
     }
-    void redoArrange() {
+    void arrangeRedo() {
         if(queryRedoArrange()) {
             _arrangeStateHistory.redo();
             updateCurrentArrangeState();
