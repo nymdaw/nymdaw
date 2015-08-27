@@ -3128,7 +3128,19 @@ public:
                                   _linkChannelsMenuItem);
             regionMenu.addOnDraw(delegate bool(Scoped!Context context, Widget widget) {
                     updateRegionMenu();
-                    return false; });
+                    return false;
+                });
+
+            Menu windowMenu = append("_Window");
+            auto sequenceBrowserMenuItem = new CheckMenuItem("_Sequence Browser", true);
+            sequenceBrowserMenuItem.addOnToggled(&onSequenceBrowser);
+            windowMenu.append(sequenceBrowserMenuItem);
+            windowMenu.addOnDraw(delegate bool(Scoped!Context context, Widget widget) {
+                    if(sequenceBrowserMenuItem.getActive() && !_sequenceBrowser.isVisible()) {
+                        sequenceBrowserMenuItem.setActive(false);
+                    }
+                    return false;
+                });
         }
 
         void onNew(MenuItem menuItem) {
@@ -3253,6 +3265,20 @@ public:
             deleteTrackView(tempTrack);
         }
 
+        void onSequenceBrowser(CheckMenuItem sequenceBrowserMenuItem) {
+            if(sequenceBrowserMenuItem.getActive()) {
+                if(_sequenceBrowser is null) {
+                    _sequenceBrowser = new SequenceBrowser();
+                }
+                else {
+                    _sequenceBrowser.show();
+                }
+            }
+            else {
+                _sequenceBrowser.hide();
+            }
+        }
+
         void updateRegionMenu() {
             _updateEditRegionMenu(_stretchSelectionMenuItem,
                                   _normalizeMenuItem,
@@ -3374,6 +3400,50 @@ public:
 
     private:
         Adjustment _vAdjust;
+    }
+
+    final class SequenceBrowser {
+    public:
+        this() {
+            _init();
+        }
+
+        bool isVisible() {
+            return (_dialog !is null && _dialog.isVisible());
+        }
+
+        void show() {
+            if(_dialog is null) {
+                _init();
+            }
+            else {
+                _dialog.showAll();
+            }
+        }
+
+        void hide() {
+            if(_dialog !is null) {
+                _dialog.hide();
+            }
+        }
+
+        void onDialogResponse(int response, Dialog dialog) {
+            _dialog.destroy();
+            _dialog = null;
+        }
+
+    private:
+        void _init() {
+            _dialog = new Dialog();
+            _dialog.setDefaultSize(400, 500);
+            _dialog.setTransientFor(_parentWindow);
+            _dialog.addOnResponse(&onDialogResponse);
+            auto content = _dialog.getContentArea();
+
+            show();
+        }
+
+        Dialog _dialog;
     }
 
     abstract class ArrangeDialog {
@@ -8615,6 +8685,8 @@ private:
     AccelGroup _accelGroup;
     ArrangeMenuBar _menuBar;
 
+    SequenceBrowser _sequenceBrowser;
+
     Mixer _mixer;
     TrackView[] _trackViews;
     RegionView[] _regionViews;
@@ -8623,7 +8695,7 @@ private:
     Appender!(RegionView[]) _selectedRegionsApp;
     @property RegionView[] _selectedRegions() { return _selectedRegionsApp.data; }
     RegionView _earliestSelectedRegion;
-    RegionView _editRegion;
+
     Appender!(RegionViewState[]) _copiedRegionStatesApp;
     @property RegionViewState[] _copiedRegionStates() { return _copiedRegionStatesApp.data; }
     RegionView _mouseOverRegionStart;
@@ -8631,6 +8703,9 @@ private:
     Nullable!size_t _moveTrackIndex;
     Nullable!size_t _minMoveTrackIndex;
     Nullable!size_t _maxMoveTrackIndex;
+
+    RegionView _editRegion;
+    AudioSequence.PieceTable _copyBuffer;
 
     Marker[uint] _markers;
     Marker _moveMarker;
@@ -8684,8 +8759,6 @@ private:
     channels_t _moveOnsetChannel;
     nframes_t _moveOnsetFrameSrc; // locally indexed for region
     nframes_t _moveOnsetFrameDest; // locally indexed for region
-
-    AudioSequence.PieceTable _copyBuffer;
 }
 
 final class AppMainWindow : MainWindow {
