@@ -1307,6 +1307,18 @@ struct AudioSegment {
 
 final class AudioSequence {
 public:
+    static class Link {
+        this(Region region) {
+            this.region = region;
+        }
+
+        string name() {
+            return region.name;
+        }
+
+        Region region;
+    }
+
     this(AudioSegment originalBuffer, nframes_t sampleRate, channels_t nChannels, string name) {
         sequence = new Sequence!(AudioSegment)(originalBuffer);
 
@@ -1387,7 +1399,7 @@ public:
         auto newSequence = new AudioSequence(AudioSegment(audioBuffer, nChannels),
                                              sampleRate,
                                              nChannels,
-                                             baseName(stripExtension(fileName)));
+                                             baseName(fileName));
 
         if(progressCallback) {
             progressCallback(LoadState.complete, 1.0);
@@ -1400,16 +1412,17 @@ public:
     alias sequence this;
     alias PieceTable = Sequence!(AudioSegment).PieceTable;
 
-    void addSoftLink(Region region) {
+    void addSoftLink(Link link) {
         synchronized(_mutex) {
-            _softLinks.insertBack(region);
+            _softLinks.insertBack(link);
         }
     }
-    void removeSoftLink(Region region) {
+
+    void removeSoftLink(Link link) {
         synchronized(_mutex) {
             auto softLinkRange = _softLinks[];
             for(; !softLinkRange.empty; softLinkRange.popFront()) {
-                if(softLinkRange.front is region) {
+                if(softLinkRange.front is link) {
                     _softLinks.linearRemove(take(softLinkRange, 1));
                     break;
                 }
@@ -1421,10 +1434,12 @@ public:
         synchronized(_mutex) {
             auto softLinkRange = _softLinks[];
             for(; !softLinkRange.empty; softLinkRange.popFront()) {
-                softLinkRange.front.updateSlice();
+                softLinkRange.front.region.updateSlice();
             }
         }
     }
+
+    @property auto softLinks() { return _softLinks[]; }
 
     @property nframes_t nframes() { return cast(nframes_t)(sequence.length / nChannels); }
     @property nframes_t sampleRate() const { return _sampleRate; }
@@ -1433,7 +1448,7 @@ public:
 
 private:
     Mutex _mutex;
-    DList!Region _softLinks;
+    DList!Link _softLinks;
 
     nframes_t _sampleRate;
     channels_t _nChannels;
@@ -1466,19 +1481,18 @@ public:
         _name = name;
 
         _audioSeq = audioSeq;
-        _audioSeq.addSoftLink(this);
 
         _sliceStartFrame = 0;
         _sliceEndFrame = audioSeq.nframes;
         updateSlice();
     }
     this(AudioSequence audioSeq) {
-        this(audioSeq, audioSeq.name);
+        this(audioSeq, stripExtension(audioSeq.name));
     }
 
     // create a copy using the same underlying audio sequence
     Region softCopy() {
-        Region newRegion = new Region(_audioSeq, name);
+        Region newRegion = new Region(_audioSeq);
         newRegion._sliceStartFrame = _sliceStartFrame;
         newRegion._sliceEndFrame = _sliceEndFrame;
         newRegion.updateSlice();
@@ -2035,6 +2049,8 @@ public:
         }        
         return _sliceEndFrame;
     }
+
+    @property AudioSequence audioSequence() { return _audioSeq; }
 
     // number of frames in the audio data, where 1 frame contains 1 sample for each channel
     @property nframes_t nframes() const @nogc nothrow { return _sliceEndFrame - _sliceStartFrame; }
@@ -3450,10 +3466,10 @@ public:
 
             final class HTreeNode : TreeNode {
             public:
-                string sequenceName;
+                string itemName;
 
-                this(string sequenceName) {
-                    this.sequenceName = sequenceName;
+                this(string itemName) {
+                    this.itemName = itemName;
                 }
 
                 override int columnCount() {
@@ -3464,7 +3480,7 @@ public:
                     string value;
                     switch(column) {
                         case 0:
-                            value = sequenceName;
+                            value = itemName;
                             break;
 
                         default:
@@ -3472,24 +3488,6 @@ public:
                     }
                     return value;
                 }
-            }
-
-            TreeIter[12] h;
-            int stack = 0;
-            void push(TreeIter ti) {
-                h[stack++] = ti;
-            }
-            TreeIter peek() {
-                if(stack == 0) {
-                    return null;
-                }
-                return h[stack - 1];
-            }
-            TreeIter pop() {
-                if(stack == 0) {
-                    return null;
-                }
-                return h[--stack];
             }
 
             TreeView setup() {
@@ -3506,7 +3504,7 @@ public:
                 treeView.setRulesHint(true);
 
                 TreeSelection treeSelection = treeView.getSelection();
-                treeSelection.setMode(SelectionMode.SINGLE);
+                treeSelection.setMode(SelectionMode.MULTIPLE);
 
                 TreeViewColumn column = new TreeViewColumn("Audio Sequence", new CellRendererText(), "text", 0);
                 treeView.appendColumn(column);
@@ -3515,27 +3513,15 @@ public:
                 column.setSortColumnId(0);
                 column.setSortIndicator(true);
 
-                TreeIter iter;
-                TreeIter iterTop = sequenceTreeStore.createIter(null);
+                TreeIter iterTop, iterChild;
 
-                TreeIter peekIter(bool pushIt) {
-                    TreeIter iter = sequenceTreeStore.append(peek());
-                    if(pushIt) {
-                        push(iter);
+                foreach(i, audioSeq; _audioSequences) {
+                    iterTop = sequenceTreeStore.createIter(null);
+                    sequenceTreeStore.set(iterTop, new HTreeNode(audioSeq.name));
+                    foreach(j, link; audioSeq.softLinks.enumerate) {
+                        iterChild = sequenceTreeStore.append(iterTop);
+                        sequenceTreeStore.set(iterChild, new HTreeNode(link.name));
                     }
-                    return iter;
-                }
-
-                TreeIter popIter(bool pushIt) {
-                    TreeIter iter = sequenceTreeStore.append(pop());
-                    if(pushIt) {
-                        push(iter);
-                    }
-                    return iter;
-                }
-
-                foreach(index, audioSeq; _audioSequences) {
-                    sequenceTreeStore.set(index == 0 ? iterTop : peekIter(false), new HTreeNode(audioSeq.name));
                 }
 
                 return treeView;
@@ -3821,6 +3807,23 @@ public:
         enum borderWidth = 1; // width of the edges of the region, in pixels
         enum headerHeight = 15; // height of the region's label, in pixels
         enum headerFont = "Arial 10"; // font family and size to use for the region's label
+
+        static class RegionViewLink : AudioSequence.Link {
+            this(RegionView regionView) {
+                this.regionView = regionView;
+                super(regionView.region);
+            }
+
+            override string name() {
+                return regionView.trackView.name ~ '.' ~ regionView.name();
+            }
+
+            RegionView regionView;
+        }
+
+        void addSoftLinkToSequence() {
+            region.audioSequence.addSoftLink(new RegionViewLink(this));
+        }
 
         void drawRegion(ref Scoped!Context cr,
                         pixels_t yOffset) {
@@ -5038,8 +5041,11 @@ public:
 
             return regionView;
         }
-        RegionView addRegion(Region region) {
+        RegionView addRegion(Region region, bool addSoftLink = true) {
             auto newRegionView = new RegionView(this, region);
+            if(addSoftLink) {
+                newRegionView.addSoftLinkToSequence();
+            }
             return addRegion(newRegionView);
         }
 
