@@ -61,6 +61,14 @@ import gtk.RadioButton;
 import gtk.Entry;
 import gtk.MenuBar;
 import gtk.AccelGroup;
+import gtk.ScrolledWindow;
+import gtk.TreeView;
+import gtk.TreeNode;
+import gtk.TreeIter;
+import gtk.TreeStore;
+import gtk.TreeSelection;
+import gtk.TreeViewColumn;
+import gtk.CellRendererText;
 
 import gtkc.gtktypes;
 
@@ -3432,6 +3440,108 @@ public:
             _dialog = null;
         }
 
+        final class SequenceTreeView : ScrolledWindow {
+        public:
+            this() {
+                super(null, null);
+                TreeView _treeView = setup();
+                addWithViewport(_treeView);
+            }
+
+            final class HTreeNode : TreeNode {
+            public:
+                string sequenceName;
+
+                this(string sequenceName) {
+                    this.sequenceName = sequenceName;
+                }
+
+                override int columnCount() {
+                    return 1;
+                }
+
+                override string getNodeValue(int column) {
+                    string value;
+                    switch(column) {
+                        case 0:
+                            value = sequenceName;
+                            break;
+
+                        default:
+                            break;
+                    }
+                    return value;
+                }
+            }
+
+            TreeIter[12] h;
+            int stack = 0;
+            void push(TreeIter ti) {
+                h[stack++] = ti;
+            }
+            TreeIter peek() {
+                if(stack == 0) {
+                    return null;
+                }
+                return h[stack - 1];
+            }
+            TreeIter pop() {
+                if(stack == 0) {
+                    return null;
+                }
+                return h[--stack];
+            }
+
+            TreeView setup() {
+                final class SequenceTreeStore : TreeStore {
+                public:
+                    this() {
+                        static GType[] columns = [GType.STRING];
+                        super(columns);
+                    }
+                }
+
+                SequenceTreeStore sequenceTreeStore = new SequenceTreeStore();
+                TreeView treeView = new TreeView(sequenceTreeStore);
+                treeView.setRulesHint(true);
+
+                TreeSelection treeSelection = treeView.getSelection();
+                treeSelection.setMode(SelectionMode.SINGLE);
+
+                TreeViewColumn column = new TreeViewColumn("Audio Sequence", new CellRendererText(), "text", 0);
+                treeView.appendColumn(column);
+                column.setResizable(true);
+                column.setReorderable(true);
+                column.setSortColumnId(0);
+                column.setSortIndicator(true);
+
+                TreeIter iter;
+                TreeIter iterTop = sequenceTreeStore.createIter(null);
+
+                TreeIter peekIter(bool pushIt) {
+                    TreeIter iter = sequenceTreeStore.append(peek());
+                    if(pushIt) {
+                        push(iter);
+                    }
+                    return iter;
+                }
+
+                TreeIter popIter(bool pushIt) {
+                    TreeIter iter = sequenceTreeStore.append(pop());
+                    if(pushIt) {
+                        push(iter);
+                    }
+                    return iter;
+                }
+
+                foreach(index, audioSeq; _audioSequences) {
+                    sequenceTreeStore.set(index == 0 ? iterTop : peekIter(false), new HTreeNode(audioSeq.name));
+                }
+
+                return treeView;
+            }
+        }
+
     private:
         void _init() {
             _dialog = new Dialog();
@@ -3440,9 +3550,13 @@ public:
             _dialog.addOnResponse(&onDialogResponse);
             auto content = _dialog.getContentArea();
 
+            _sequenceTreeView = new SequenceTreeView();
+            content.packStart(_sequenceTreeView, true, true, 0);
+
             show();
         }
 
+        SequenceTreeView _sequenceTreeView;
         Dialog _dialog;
     }
 
@@ -7764,6 +7878,7 @@ public:
         auto progressCallback = progressTaskCallback!(LoadState);
         void loadRegionTask(string fileName) {
             auto newSequence = AudioSequence.fromFile(fileName, _mixer.sampleRate, progressCallback);
+            _audioSequencesApp.put(newSequence);
             Region newRegion = new Region(newSequence);
             if(newRegion is null) {
                 ErrorDialog.display(_parentWindow, "Could not load file " ~ baseName(fileName));
@@ -8690,6 +8805,8 @@ private:
     Mixer _mixer;
     TrackView[] _trackViews;
     RegionView[] _regionViews;
+    Appender!(AudioSequence[]) _audioSequencesApp;
+    @property AudioSequence[] _audioSequences() { return _audioSequencesApp.data; }
 
     TrackView _selectedTrack;
     Appender!(RegionView[]) _selectedRegionsApp;
