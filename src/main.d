@@ -69,6 +69,7 @@ import gtk.TreeStore;
 import gtk.TreeSelection;
 import gtk.TreeViewColumn;
 import gtk.CellRendererText;
+import gtk.ListStore;
 
 import gtkc.gtktypes;
 
@@ -3528,6 +3529,54 @@ public:
             }
         }
 
+        final class RegionHistoryListView : ScrolledWindow {
+        public:
+            this() {
+                super(null, null);
+                TreeView _treeView = setup();
+                addWithViewport(_treeView);
+            }
+
+            TreeView setup() {
+                final class RegionListStore : ListStore {
+                    this() {
+                        static GType[2] columns = [GType.STRING, GType.STRING];
+                        super(columns);
+                    }
+                }
+
+                RegionListStore regionListStore = new RegionListStore();
+                TreeView treeView = new TreeView(regionListStore);
+                treeView.setRulesHint(true);
+
+                TreeIter iterTop = regionListStore.createIter();
+
+                static int[2] cols = [0, 1];
+                string[] vals;
+                vals ~= "";
+                vals ~= "";
+                regionListStore.set(iterTop, cols, vals);
+
+                regionListStore.append(iterTop);
+
+                TreeViewColumn column = new TreeViewColumn("Index", new CellRendererText(), "text", 0);
+                treeView.appendColumn(column);
+                column.setResizable(true);
+                column.setReorderable(true);
+                column.setSortColumnId(0);
+                column.setSortIndicator(true);
+
+                column = new TreeViewColumn("Operation", new CellRendererText(), "text", 1);
+                treeView.appendColumn(column);
+                column.setResizable(true);
+                column.setReorderable(true);
+                column.setSortColumnId(1);
+                column.setSortIndicator(true);
+
+                return treeView;
+            }
+        }
+
     private:
         void _init() {
             _dialog = new Dialog();
@@ -3536,13 +3585,27 @@ public:
             _dialog.addOnResponse(&onDialogResponse);
             auto content = _dialog.getContentArea();
 
+            auto hBox = new Box(Orientation.HORIZONTAL, 0);
             _sequenceTreeView = new SequenceTreeView();
-            content.packStart(_sequenceTreeView, true, true, 0);
+            hBox.packStart(_sequenceTreeView, true, true, 0);
+
+            auto vBox = new Box(Orientation.VERTICAL, 10);
+            Label trackLabel = new Label("Track label");
+            vBox.packStart(trackLabel, false, false, 0);
+            Label regionLabel = new Label("Region label");
+            vBox.packStart(regionLabel, false, false, 0);
+            _regionHistoryListView = new RegionHistoryListView();
+            _regionHistoryListView.setBorderWidth(15);
+            vBox.packEnd(_regionHistoryListView, true, true, 0);
+            hBox.packStart(vBox, true, true, 0);
+
+            content.packStart(hBox, true, true, 0);
 
             show();
         }
 
         SequenceTreeView _sequenceTreeView;
+        RegionHistoryListView _regionHistoryListView;
         Dialog _dialog;
     }
 
