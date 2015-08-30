@@ -3461,8 +3461,8 @@ public:
         public:
             this() {
                 super(null, null);
-                TreeView _treeView = setup();
-                addWithViewport(_treeView);
+                treeView = setup();
+                addWithViewport(treeView);
             }
 
             final class HTreeNode : TreeNode {
@@ -3503,9 +3503,10 @@ public:
                 SequenceTreeStore sequenceTreeStore = new SequenceTreeStore();
                 TreeView treeView = new TreeView(sequenceTreeStore);
                 treeView.setRulesHint(true);
+                treeView.addOnCursorChanged(&onRegionSelected);
 
                 TreeSelection treeSelection = treeView.getSelection();
-                treeSelection.setMode(SelectionMode.MULTIPLE);
+                treeSelection.setMode(SelectionMode.SINGLE);
 
                 TreeViewColumn column = new TreeViewColumn("Audio Sequence", new CellRendererText(), "text", 0);
                 treeView.appendColumn(column);
@@ -3527,17 +3528,20 @@ public:
 
                 return treeView;
             }
+
+            TreeView treeView;
+            alias treeView this;
         }
 
-        final class RegionHistoryListView : ScrolledWindow {
+        final class RegionHistoryTreeView : ScrolledWindow {
         public:
             this() {
                 super(null, null);
-                TreeView _treeView = setup();
-                addWithViewport(_treeView);
+                treeView = setup(false);
+                addWithViewport(treeView);
             }
 
-            TreeView setup() {
+            TreeView setup(bool regionSelected) {
                 final class RegionListStore : ListStore {
                     this() {
                         static GType[2] columns = [GType.STRING, GType.STRING];
@@ -3551,13 +3555,15 @@ public:
 
                 TreeIter iterTop = regionListStore.createIter();
 
-                static int[2] cols = [0, 1];
-                string[] vals;
-                vals ~= "";
-                vals ~= "";
-                regionListStore.set(iterTop, cols, vals);
+                if(regionSelected) {
+                    static int[2] cols = [0, 1];
+                    string[] vals;
+                    vals ~= "";
+                    vals ~= "";
+                    regionListStore.set(iterTop, cols, vals);
 
-                regionListStore.append(iterTop);
+                    regionListStore.append(iterTop);
+                }
 
                 TreeViewColumn column = new TreeViewColumn("Index", new CellRendererText(), "text", 0);
                 treeView.appendColumn(column);
@@ -3575,6 +3581,14 @@ public:
 
                 return treeView;
             }
+
+            TreeView treeView;
+            alias treeView this;
+        }
+
+        void onRegionSelected(TreeView treeView) {
+            TreeIter iter = treeView.getSelectedIter();
+            _regionHistoryTreeView.setup(iter !is null);
         }
 
     private:
@@ -3594,9 +3608,9 @@ public:
             vBox.packStart(trackLabel, false, false, 0);
             Label regionLabel = new Label("Region label");
             vBox.packStart(regionLabel, false, false, 0);
-            _regionHistoryListView = new RegionHistoryListView();
-            _regionHistoryListView.setBorderWidth(15);
-            vBox.packEnd(_regionHistoryListView, true, true, 0);
+            _regionHistoryTreeView = new RegionHistoryTreeView();
+            _regionHistoryTreeView.setBorderWidth(15);
+            vBox.packEnd(_regionHistoryTreeView, true, true, 0);
             hBox.packStart(vBox, true, true, 0);
 
             content.packStart(hBox, true, true, 0);
@@ -3605,7 +3619,7 @@ public:
         }
 
         SequenceTreeView _sequenceTreeView;
-        RegionHistoryListView _regionHistoryListView;
+        RegionHistoryTreeView _regionHistoryTreeView;
         Dialog _dialog;
     }
 
