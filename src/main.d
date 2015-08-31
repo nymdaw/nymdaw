@@ -85,6 +85,8 @@ import glib.ListSG;
 import glib.Str;
 import glib.URI;
 
+import gobject.Value;
+
 import cairo.Context;
 import cairo.Pattern;
 import cairo.Surface;
@@ -246,9 +248,8 @@ public:
         return _currentState.state;
     }
 
-    alias HistoryContainer = DList!T;
-    @property ref HistoryContainer undoHistory() { return _undoHistory; }
-    @property ref HistoryContainer redoHistory() { return _redoHistory; }
+    @property auto undoHistory() { return _undoHistory[]; }
+    @property auto redoHistory() { return _redoHistory[]; }
 
 private:
     void _updateCurrentState() {
@@ -266,6 +267,7 @@ private:
 
     Mutex _mutex;
 
+    alias HistoryContainer = DList!T;
     HistoryContainer _undoHistory;
     HistoryContainer _redoHistory;
 
@@ -3461,47 +3463,9 @@ public:
         public:
             this() {
                 super(null, null);
-                treeView = setup();
-                addWithViewport(treeView);
-            }
 
-            final class HTreeNode : TreeNode {
-            public:
-                string itemName;
-
-                this(string itemName) {
-                    this.itemName = itemName;
-                }
-
-                override int columnCount() {
-                    return 1;
-                }
-
-                override string getNodeValue(int column) {
-                    string value;
-                    switch(column) {
-                        case 0:
-                            value = itemName;
-                            break;
-
-                        default:
-                            break;
-                    }
-                    return value;
-                }
-            }
-
-            TreeView setup() {
-                final class SequenceTreeStore : TreeStore {
-                public:
-                    this() {
-                        static GType[] columns = [GType.STRING];
-                        super(columns);
-                    }
-                }
-
-                SequenceTreeStore sequenceTreeStore = new SequenceTreeStore();
-                TreeView treeView = new TreeView(sequenceTreeStore);
+                sequenceTreeStore = new SequenceTreeStore();
+                treeView = new TreeView(sequenceTreeStore);
                 treeView.setRulesHint(true);
                 treeView.addOnCursorChanged(&onRegionSelected);
 
@@ -3515,20 +3479,83 @@ public:
                 column.setSortColumnId(0);
                 column.setSortIndicator(true);
 
-                TreeIter iterTop, iterChild;
+                column = new TreeViewColumn("Is Region", new CellRendererText(), "text", 1);
+                treeView.appendColumn(column);
+                column.setResizable(true);
+                column.setReorderable(true);
+                column.setSortColumnId(1);
+                column.setSortIndicator(true);
+                column.setVisible(false);
 
-                foreach(i, audioSeq; _audioSequences) {
-                    iterTop = sequenceTreeStore.createIter(null);
-                    sequenceTreeStore.set(iterTop, new HTreeNode(audioSeq.name));
-                    foreach(j, link; audioSeq.softLinks.enumerate) {
-                        iterChild = sequenceTreeStore.append(iterTop);
-                        sequenceTreeStore.set(iterChild, new HTreeNode(link.name));
-                    }
-                }
+                column = new TreeViewColumn("Region Index", new CellRendererText(), "text", 2);
+                treeView.appendColumn(column);
+                column.setResizable(true);
+                column.setReorderable(true);
+                column.setSortColumnId(2);
+                column.setSortIndicator(true);
+                column.setVisible(false);
 
-                return treeView;
+                update();
+
+                addWithViewport(treeView);
             }
 
+            final class SequenceTreeStore : TreeStore {
+            public:
+                this() {
+                    static GType[] columns = [GType.STRING, GType.BOOLEAN, GType.ULONG];
+                    super(columns);
+                }
+            }
+
+            void update() {
+                Nullable!size_t getRegionViewIndex(RegionView searchRegionView) {
+                    Nullable!size_t result;
+                    foreach(index, regionView; _regionViews) {
+                        if(regionView is searchRegionView) {
+                            result = index;
+                            break;
+                        }
+                    }
+                    return result;
+                }
+
+                sequenceTreeStore.clear();
+
+                Value isRegion = new Value(true);
+                Value isNotRegion = new Value(false);
+                Value zeroIndex = new Value();
+                zeroIndex.init(GType.ULONG);
+                zeroIndex.setUlong(0);
+
+                TreeIter iterTop, iterChild;
+                foreach(i, audioSeq; _audioSequences) {
+                    iterTop = sequenceTreeStore.createIter(null);
+                    Value sequenceName = new Value(audioSeq.name);
+                    sequenceTreeStore.setValue(iterTop, 0, sequenceName);
+                    sequenceTreeStore.setValue(iterTop, 1, isNotRegion);
+                    sequenceTreeStore.setValue(iterTop, 2, zeroIndex);
+                    foreach(j, link; audioSeq.softLinks.enumerate) {
+                        auto regionViewLink = cast(RegionView.RegionViewLink)(link);
+                        if(regionViewLink !is null) {
+                            iterChild = sequenceTreeStore.append(iterTop);
+
+                            Value regionName = new Value(regionViewLink.name);
+                            Value regionViewIndexValue = new Value();
+                            regionViewIndexValue.init(GType.ULONG);
+                            auto regionViewIndex = getRegionViewIndex(regionViewLink.regionView);
+                            if(!regionViewIndex.isNull()) {
+                                regionViewIndexValue.setUlong(regionViewIndex);
+                            }
+                            sequenceTreeStore.setValue(iterChild, 0, regionName);
+                            sequenceTreeStore.setValue(iterChild, 1, isRegion);
+                            sequenceTreeStore.setValue(iterChild, 2, regionViewIndexValue);
+                        }
+                    }
+                }
+            }
+
+            SequenceTreeStore sequenceTreeStore;
             TreeView treeView;
             alias treeView this;
         }
@@ -3537,33 +3564,10 @@ public:
         public:
             this() {
                 super(null, null);
-                treeView = setup(false);
-                addWithViewport(treeView);
-            }
 
-            TreeView setup(bool regionSelected) {
-                final class RegionListStore : ListStore {
-                    this() {
-                        static GType[2] columns = [GType.STRING, GType.STRING];
-                        super(columns);
-                    }
-                }
-
-                RegionListStore regionListStore = new RegionListStore();
-                TreeView treeView = new TreeView(regionListStore);
+                regionListStore = new RegionListStore();
+                treeView = new TreeView(regionListStore);
                 treeView.setRulesHint(true);
-
-                TreeIter iterTop = regionListStore.createIter();
-
-                if(regionSelected) {
-                    static int[2] cols = [0, 1];
-                    string[] vals;
-                    vals ~= "";
-                    vals ~= "";
-                    regionListStore.set(iterTop, cols, vals);
-
-                    regionListStore.append(iterTop);
-                }
 
                 TreeViewColumn column = new TreeViewColumn("Index", new CellRendererText(), "text", 0);
                 treeView.appendColumn(column);
@@ -3579,16 +3583,68 @@ public:
                 column.setSortColumnId(1);
                 column.setSortIndicator(true);
 
-                return treeView;
+                update();
+
+                addWithViewport(treeView);
             }
 
+            final class RegionListStore : ListStore {
+                this() {
+                    static GType[] columns = [GType.ULONG, GType.STRING];
+                    super(columns);
+                }
+            }
+
+            void update() {
+                regionListStore.clear();
+
+                TreeIter selectedIter = _sequenceTreeView.getSelectedIter();
+                if(selectedIter !is null) {
+                    Value name = new Value();
+                    selectedIter.getValue(0, name);
+
+                    Value isRegion = new Value();
+                    selectedIter.getValue(1, isRegion);
+
+                    if(isRegion.getBoolean()) {
+                        Value regionViewIndexValue = new Value();
+                        selectedIter.getValue(2, regionViewIndexValue);
+
+                        size_t regionViewIndex = regionViewIndexValue.getUlong();
+                        RegionView selectedRegion;
+                        if(regionViewIndex >= 0 &&
+                           regionViewIndex < _regionViews.length &&
+                           (selectedRegion = _regionViews[regionViewIndex]) !is null) {
+                            TreeIter iterTop = regionListStore.createIter();
+
+                            foreach(index, editState; selectedRegion.undoHistory.enumerate) {
+                                if(index > 0) {
+                                    regionListStore.append(iterTop);
+                                }
+                                Value stateIndex = new Value();
+                                stateIndex.init(GType.ULONG);
+                                stateIndex.setUlong(index);
+
+                                regionListStore.setValue(iterTop, 0, stateIndex);
+                                regionListStore.setValue(iterTop, 1, "op name");
+                            }
+                        }
+                    }
+                }
+            }
+
+            RegionListStore regionListStore;
             TreeView treeView;
             alias treeView this;
         }
 
         void onRegionSelected(TreeView treeView) {
-            TreeIter iter = treeView.getSelectedIter();
-            _regionHistoryTreeView.setup(iter !is null);
+            _regionHistoryTreeView.update();
+        }
+
+        void update() {
+            _sequenceTreeView.update();
+            _regionHistoryTreeView.update();
         }
 
     private:
@@ -3902,13 +3958,11 @@ public:
             region.audioSequence.addSoftLink(new RegionViewLink(this));
         }
 
-        void drawRegion(ref Scoped!Context cr,
-                        pixels_t yOffset) {
+        void drawRegion(ref Scoped!Context cr, pixels_t yOffset) {
             _drawRegion(cr, _trackView, yOffset, _trackView.heightPixels, region.offset, 1.0);
         }
 
-        void drawRegionMoving(ref Scoped!Context cr,
-                              pixels_t yOffset) {
+        void drawRegionMoving(ref Scoped!Context cr, pixels_t yOffset) {
             TrackView trackView;
             if(previewTrackIndex >= 0 && previewTrackIndex < _trackViews.length) {
                 trackView = _trackViews[previewTrackIndex];
@@ -4215,7 +4269,7 @@ public:
 
         @property TrackView trackView() { return _trackView; }
         @property TrackView trackView(TrackView newTrackView) {
-            _newTrackView = true;
+            _recomputeRegionGradient = true;
             return (_trackView = newTrackView);
         }
 
@@ -4235,6 +4289,9 @@ public:
         @property nframes_t offset(nframes_t newOffset) { return (region.offset = newOffset); }
 
         @property string name() const { return region.name; }
+
+        @property auto undoHistory() { return _editStateHistory.undoHistory; }
+        @property auto redoHistory() { return _editStateHistory.redoHistory; }
 
         bool selected;
         nframes_t previewOffset;
@@ -4415,8 +4472,8 @@ public:
                 }
 
                 // fill the region background with a gradient
-                if(yOffset != _prevYOffset || _newTrackView) {
-                    _newTrackView = false;
+                if(yOffset != _prevYOffset || height != _prevHeight || _recomputeRegionGradient) {
+                    _recomputeRegionGradient = false;
 
                     enum gradientScale1 = 0.80;
                     enum gradientScale2 = 0.65;
@@ -4437,6 +4494,7 @@ public:
                                                      alpha);
                 }
                 _prevYOffset = yOffset;
+                _prevHeight = height;
                 cr.setSource(_regionGradient);
                 cr.fillPreserve();
 
@@ -4808,7 +4866,7 @@ public:
         StateHistory!EditState _editStateHistory;
 
         TrackView _trackView;
-        bool _newTrackView;
+        bool _recomputeRegionGradient;
 
         bool _editMode;
         bool _sliceChanged;
@@ -4823,6 +4881,7 @@ public:
 
         Pattern _regionGradient;
         pixels_t _prevYOffset;
+        pixels_t _prevHeight;
 
         BoundingBox _boundingBox;
         BoundingBox _subregionBox;
@@ -8320,7 +8379,7 @@ public:
 
         // update the track state to the last saved state in the undo history
         void backtrackTracks() {
-            foreach(arrangeState; retro(_arrangeStateHistory.undoHistory[])) {
+            foreach(arrangeState; retro(_arrangeStateHistory.undoHistory)) {
                 if(arrangeState.stateType == ArrangeStateType.tracksEdit) {
                     updateTracks(arrangeState);
                     break;
@@ -8331,7 +8390,7 @@ public:
         // update the selected region state to the last saved state in the undo history
         void backtrackSelectedRegions() {
             bool foundState;
-            foreach(arrangeState; retro(_arrangeStateHistory.undoHistory[])) {
+            foreach(arrangeState; retro(_arrangeStateHistory.undoHistory)) {
                 if(arrangeState.stateType == ArrangeStateType.selectedRegionsEdit) {
                     updateSelectedRegions(arrangeState);
                     foundState = true;
@@ -8381,6 +8440,9 @@ public:
 
     void appendArrangeState(ArrangeState arrangeState) {
         _arrangeStateHistory.appendState(arrangeState);
+        if(_sequenceBrowser !is null && _sequenceBrowser.isVisible()) {
+            _sequenceBrowser.update();
+        }
         _savedState = false;
     }
 
