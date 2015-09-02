@@ -764,7 +764,7 @@ unittest {
     {
         int[] intArray = [1, 2, 3, 4];
         IntSeq intSeq = new IntSeq(intArray);
-
+ 
         assert(intSeq.toArray == [1, 2, 3, 4]);
         assert(intSeq.logicalLength == intArray.length);
 
@@ -1372,6 +1372,11 @@ public:
         _name = name;
     }
 
+    this(AudioSequence other) {
+        this(AudioSegment(other.sequence[].toArray, other.nChannels),
+             other.sampleRate, other.nChannels, other.name ~ " (copy)");
+    }
+
     // create a sequence from a file
     static AudioSequence fromFile(string fileName,
                                   nframes_t sampleRate,
@@ -1544,9 +1549,18 @@ public:
         this(audioSeq, stripExtension(audioSeq.name));
     }
 
-    // create a copy using the same underlying audio sequence
+    // create a copy using the underlying audio sequence of this region
     Region softCopy() {
         Region newRegion = new Region(_audioSeq);
+        newRegion._sliceStartFrame = _sliceStartFrame;
+        newRegion._sliceEndFrame = _sliceEndFrame;
+        newRegion.updateSlice();
+        return newRegion;
+    }
+
+    // create a hard copy by cloning underlying audio sequence of this region
+    Region hardCopy() {
+        Region newRegion = new Region(new AudioSequence(_audioSeq));
         newRegion._sliceStartFrame = _sliceStartFrame;
         newRegion._sliceEndFrame = _sliceEndFrame;
         newRegion.updateSlice();
@@ -3072,6 +3086,11 @@ public:
         editRegion
     }
 
+    enum CopyMode {
+        soft,
+        hard
+    }
+
     enum Action {
         none,
         selectRegion,
@@ -3184,6 +3203,33 @@ public:
                                          _accelGroup, 'x', GdkModifierType.CONTROL_MASK));
             editMenu.append(new MenuItem(&onPaste, "_Paste", "edit.paste", true,
                                          _accelGroup, 'v', GdkModifierType.CONTROL_MASK));
+            Menu copyModeMenu = editMenu.appendSubmenu("_Copy Mode");
+            _softCopyMenuItem = new CheckMenuItem("Soft Copy");
+            _softCopyMenuItem.setDrawAsRadio(true);
+            _softCopyMenuItem.setActive(true);
+            copyModeMenu.append(_softCopyMenuItem);
+            _hardCopyMenuItem = new CheckMenuItem("Hard Copy");
+            _hardCopyMenuItem.setDrawAsRadio(true);
+            _hardCopyMenuItem.setActive(false);
+            copyModeMenu.append(_hardCopyMenuItem);
+            _softCopyMenuItem.addOnToggled(delegate void(CheckMenuItem checkMenuItem) {
+                    if(_softCopyMenuItem.getActive() && _copyMode == CopyMode.hard) {
+                        _copyMode = CopyMode.soft;
+                        _hardCopyMenuItem.setActive(false);
+                    }
+                    else if(!_softCopyMenuItem.getActive() && _copyMode == CopyMode.soft) {
+                        _softCopyMenuItem.setActive(true);
+                    }
+                });
+            _hardCopyMenuItem.addOnToggled(delegate void(CheckMenuItem checkMenuItem) {
+                    if(_hardCopyMenuItem.getActive() && _copyMode == CopyMode.soft) {
+                        _copyMode = CopyMode.hard;
+                        _softCopyMenuItem.setActive(false);
+                    }
+                    else if(!_hardCopyMenuItem.getActive() && _copyMode == CopyMode.hard) {
+                        _hardCopyMenuItem.setActive(true);
+                    }
+                });
             editMenu.addOnDraw(delegate bool(Scoped!Context context, Widget widget) {
                     if(_mode == Mode.arrange) {
                         _undoMenuItem.setSensitive(queryUndoArrange());
@@ -3376,6 +3422,8 @@ public:
 
         MenuItem _undoMenuItem;
         MenuItem _redoMenuItem;
+        CheckMenuItem _softCopyMenuItem;
+        CheckMenuItem _hardCopyMenuItem;
 
         MenuItem _stretchSelectionMenuItem;
         MenuItem _normalizeMenuItem;
@@ -8406,7 +8454,18 @@ public:
                 auto regionView = regionViewState.regionView;
 
                 auto trackView = regionView.trackView;
-                auto newRegionView = trackView.addRegion(regionView.region.softCopy());
+                Region newRegion;
+                final switch(_copyMode) {
+                    case CopyMode.soft:
+                        newRegion = regionView.region.softCopy();
+                        break;
+
+                    case CopyMode.hard:
+                        newRegion = regionView.region.hardCopy();
+                        _audioSequencesApp.put(newRegion.audioSequence);
+                        break;
+                }
+                auto newRegionView = trackView.addRegion(newRegion);
                 newRegionView.sliceStartFrame = regionViewState.sliceStartFrame;
                 newRegionView.sliceEndFrame = regionViewState.sliceEndFrame;
                 newRegionView.selected = true;
@@ -9144,6 +9203,7 @@ private:
     float _verticalScaleFactor = 1;
 
     Mode _mode;
+    CopyMode _copyMode;
     Action _action;
     bool _centeredView;
     MonoTime _doubleClickTime;
