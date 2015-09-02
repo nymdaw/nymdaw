@@ -248,8 +248,16 @@ public:
         return _currentState.state;
     }
 
-    @property auto undoHistory() { return _undoHistory[]; }
-    @property auto redoHistory() { return _redoHistory[]; }
+    @property auto undoHistory() {
+        synchronized(_mutex) {
+            return _undoHistory[];
+        }
+    }
+    @property auto redoHistory() {
+        synchronized(_mutex) {
+            return _redoHistory[];
+        }
+    }
 
 private:
     void _updateCurrentState() {
@@ -1421,17 +1429,19 @@ public:
         }
     }
 
-    void removeSoftLink(Link link) {
-        synchronized(_mutex) {
-            auto softLinkRange = _softLinks[];
-            for(; !softLinkRange.empty; softLinkRange.popFront()) {
-                if(softLinkRange.front is link) {
-                    _softLinks.linearRemove(take(softLinkRange, 1));
-                    break;
+    void removeSoftLink(T)(T link, bool function(T x, T y) equal = function bool(T x, T y) { return x is y; })
+        if(is(T : Link)) {
+            synchronized(_mutex) {
+                auto softLinkRange = _softLinks[];
+                for(; !softLinkRange.empty; softLinkRange.popFront()) {
+                    auto front = cast(T)(softLinkRange.front);
+                    if(front !is null && equal(front, link)) {
+                        _softLinks.linearRemove(take(softLinkRange, 1));
+                        break;
+                    }
                 }
             }
         }
-    }
 
     void updateSoftLinks() {
         synchronized(_mutex) {
@@ -3097,12 +3107,15 @@ public:
             super();
 
             Menu fileMenu = append("_File");
-            fileMenu.append(new MenuItem(&onNew, "_New...", "file.new", true,
-                                         _accelGroup, 'n'));
-            fileMenu.append(new MenuItem(&onImportFile, "_Import Audio...", "file.import", true,
-                                         _accelGroup, 'i'));
-            fileMenu.append(new MenuItem(&onQuit, "_Quit", "file.quit", true,
-                                         _accelGroup, 'q'));
+            fileMenu.append(new MenuItem(delegate void(MenuItem menuItem) { onNew(); },
+                                         "_New...", "file.new", true,
+                                         _accelGroup, 'n', GdkModifierType.CONTROL_MASK));
+            fileMenu.append(new MenuItem(delegate void(MenuItem menuItem) { onImportFile(); },
+                                         "_Import Audio...", "file.import", true,
+                                         _accelGroup, 'i', GdkModifierType.CONTROL_MASK));
+            fileMenu.append(new MenuItem(delegate void(MenuItem menuItem) { onQuit(); },
+                                         "_Quit", "file.quit", true,
+                                         _accelGroup, 'q', GdkModifierType.CONTROL_MASK));
 
             Menu mixerMenu = append("_Mixer");
             _playMenuItem = new MenuItem(&onPlay, "_Play", "mixer.play", true,
@@ -3170,7 +3183,7 @@ public:
                 });
         }
 
-        void onNew(MenuItem menuItem) {
+        void onNew() {
             if(!_savedState) {
                 MessageDialog dialog = new MessageDialog(_parentWindow,
                                                          GtkDialogFlags.MODAL,
@@ -3190,24 +3203,19 @@ public:
             }
         }
 
-        void onQuit(MenuItem menuItem) {
-            if(!_savedState) {
-                MessageDialog dialog = new MessageDialog(_parentWindow,
-                                                         GtkDialogFlags.MODAL,
-                                                         MessageType.QUESTION,
-                                                         ButtonsType.OK_CANCEL,
-                                                         "Are you sure? All unsaved changes will be lost.");
+        void onQuit() {
+            MessageDialog dialog = new MessageDialog(_parentWindow,
+                                                     GtkDialogFlags.MODAL,
+                                                     MessageType.QUESTION,
+                                                     ButtonsType.OK_CANCEL,
+                                                     "Are you sure? All unsaved changes will be lost.");
 
-                auto response = dialog.run();
-                if(response == ResponseType.OK) {
-                    Main.quit();
-                }
-
-                dialog.destroy();
-            }
-            else {
+            auto response = dialog.run();
+            if(response == ResponseType.OK) {
                 Main.quit();
             }
+
+            dialog.destroy();
         }
 
         void onPlay(MenuItem menuItem) {
@@ -3538,18 +3546,28 @@ public:
                     foreach(j, link; audioSeq.softLinks.enumerate) {
                         auto regionViewLink = cast(RegionView.RegionViewLink)(link);
                         if(regionViewLink !is null) {
-                            iterChild = sequenceTreeStore.append(iterTop);
-
-                            Value regionName = new Value(regionViewLink.name);
-                            Value regionViewIndexValue = new Value();
-                            regionViewIndexValue.init(GType.ULONG);
-                            auto regionViewIndex = getRegionViewIndex(regionViewLink.regionView);
-                            if(!regionViewIndex.isNull()) {
-                                regionViewIndexValue.setUlong(regionViewIndex);
+                            bool foundRegion;
+                            foreach(regionView; regionViewLink.regionView.trackView.regionViews) {
+                                if(regionView is regionViewLink.regionView) {
+                                    foundRegion = true;
+                                    break;
+                                }
                             }
-                            sequenceTreeStore.setValue(iterChild, 0, regionName);
-                            sequenceTreeStore.setValue(iterChild, 1, isRegion);
-                            sequenceTreeStore.setValue(iterChild, 2, regionViewIndexValue);
+
+                            if(foundRegion) {
+                                iterChild = sequenceTreeStore.append(iterTop);
+
+                                Value regionName = new Value(regionViewLink.name);
+                                Value regionViewIndexValue = new Value();
+                                regionViewIndexValue.init(GType.ULONG);
+                                auto regionViewIndex = getRegionViewIndex(regionViewLink.regionView);
+                                if(!regionViewIndex.isNull()) {
+                                    regionViewIndexValue.setUlong(regionViewIndex);
+                                }
+                                sequenceTreeStore.setValue(iterChild, 0, regionName);
+                                sequenceTreeStore.setValue(iterChild, 1, isRegion);
+                                sequenceTreeStore.setValue(iterChild, 2, regionViewIndexValue);
+                            }
                         }
                     }
                 }
@@ -3615,18 +3633,25 @@ public:
                         if(regionViewIndex >= 0 &&
                            regionViewIndex < _regionViews.length &&
                            (selectedRegion = _regionViews[regionViewIndex]) !is null) {
-                            TreeIter iterTop = regionListStore.createIter();
+                            _trackLabel.setText("Track: " ~ selectedRegion.trackView.name);
+                            _regionLabel.setText("Region: " ~ selectedRegion.name);
 
+                            TreeIter iterTop;
                             foreach(index, editState; selectedRegion.undoHistory.enumerate) {
                                 if(index > 0) {
-                                    regionListStore.append(iterTop);
-                                }
-                                Value stateIndex = new Value();
-                                stateIndex.init(GType.ULONG);
-                                stateIndex.setUlong(index);
+                                    if(index == 1) {
+                                        iterTop = regionListStore.createIter();
+                                    }
+                                    else {
+                                        regionListStore.append(iterTop);
+                                    }
+                                    Value stateIndex = new Value();
+                                    stateIndex.init(GType.ULONG);
+                                    stateIndex.setUlong(index);
 
-                                regionListStore.setValue(iterTop, 0, stateIndex);
-                                regionListStore.setValue(iterTop, 1, "op name");
+                                    regionListStore.setValue(iterTop, 0, stateIndex);
+                                    regionListStore.setValue(iterTop, 1, editState.description);
+                                }
                             }
                         }
                     }
@@ -3639,12 +3664,23 @@ public:
         }
 
         void onRegionSelected(TreeView treeView) {
+            resetLabels();
             _regionHistoryTreeView.update();
         }
 
-        void update() {
+        void updateSequenceTreeView() {
+            resetLabels();
             _sequenceTreeView.update();
+        }
+
+        void updateRegionHistoryTreeView() {
+            resetLabels();
             _regionHistoryTreeView.update();
+        }
+
+        void resetLabels() {
+            _trackLabel.setText(string.init);
+            _regionLabel.setText(string.init);
         }
 
     private:
@@ -3660,10 +3696,10 @@ public:
             hBox.packStart(_sequenceTreeView, true, true, 0);
 
             auto vBox = new Box(Orientation.VERTICAL, 10);
-            Label trackLabel = new Label("Track label");
-            vBox.packStart(trackLabel, false, false, 0);
-            Label regionLabel = new Label("Region label");
-            vBox.packStart(regionLabel, false, false, 0);
+            _trackLabel = new Label(string.init);
+            vBox.packStart(_trackLabel, false, false, 0);
+            _regionLabel = new Label(string.init);
+            vBox.packStart(_regionLabel, false, false, 0);
             _regionHistoryTreeView = new RegionHistoryTreeView();
             _regionHistoryTreeView.setBorderWidth(15);
             vBox.packEnd(_regionHistoryTreeView, true, true, 0);
@@ -3676,6 +3712,8 @@ public:
 
         SequenceTreeView _sequenceTreeView;
         RegionHistoryTreeView _regionHistoryTreeView;
+        Label _trackLabel;
+        Label _regionLabel;
         Dialog _dialog;
     }
 
@@ -3852,7 +3890,7 @@ public:
                 if(_region.showOnsets) {
                     _region.computeOnsets();
                 }
-                _region.appendEditState(_region.currentEditState(true, true));
+                _region.appendEditState(_region.currentEditState(true, true), "Stretch subregion");
 
                 _canvas.redraw();
             }
@@ -3911,7 +3949,7 @@ public:
                             if(_editRegion.showOnsets) {
                                 _editRegion.computeOnsets();
                             }
-                            _region.appendEditState(_region.currentEditState(true));
+                            _region.appendEditState(_region.currentEditState(true), "Normalize subregion");
                         }
                         else if(entireRegion) {
                             _region.region.normalize(cast(sample_t)(_normalizeGainAdjustment.getValue()),
@@ -3919,7 +3957,7 @@ public:
                             if(_editRegion.showOnsets) {
                                 _editRegion.computeOnsets();
                             }
-                            _region.appendEditState(_region.currentEditState(true));
+                            _region.appendEditState(_region.currentEditState(true), "Normalize region");
                         }
                     });
                 beginProgressTask!(NormalizeState, DefaultProgressTask)(progressTask);
@@ -4161,6 +4199,8 @@ public:
             const(bool) subregionSelected;
             const(nframes_t) subregionStartFrame;
             const(nframes_t) subregionEndFrame;
+
+            string description;
         }
 
         EditState currentEditState(bool audioEdited,
@@ -4192,8 +4232,12 @@ public:
             }
         }
 
-        void appendEditState(EditState editState) {
+        void appendEditState(EditState editState, string description) {
+            editState.description = description;
             _editStateHistory.appendState(editState);
+            if(_sequenceBrowser !is null && _sequenceBrowser.isVisible()) {
+                _sequenceBrowser.updateRegionHistoryTreeView();
+            }
         }
 
         bool queryUndoEdit() {
@@ -4225,6 +4269,10 @@ public:
 
                 _editStateHistory.undo();
                 updateCurrentEditState();
+
+                if(_sequenceBrowser !is null && _sequenceBrowser.isVisible()) {
+                    _sequenceBrowser.updateRegionHistoryTreeView();
+                }
             }
         }
         void redoEdit() {
@@ -4249,6 +4297,10 @@ public:
                 }
 
                 updateCurrentEditState();
+
+                if(_sequenceBrowser !is null && _sequenceBrowser.isVisible()) {
+                    _sequenceBrowser.updateRegionHistoryTreeView();
+                }
             }
         }
 
@@ -7346,8 +7398,6 @@ public:
                         _editRegion.subregionSelected =
                             !(_editRegion.subregionStartFrame == _editRegion.subregionEndFrame);
 
-                        _editRegion.appendEditState(_editRegion.currentEditState(false));
-
                         _setAction(Action.none);
                         redraw();
                         break;
@@ -7473,7 +7523,8 @@ public:
                         _editRegion.appendEditState(_editRegion.currentEditState(true,
                                                                                  true,
                                                                                  true,
-                                                                                 _moveOnsetChannel));
+                                                                                 _moveOnsetChannel),
+                                                    "Three-point stretch");
 
                         redraw();
                         _setAction(Action.none);
@@ -7700,7 +7751,8 @@ public:
                             if(_editRegion.showOnsets) {
                                 _editRegion.computeOnsets();
                             }
-                            _editRegion.appendEditState(_editRegion.currentEditState(true, true));
+                            _editRegion.appendEditState(_editRegion.currentEditState(true, true),
+                                                        "Subregion delete");
 
                             redraw();
                         }
@@ -7806,6 +7858,13 @@ public:
                         }
                         break;
 
+                    case GdkKeysyms.GDK_i:
+                        // if control is pressed, prompt the user to import an audio file
+                        if(controlPressed && _mode == Mode.arrange) {
+                            onImportFile();
+                        }
+                        break;
+
                     case GdkKeysyms.GDK_j:
                         // if control is pressed, jump to a marker that is about to be specified
                         if(controlPressed) {
@@ -7860,6 +7919,20 @@ public:
                         else if(_mode == Mode.editRegion) {
                             _editRegion.region.mute = !_editRegion.region.mute;
                             redraw();
+                        }
+                        break;
+
+                    case GdkKeysyms.GDK_n:
+                        // if control is pressed, prompt the user to start a new session
+                        if(controlPressed && _mode == Mode.arrange) {
+                            _menuBar.onNew();
+                        }
+                        break;
+
+                    case GdkKeysyms.GDK_q:
+                        // if control is pressed, prompt the user to quit the application
+                        if(controlPressed && _mode == Mode.arrange) {
+                            _menuBar.onQuit();
                         }
                         break;
 
@@ -7986,13 +8059,13 @@ public:
 
     void createTrackView(string trackName) {
         _createTrackView(trackName);
-        appendArrangeState(currentArrangeState!(ArrangeStateType.tracksEdit));
+        appendArrangeState(currentArrangeState!(ArrangeStateType.tracksEdit), true);
     }
 
     void createTrackView(string trackName, Region region) {
         auto newTrackView = _createTrackView(trackName);
         newTrackView.addRegion(region);
-        appendArrangeState(currentArrangeState!(ArrangeStateType.tracksEdit));
+        appendArrangeState(currentArrangeState!(ArrangeStateType.tracksEdit), true);
     }
 
     void deleteTrackView(TrackView deleteTrack) {
@@ -8013,7 +8086,7 @@ public:
         _trackViews = trackViewsApp.data;
 
         _redrawAll();
-        appendArrangeState(currentArrangeState!(ArrangeStateType.tracksEdit));
+        appendArrangeState(currentArrangeState!(ArrangeStateType.tracksEdit), true);
     }
 
     void loadRegionsFromFiles(const(string[]) fileNames) {
@@ -8041,7 +8114,7 @@ public:
         }
     }
 
-    void onImportFile(MenuItem menuItem) {
+    void onImportFile() {
         if(_importFileChooser is null) {
             _importFileChooser = new FileChooserDialog("Import Audio file",
                                                        _parentWindow,
@@ -8222,7 +8295,7 @@ public:
             if(_editRegion.showOnsets) {
                 _editRegion.computeOnsets();
             }
-            _editRegion.appendEditState(_editRegion.currentEditState(true, true));
+            _editRegion.appendEditState(_editRegion.currentEditState(true, true), "Cut subregion");
 
             _canvas.redraw();
         }
@@ -8243,7 +8316,7 @@ public:
             if(_editRegion.showOnsets) {
                 _editRegion.computeOnsets();
             }
-            _editRegion.appendEditState(_editRegion.currentEditState(true, true));
+            _editRegion.appendEditState(_editRegion.currentEditState(true, true), "Paste subregion");
 
             _canvas.redraw();
         }
@@ -8300,7 +8373,7 @@ public:
             }
 
             _computeEarliestSelectedRegion();
-            appendArrangeState(currentArrangeState!(ArrangeStateType.tracksEdit));
+            appendArrangeState(currentArrangeState!(ArrangeStateType.tracksEdit), true);
 
             _canvas.redraw();
         }
@@ -8438,10 +8511,10 @@ public:
         _arrangeChannelStrip.redraw();
     }
 
-    void appendArrangeState(ArrangeState arrangeState) {
+    void appendArrangeState(ArrangeState arrangeState, bool updateSequenceBrowser = false) {
         _arrangeStateHistory.appendState(arrangeState);
-        if(_sequenceBrowser !is null && _sequenceBrowser.isVisible()) {
-            _sequenceBrowser.update();
+        if(updateSequenceBrowser && _sequenceBrowser !is null && _sequenceBrowser.isVisible()) {
+            _sequenceBrowser.updateSequenceTreeView();
         }
         _savedState = false;
     }
@@ -8457,12 +8530,20 @@ public:
         if(queryUndoArrange()) {
             _arrangeStateHistory.undo();
             updateCurrentArrangeState();
+
+            if(_sequenceBrowser !is null && _sequenceBrowser.isVisible()) {
+                _sequenceBrowser.updateSequenceTreeView();
+            }
         }
     }
     void arrangeRedo() {
         if(queryRedoArrange()) {
             _arrangeStateHistory.redo();
             updateCurrentArrangeState();
+
+            if(_sequenceBrowser !is null && _sequenceBrowser.isVisible()) {
+                _sequenceBrowser.updateSequenceTreeView();
+            }
         }
     }
 
@@ -8578,7 +8659,8 @@ private:
     void _createArrangeMenu() {
         _arrangeMenu = new Menu();
 
-        _arrangeMenu.append(new MenuItem(&onImportFile, "_Import file...", true));
+        _arrangeMenu.append(new MenuItem(delegate void(MenuItem menuItem) { onImportFile(); },
+                                         "_Import file...", true));
         _arrangeMenu.append(new MenuItem(&onEditRegion, "_Edit Region", "arrange.editRegion", true,
                                          _accelGroup, 'e', cast(GdkModifierType)(0)));
 
@@ -8901,7 +8983,7 @@ private:
         }
         _regionViews = regionViewsApp.data;
 
-        appendArrangeState(currentArrangeState!(ArrangeStateType.tracksEdit));
+        appendArrangeState(currentArrangeState!(ArrangeStateType.tracksEdit), true);
     }
 
     void _redrawAll() {
