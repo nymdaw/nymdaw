@@ -1170,14 +1170,6 @@ sample_t[] convertSampleRate(sample_t[] audioBuffer,
 // stores the min/max sample values of a single-channel waveform at a specified binning size
 final class WaveformBinned {
 public:
-    @property nframes_t binSize() const { return _binSize; }
-    @property const(sample_t[]) minValues() const { return _minValues; }
-    @property const(sample_t[]) maxValues() const { return _maxValues; }
-
-    WaveformBinned opSlice(size_t startIndex, size_t endIndex) {
-        return new WaveformBinned(_binSize, _minValues[startIndex .. endIndex], _maxValues[startIndex .. endIndex]);
-    }
-
     // compute this cache via raw audio data
     this(nframes_t binSize, sample_t[] audioBuffer, channels_t nChannels, channels_t channelIndex) {
         assert(binSize > 0);
@@ -1200,16 +1192,17 @@ public:
     }
 
     // compute this cache via another cache
-    this(nframes_t binSize, const(WaveformBinned) other) {
+    this(nframes_t binSize, in WaveformBinned other) {
         assert(binSize > 0);
 
-        auto binScale = binSize / other.binSize;
+        auto immutable binScale = binSize / other.binSize;
         _binSize = binSize;
-        _minValues = new sample_t[](other.minValues.length / binScale);
-        _maxValues = new sample_t[](other.maxValues.length / binScale);
 
         immutable size_t srcCount = min(other.minValues.length, other.maxValues.length);
         immutable size_t destCount = srcCount / binScale;
+        _minValues = new sample_t[](destCount);
+        _maxValues = new sample_t[](destCount);
+
         for(auto i = 0, j = 0; i < srcCount && j < destCount; i += binScale, ++j) {
             for(auto k = 0; k < binScale; ++k) {
                 _minValues[j] = 1;
@@ -1231,6 +1224,14 @@ public:
         _maxValues = maxValues;
     }
 
+    @property nframes_t binSize() const { return _binSize; }
+    @property const(sample_t[]) minValues() const { return _minValues; }
+    @property const(sample_t[]) maxValues() const { return _maxValues; }
+
+    WaveformBinned opSlice(size_t startIndex, size_t endIndex) {
+        return new WaveformBinned(_binSize, _minValues[startIndex .. endIndex], _maxValues[startIndex .. endIndex]);
+    }
+
 private:
     nframes_t _binSize;
     sample_t[] _minValues;
@@ -1239,18 +1240,14 @@ private:
 
 final class WaveformCache {
 public:
-    static immutable nframes_t[] cacheBinSizes = [10, 100];
+    static immutable nframes_t[] cacheBinSizes = [10, 20, 50, 100];
     static assert(cacheBinSizes.length > 0);
 
     static Nullable!size_t getCacheIndex(nframes_t binSize) {
-        nframes_t binSizeMatch;
         Nullable!size_t cacheIndex;
-        foreach(i, s; cacheBinSizes) {
-            if(s <= binSize && binSize % s == 0) {
+        foreach(i, cacheBinSize; cacheBinSizes) {
+            if(binSize == cacheBinSize) {
                 cacheIndex = i;
-                binSizeMatch = s;
-            }
-            else {
                 break;
             }
         }
@@ -1261,16 +1258,30 @@ public:
         // initialize the cache
         _waveformBinnedChannels = null;
         _waveformBinnedChannels.reserve(nChannels);
-        for(auto c = 0; c < nChannels; ++c) {
+        for(channels_t channelIndex = 0; channelIndex < nChannels; ++channelIndex) {
             WaveformBinned[] channelsBinned;
             channelsBinned.reserve(cacheBinSizes.length);
 
             // compute the first cache from the raw audio data
-            channelsBinned ~= new WaveformBinned(cacheBinSizes[0], audioBuffer, nChannels, c);
+            channelsBinned ~= new WaveformBinned(cacheBinSizes[0], audioBuffer, nChannels, channelIndex);
 
             // compute the subsequent caches from previously computed caches
-            foreach(binSize; cacheBinSizes[1 .. $]) {
-                channelsBinned ~= new WaveformBinned(binSize, channelsBinned[$ - 1]);
+            foreach(binIndex, binSize; cacheBinSizes[1 .. $]) {
+                // find a suitable cache from which to compute the next cache
+                Nullable!WaveformBinned prevWaveformBinned;
+                foreach(waveformBinned; retro(channelsBinned)) {
+                    if(binSize % waveformBinned.binSize == 0) {
+                        prevWaveformBinned = waveformBinned;
+                        break;
+                    }
+                }
+
+                if(prevWaveformBinned.isNull()) {
+                    channelsBinned ~= new WaveformBinned(binSize, audioBuffer, nChannels, channelIndex);
+                }
+                else {
+                    channelsBinned ~= new WaveformBinned(binSize, prevWaveformBinned);
+                }
             }
             _waveformBinnedChannels ~= channelsBinned;
         }
@@ -4705,7 +4716,7 @@ public:
                 OnsetDrawState onsetDrawState;
 
                 // draw the region's waveform
-                auto cacheIndex = WaveformCache.getCacheIndex(_zoomStep);
+                auto cacheIndex = WaveformCache.getCacheIndex(_zoomBinSize());
                 auto channelYOffset = bodyYOffset + (channelHeight / 2);
                 for(channels_t channelIndex = 0; channelIndex < region.nChannels; ++channelIndex) {
                     pixels_t startPixel = (moveOnset && onsetPixelsStart < 0 && firstScaleFactor != 0) ?
@@ -8661,31 +8672,6 @@ public:
     @property nframes_t viewMaxSamples() { return _mixer.lastFrame + viewWidthSamples; }
 
 private:
-    enum _zoomStep = 10;
-    @property size_t _zoomMultiplier() const {
-        if(_samplesPerPixel > 2000) {
-            return 20;
-        }
-        if(_samplesPerPixel > 1000) {
-            return 10;
-        }
-        if(_samplesPerPixel > 700) {
-            return 5;
-        }
-        if(_samplesPerPixel > 400) {
-            return 4;
-        }
-        else if(_samplesPerPixel > 200) {
-            return 3;
-        }
-        else if(_samplesPerPixel > 100) {
-            return 2;
-        }
-        else {
-            return 1;
-        }
-    }
-
     enum _verticalZoomFactor = 1.2f;
     enum _verticalZoomFactorMax = _verticalZoomFactor * 3;
     enum _verticalZoomFactorMin = _verticalZoomFactor / 10;
@@ -8773,20 +8759,49 @@ private:
         }
     }
 
+    nframes_t _zoomBinSize() {
+        if(_samplesPerPixel >= 600) {
+            return 100;
+        }
+        else if(_samplesPerPixel >= 300) {
+            return 50;
+        }
+        else if(_samplesPerPixel >= 100) {
+            return 20;
+        }
+        else {
+            return 10;
+        }
+    }
+
     void _zoomIn() {
-        auto zoomCount = _zoomMultiplier;
-        for(auto i = 0; i < zoomCount; ++i) {
-            auto step = _zoomStep;
-            _samplesPerPixel = max(_samplesPerPixel - step, 10);
+        if(_samplesPerPixel > 600) {
+            _samplesPerPixel -= 100;
+        }
+        else if(_samplesPerPixel > 300) {
+            _samplesPerPixel -= 50;
+        }
+        else if(_samplesPerPixel > 100) {
+            _samplesPerPixel -= 20;
+        }
+        else if(_samplesPerPixel > 10) {
+            _samplesPerPixel -= 10;
         }
         _canvas.redraw();
         _hScroll.reconfigure();
     }
     void _zoomOut() {
-        auto zoomCount = _zoomMultiplier;
-        for(auto i = 0; i < zoomCount; ++i) {
-            auto step = _zoomStep;
-            _samplesPerPixel += step;
+        if(_samplesPerPixel >= 600) {
+            _samplesPerPixel += 100;
+        }
+        else if(_samplesPerPixel >= 300) {
+            _samplesPerPixel += 50;
+        }
+        else if(_samplesPerPixel >= 100) {
+            _samplesPerPixel += 20;
+        }
+        else {
+            _samplesPerPixel += 10;
         }
         _canvas.redraw();
         _hScroll.reconfigure();
