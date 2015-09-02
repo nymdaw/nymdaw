@@ -991,7 +991,7 @@ public:
 
     enum stepsPerStage = 5;
 
-    alias Callback = void delegate(Stage stage, double stageFraction);
+    alias Callback = bool delegate(Stage stage, double stageFraction);
 
     this(Stage stage, double stageFraction) {
         this.stage = stage;
@@ -1051,11 +1051,32 @@ auto progressTask(Task)(string name, Task task) {
     return ProgressTask!Task(name, task);
 }
 
-auto progressTaskCallback(ProgressState)() if(__traits(isSame, TemplateOf!ProgressState, .ProgressState)) {
-    Tid callbackTid = thisTid;
-    return delegate(ProgressState.Stage stage, double stageFraction) {
-        send(callbackTid, ProgressState(stage, stageFraction));
-    };
+struct ProgressTaskCallback(ProgressState) if(__traits(isSame, TemplateOf!ProgressState, .ProgressState)) {
+    this(Tid callbackTid) {
+        this.callbackTid = callbackTid;
+    }
+
+    @disable this();
+
+    @property ProgressState.Callback callback() {
+        return delegate(ProgressState.Stage stage, double stageFraction) {
+            if(!registeredThread) {
+                register(ProgressState.mangleof, thisTid);
+            }
+
+            send(callbackTid, ProgressState(stage, stageFraction));
+
+            if(!cancelled) {
+                receiveTimeout(0.msecs, (bool cancel) { cancelled = cancel; });
+            }
+            return !cancelled;
+        };
+    }
+    alias callback this;
+
+    Tid callbackTid;
+    bool registeredThread;
+    bool cancelled;
 }
 
 alias LoadState = ProgressState!(StageDesc("read", "Loading file"),
@@ -1102,7 +1123,7 @@ sample_t[] convertSampleRate(sample_t[] audioBuffer,
                              nframes_t newSampleRate,
                              LoadState.Callback progressCallback = null) {
     if(newSampleRate != oldSampleRate && newSampleRate > 0) {
-        if(progressCallback) {
+        if(progressCallback !is null) {
             progressCallback(LoadState.resample, 0);
         }
 
@@ -1136,7 +1157,7 @@ sample_t[] convertSampleRate(sample_t[] audioBuffer,
         }
         dataOut.length = cast(size_t)(srcData.output_frames_gen);
 
-        if(progressCallback) {
+        if(progressCallback !is null) {
             progressCallback(LoadState.resample, 1);
         }
 
@@ -1347,8 +1368,10 @@ public:
         SNDFILE* infile;
         SF_INFO sfinfo;
 
-        if(progressCallback) {
-            progressCallback(LoadState.read, 0);
+        if(progressCallback !is null) {
+            if(!progressCallback(LoadState.read, 0)) {
+                return null;
+            }
         }
 
         // attempt to open the given file
@@ -1385,8 +1408,10 @@ public:
 
             readTotal += readCount;
 
-            if(progressCallback) {
-                progressCallback(LoadState.read, cast(double)(readTotal) / cast(double)(audioBuffer.length));
+            if(progressCallback !is null) {
+                if(!progressCallback(LoadState.read, cast(double)(readTotal) / cast(double)(audioBuffer.length))) {
+                    return null;
+                }
             }
         }
         while(readCount && readTotal < audioBuffer.length);
@@ -1404,16 +1429,21 @@ public:
         }
 
         // construct the region
-        if(progressCallback) {
-            progressCallback(LoadState.computeOverview, 0);
+        if(progressCallback !is null) {
+            if(!progressCallback(LoadState.computeOverview, 0)) {
+                return null;
+            }
         }
         auto newSequence = new AudioSequence(AudioSegment(audioBuffer, nChannels),
                                              sampleRate,
                                              nChannels,
                                              baseName(fileName));
 
-        if(progressCallback) {
-            progressCallback(LoadState.complete, 1.0);
+        if(progressCallback !is null) {
+            if(!progressCallback(LoadState.complete, 1.0)) {
+                newSequence.destroy();
+                return null;
+            }
         }
 
         return newSequence;
@@ -3937,7 +3967,7 @@ public:
             destroyDialog();
 
             if(_region !is null) {
-                auto progressCallback = progressTaskCallback!(NormalizeState);
+                auto progressCallback = ProgressTaskCallback!(NormalizeState)(thisTid);
                 auto progressTask = progressTask(
                     _region.name,
                     delegate void() {
@@ -4013,7 +4043,7 @@ public:
         }
 
         void computeOnsetsIndependentChannels() {
-            auto progressCallback = progressTaskCallback!(ComputeOnsetsState);
+            auto progressCallback = ProgressTaskCallback!(ComputeOnsetsState)(thisTid);
             auto progressTask = progressTask(
                 region.name,
                 delegate void() {
@@ -4038,7 +4068,7 @@ public:
         }
 
         void computeOnsetsLinkedChannels() {
-            auto progressCallback = progressTaskCallback!(ComputeOnsetsState);
+            auto progressCallback = ProgressTaskCallback!(ComputeOnsetsState)(thisTid);
             auto progressTask = progressTask(
                 region.name,
                 delegate void() {
@@ -8090,15 +8120,15 @@ public:
     }
 
     void loadRegionsFromFiles(const(string[]) fileNames) {
-        auto progressCallback = progressTaskCallback!(LoadState);
+        auto progressCallback = ProgressTaskCallback!(LoadState)(thisTid);
         void loadRegionTask(string fileName) {
             auto newSequence = AudioSequence.fromFile(fileName, _mixer.sampleRate, progressCallback);
-            _audioSequencesApp.put(newSequence);
-            Region newRegion = new Region(newSequence);
-            if(newRegion is null) {
+            if(newSequence is null && !progressCallback.cancelled) {
                 ErrorDialog.display(_parentWindow, "Could not load file " ~ baseName(fileName));
             }
             else {
+                _audioSequencesApp.put(newSequence);
+                Region newRegion = new Region(newSequence);
                 createTrackView(newRegion.name, newRegion);
             }
         }
@@ -8109,7 +8139,7 @@ public:
         }
 
         if(regionTaskList.data.length > 0) {
-            beginProgressTask!(LoadState, RegionTask)(regionTaskList.data);
+            beginProgressTask!(LoadState, RegionTask, true)(regionTaskList.data);
             _canvas.redraw();
         }
     }
@@ -8151,7 +8181,7 @@ public:
         }
     }
 
-    auto beginProgressTask(ProgressState, ProgressTask, bool cancelButton = true)(ProgressTask[] taskList)
+    auto beginProgressTask(ProgressState, ProgressTask, bool cancelButton = false)(ProgressTask[] taskList)
         if(__traits(isSame, TemplateOf!ProgressState, .ProgressState) &&
            __traits(isSame, TemplateOf!ProgressTask, .ProgressTask)) {
             enum progressRefreshRate = 10; // in Hz
@@ -8236,7 +8266,11 @@ public:
                                               false);
 
                 progressDialog.showAll();
-                progressDialog.run();
+                auto response = progressDialog.run();
+                if(response != ResponseType.ACCEPT) {
+                    progressTimeout.destroy();
+                    send(locate(ProgressState.mangleof), true);
+                }
             }
 
             if(progressDialog.getWidgetStruct() !is null) {
@@ -8244,7 +8278,7 @@ public:
             }
         }
 
-    void beginProgressTask(ProgressState, ProgressTask, bool cancelButton = true)(ProgressTask task) {
+    void beginProgressTask(ProgressState, ProgressTask, bool cancelButton = false)(ProgressTask task) {
         ProgressTask[] taskList = new ProgressTask[](1);
         taskList[0] = task;
         beginProgressTask!(ProgressState, ProgressTask, cancelButton)(taskList);
