@@ -70,6 +70,7 @@ import gtk.TreeSelection;
 import gtk.TreeViewColumn;
 import gtk.CellRendererText;
 import gtk.ListStore;
+import gtk.FileFilter;
 
 import gtkc.gtktypes;
 
@@ -3241,6 +3242,8 @@ public:
             fileMenu.append(new MenuItem(delegate void(MenuItem menuItem) { onImportFile(); },
                                          "_Import Audio...", "file.import", true,
                                          _accelGroup, 'i', GdkModifierType.CONTROL_MASK));
+            fileMenu.append(new MenuItem(delegate void(MenuItem menuItem) { onExportSession(); },
+                                         "_Export Session...", "file.export", true));
             fileMenu.append(new MenuItem(delegate void(MenuItem menuItem) { onQuit(); },
                                          "_Quit", "file.quit", true,
                                          _accelGroup, 'q', GdkModifierType.CONTROL_MASK));
@@ -8418,9 +8421,12 @@ public:
         }
     }
 
+    void exportSessionToFile(string fileName) {
+    }
+
     void onImportFile() {
         if(_importFileChooser is null) {
-            _importFileChooser = new FileChooserDialog("Import Audio file",
+            _importFileChooser = new FileChooserDialog("Import Audio File",
                                                        _parentWindow,
                                                        FileChooserAction.OPEN,
                                                        null,
@@ -8428,15 +8434,17 @@ public:
             _importFileChooser.setSelectMultiple(true);
         }
 
-        auto fileNames = appender!(string[])();
         auto response = _importFileChooser.run();
         if(response == ResponseType.OK) {
             ListSG fileList = _importFileChooser.getUris();
+            auto fileNames = appender!(string[])();
             for(auto i = 0; i < fileList.length(); ++i) {
                 string hostname;
                 fileNames.put(URI.filenameFromUri(Str.toString(cast(char*)(fileList.nthData(i))), hostname));
             }
             _importFileChooser.hide();
+
+            loadRegionsFromFiles(fileNames.data);
         }
         else if(response == ResponseType.CANCEL) {
             _importFileChooser.hide();
@@ -8445,8 +8453,44 @@ public:
             _importFileChooser.destroy();
             _importFileChooser = null;
         }
+    }
 
-        loadRegionsFromFiles(fileNames.data);
+    void onExportSession() {
+        if(_exportFileChooser is null) {
+            _exportFileChooser = new FileChooserDialog("Export Session",
+                                                       _parentWindow,
+                                                       FileChooserAction.SAVE,
+                                                       null,
+                                                       null);
+            _exportFileChooser.setSelectMultiple(false);
+
+            auto wavFilter = new FileFilter();
+            wavFilter.setName("WAV");
+            wavFilter.addPattern("*.wav");
+            _exportFileChooser.addFilter(wavFilter);
+
+            auto aiffFilter = new FileFilter();
+            aiffFilter.setName("AIFF");
+            _exportFileChooser.addFilter(aiffFilter);
+
+            _exportFileChooser.setFilter(wavFilter);
+        }
+
+        auto response = _exportFileChooser.run();
+        if(response == ResponseType.OK) {
+            string hostname;
+            auto fileName = URI.filenameFromUri(_exportFileChooser.getUri(), hostname);
+            _exportFileChooser.hide();
+
+            exportSessionToFile(fileName);
+        }
+        else if(response == ResponseType.CANCEL) {
+            _exportFileChooser.hide();
+        }
+        else {
+            _exportFileChooser.destroy();
+            _exportFileChooser = null;
+        }
     }
 
     void onEditRegion(MenuItem menuItem) {
@@ -9440,6 +9484,7 @@ private:
 
     Menu _arrangeMenu;
     FileChooserDialog _importFileChooser;
+    FileChooserDialog _exportFileChooser;
 
     Menu _trackMenu;
     Menu _editRegionMenu;
