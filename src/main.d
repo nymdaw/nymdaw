@@ -2412,6 +2412,8 @@ protected:
 
     sample_t[maxBufferLength][2] buffer;
 
+    @property sample_t faderGain() const @nogc nothrow { return _faderGain; }
+
 private:
     const(nframes_t) _sampleRate;
 
@@ -2436,6 +2438,9 @@ public:
                                   nframes_t bufNFrames,
                                   channels_t nChannels) @nogc nothrow {
         for(auto i = 0, j = 0; i < bufNFrames; i += nChannels, ++j) {
+            mixBuf[i] *= faderGain;
+            mixBuf[i + 1] *= faderGain;
+
             buffer[0][j] = mixBuf[i];
             buffer[1][j] = mixBuf[i + 1];
         }
@@ -2448,6 +2453,9 @@ public:
                                      sample_t* mixBuf2,
                                      nframes_t bufNFrames) @nogc nothrow {
         for(auto i = 0; i < bufNFrames; ++i) {
+            mixBuf1[i] *= faderGain;
+            mixBuf2[i] *= faderGain;
+
             buffer[0][i] = mixBuf1[i];
             buffer[1][i] = mixBuf2[i];
         }
@@ -2483,7 +2491,7 @@ package:
                               nframes_t bufNFrames,
                               channels_t nChannels,
                               sample_t* mixBuf) @nogc nothrow {
-        if(!_mute) {
+        if(!mute) {
             sample_t tempSample;
             for(auto i = 0, j = 0; i < bufNFrames; i += nChannels, ++j) {
                 foreach(r; _regions) {
@@ -2492,7 +2500,7 @@ package:
                         if(nChannels == 1) {
                             // mono region
                             if(r.nChannels == 1) {
-                                auto sample = r.getSampleGlobal(0, offset + j) * _faderGain;
+                                auto sample = r.getSampleGlobal(0, offset + j) * faderGain;
 
                                 mixBuf[i] += sample;
                                 if(leftSolo) {
@@ -2510,8 +2518,8 @@ package:
                             }
                             // stereo region
                             else if(r.nChannels >= 2) {
-                                auto sample1 = r.getSampleGlobal(0, offset + j) * _faderGain;
-                                auto sample2 = r.getSampleGlobal(1, offset + j) * _faderGain;
+                                auto sample1 = r.getSampleGlobal(0, offset + j) * faderGain;
+                                auto sample2 = r.getSampleGlobal(1, offset + j) * faderGain;
 
                                 if(leftSolo) {
                                     mixBuf[i] += sample1;
@@ -2534,7 +2542,7 @@ package:
                         else if(nChannels >= 2) {
                             // mono region
                             if(r.nChannels == 1) {
-                                auto sample = r.getSampleGlobal(0, offset + j) * _faderGain;
+                                auto sample = r.getSampleGlobal(0, offset + j) * faderGain;
 
                                 if(leftSolo) {
                                     mixBuf[i] += sample;
@@ -2555,8 +2563,8 @@ package:
                             }
                             // stereo region
                             else if(r.nChannels >= 2) {
-                                auto sample1 = r.getSampleGlobal(0, offset + j) * _faderGain;
-                                auto sample2 = r.getSampleGlobal(1, offset + j) * _faderGain;
+                                auto sample1 = r.getSampleGlobal(0, offset + j) * faderGain;
+                                auto sample2 = r.getSampleGlobal(1, offset + j) * faderGain;
 
                                 if(leftSolo) {
                                     mixBuf[i] += sample1;
@@ -2591,14 +2599,14 @@ package:
                                  nframes_t bufNFrames,
                                  sample_t* mixBuf1,
                                  sample_t* mixBuf2) @nogc nothrow {
-        if(!_mute) {
+        if(!mute) {
             sample_t tempSample;
             for(auto i = 0; i < bufNFrames; ++i) {
                 foreach(r; _regions) {
                     if(!r.mute()) {
                         // mono region
                         if(r.nChannels == 1) {
-                            auto sample = r.getSampleGlobal(0, offset + i) * _faderGain;
+                            auto sample = r.getSampleGlobal(0, offset + i) * faderGain;
 
                             if(leftSolo) {
                                 mixBuf1[i] += sample;
@@ -2619,8 +2627,8 @@ package:
                         }
                         // stereo region
                         else if(r.nChannels >= 2) {
-                            auto sample1 = r.getSampleGlobal(0, offset + i) * _faderGain;
-                            auto sample2 = r.getSampleGlobal(1, offset + i) * _faderGain;
+                            auto sample1 = r.getSampleGlobal(0, offset + i) * faderGain;
+                            auto sample2 = r.getSampleGlobal(1, offset + i) * faderGain;
 
                             if(leftSolo) {
                                 mixBuf1[i] += sample1;
@@ -2773,18 +2781,15 @@ public:
                 }
             }
 
+            if(_masterBus !is null) {
+                _masterBus.processStereoInterleaved(mixBuf, bufNFrames, nChannels);
+            }
+
             _transportOffset += bufNFrames / nChannels;
 
             if(_looping && _transportOffset >= _loopEnd) {
                 _transportOffset = _loopStart;
             }
-
-            if(_masterBus !is null) {
-                _masterBus.processStereoInterleaved(mixBuf, bufNFrames, nChannels);
-            }
-        }
-        else if(_masterBus !is null) {
-            _masterBus.processSilence(bufNFrames / nChannels);
         }
     }
 
@@ -2807,18 +2812,15 @@ public:
                 t.mixStereoNonInterleaved(_transportOffset, bufNFrames, mixBuf1, mixBuf2);
             }
 
+            if(_masterBus !is null) {
+                _masterBus.processStereoNonInterleaved(mixBuf1, mixBuf2, bufNFrames);
+            }
+
             _transportOffset += bufNFrames;
 
             if(_looping && _transportOffset >= _loopEnd) {
                 _transportOffset = _loopStart;
             }
-
-            if(_masterBus !is null) {
-                _masterBus.processStereoNonInterleaved(mixBuf1, mixBuf2, bufNFrames);
-            }
-        }
-        else if(_masterBus !is null) {
-            _masterBus.processSilence(bufNFrames);
         }
     }
 
@@ -3311,6 +3313,13 @@ public:
             Menu trackMenu = append("_Track");
             trackMenu.append(new MenuItem(&onNewTrack, "_New Track", "track.new", true));
             trackMenu.append(new MenuItem(&onDeleteTrack, "_Delete Track", "track.delete", true));
+            auto renameTrackMenuItem = new MenuItem(delegate void(MenuItem) { new RenameTrackDialog(); },
+                                                    "Rename Track...");
+            trackMenu.append(renameTrackMenuItem);
+            trackMenu.addOnDraw(delegate bool(Scoped!Context context, Widget widget) {
+                    renameTrackMenuItem.setSensitive(_selectedTrack !is null);
+                    return false;
+                });
 
             Menu regionMenu = append("_Region");
             _createEditRegionMenu(regionMenu,
@@ -3381,7 +3390,7 @@ public:
 
         void onUndo(MenuItem menuItem) {
             if(_mode == Mode.arrange) {
-                arrangeUndo();
+                undoArrange();
             }
             else if(_mode == Mode.editRegion) {
                 _editRegion.undoEdit();
@@ -3391,7 +3400,7 @@ public:
 
         void onRedo(MenuItem menuItem) {
             if(_mode == Mode.arrange) {
-                arrangeRedo();
+                redoArrange();
             }
             else if(_mode == Mode.editRegion) {
                 editRegionRedo();
@@ -3946,6 +3955,7 @@ public:
                 destroyDialog();
 
                 _trackStubs.redraw();
+                _arrangeChannelStrip.redraw();
             }
             else {
                 destroyDialog();
@@ -6514,7 +6524,7 @@ public:
                 }
                 _doubleClickTime = MonoTime.currTime;
 
-                bool mouseAction;
+                bool caughtMouseEvent;
                 if(event.button.button == leftButton) {
                     if(_selectedTrackChannelStrip !is null) {
                         if(_selectedTrackChannelStrip.faderBox.containsPoint(_mouseX, _mouseY) ||
@@ -6522,23 +6532,23 @@ public:
                             if(doubleClick) {
                                 _selectedTrackChannelStrip.zeroFader();
                                 redraw();
-                                mouseAction = true;
+                                caughtMouseEvent = true;
                             }
                             else {
                                 _selectedTrackFaderMoving = true;
                                 _selectedTrackFaderStartGainDB = _selectedTrack.faderGainDB;
-                                mouseAction = true;
+                                caughtMouseEvent = true;
                             }
                         }
                         else if(_selectedTrackChannelStrip.meterBox.containsPoint(_mouseX, _mouseY) ||
                                 _selectedTrackChannelStrip.meterReadoutBox.containsPoint(_mouseX, _mouseY)) {
                             _selectedTrackChannelStrip.resetMeters();
                             redraw();
-                            mouseAction = true;
+                            caughtMouseEvent = true;
                         }
                     }
 
-                    if(!mouseAction) {
+                    if(!caughtMouseEvent) {
                         if(_masterBusView.channelStrip.faderBox.containsPoint(_mouseX, _mouseY) ||
                            _masterBusView.channelStrip.faderReadoutBox.containsPoint(_mouseX, _mouseY)) {
                             if(doubleClick) {
@@ -6573,8 +6583,7 @@ public:
                 if(_masterBusFaderMoving) {
                     _masterBusFaderMoving = false;
                     if(_masterBusFaderStartGainDB != _masterBusView.faderGainDB) {
-                        // TODO implement this
-                        //appendArrangeState(currentArrangeState!(ArrangeStateType.masterBusEdit));
+                        appendArrangeState(currentArrangeState!(ArrangeStateType.masterBusEdit));
                     }
                 }
             }
@@ -7742,19 +7751,20 @@ public:
                             }
 
                             if(regionView.previewTrackIndex >= 0 &&
-                               regionView.previewTrackIndex < _trackViews.length) {
+                               regionView.previewTrackIndex < _trackViews.length &&
+                               regionView.previewTrackIndex != _trackIndex(regionView.trackView)) {
                                 regionView.trackView = _trackViews[regionView.previewTrackIndex];
                                 tracksModified = true;
                             }
                         }
 
+                        if(regionModified) {
+                            appendArrangeState(currentArrangeState!(ArrangeStateType.selectedRegionsEdit));
+                        }
                         if(tracksModified) {
                             appendArrangeState(currentArrangeState!(ArrangeStateType.tracksEdit));
                         }
-                        else if(regionModified) {
-                            appendArrangeState(currentArrangeState!(ArrangeStateType.selectedRegionsEdit));
-                        }
-                        else {
+                        if(!regionModified && !tracksModified) {
                             break;
                         }
 
@@ -8254,7 +8264,7 @@ public:
 
                     case GdkKeysyms.GDK_y:
                         if(_mode == Mode.arrange) {
-                            arrangeRedo();
+                            redoArrange();
                             redraw();
                         }
                         else if(_mode == Mode.editRegion) {
@@ -8264,7 +8274,7 @@ public:
 
                     case GdkKeysyms.GDK_z:
                         if(_mode == Mode.arrange) {
-                            arrangeUndo();
+                            undoArrange();
                         }
                         else if(_mode == Mode.editRegion) {
                             editRegionUndo();
@@ -8689,7 +8699,10 @@ public:
     }
 
     @property ArrangeState currentArrangeState(ArrangeStateType stateType)() {
-        static if(stateType == ArrangeStateType.tracksEdit) {
+        static if(stateType == ArrangeStateType.masterBusEdit) {
+            return ArrangeState(stateType, ChannelViewState(_masterBusView.faderGainDB));
+        }
+        else if(stateType == ArrangeStateType.tracksEdit) {
             auto trackStatesApp = appender!(TrackViewState[]);
             foreach(trackView; _trackViews) {
                 trackStatesApp.put(TrackViewState(trackView,
@@ -8716,6 +8729,10 @@ public:
     }
 
     void updateCurrentArrangeState() {
+        void updateMasterBus(ArrangeState arrangeState) {
+            _masterBusView.faderGainDB = arrangeState.masterBusState.faderGainDB;
+        }
+
         void updateTracks(ArrangeState arrangeState) {
             auto trackViewsApp = appender!(TrackView[]);
             auto regionViewsApp = appender!(RegionView[]);
@@ -8759,6 +8776,19 @@ public:
             }
         }
 
+        // update the master bus state to the last saved state in the undo history
+        void backtrackMasterBus() {
+            foreach(arrangeState; retro(_arrangeStateHistory.undoHistory)) {
+                if(arrangeState.stateType == ArrangeStateType.masterBusEdit) {
+                    updateMasterBus(arrangeState);
+                    return;
+                }
+            }
+
+            // if no state was found, reinitialize the master bus fader
+            _masterBusView.channelStrip.zeroFader();
+        }
+
         // update the track state to the last saved state in the undo history
         void backtrackTracks() {
             foreach(arrangeState; retro(_arrangeStateHistory.undoHistory)) {
@@ -8776,6 +8806,7 @@ public:
                 if(arrangeState.stateType == ArrangeStateType.selectedRegionsEdit) {
                     updateSelectedRegions(arrangeState);
                     foundState = true;
+
                     break;
                 }
             }
@@ -8789,6 +8820,8 @@ public:
 
         final switch(_arrangeStateHistory.currentState.stateType) {
             case ArrangeStateType.empty:
+                _masterBusView.channelStrip.zeroFader();
+
                 foreach(regionView; _selectedRegions) {
                     regionView.selected = false;
                 }
@@ -8798,17 +8831,25 @@ public:
                 _trackViews = [];
                 break;
 
+            case ArrangeStateType.masterBusEdit:
+                backtrackMasterBus();
+                updateMasterBus(_arrangeStateHistory.currentState);
+                break;
+
             case ArrangeStateType.tracksEdit:
+                backtrackMasterBus();
                 backtrackSelectedRegions();
                 updateTracks(_arrangeStateHistory.currentState);
                 break;
 
             case ArrangeStateType.selectedTrackEdit:
+                backtrackMasterBus();
                 backtrackSelectedRegions();
                 updateSelectedTrack(_arrangeStateHistory.currentState);
                 break;
 
             case ArrangeStateType.selectedRegionsEdit:
+                backtrackMasterBus();
                 backtrackTracks();
                 updateSelectedRegions(_arrangeStateHistory.currentState);
                 break;
@@ -8835,7 +8876,7 @@ public:
         return _arrangeStateHistory.queryRedo();
     }
 
-    void arrangeUndo() {
+    void undoArrange() {
         if(queryUndoArrange()) {
             _arrangeStateHistory.undo();
             updateCurrentArrangeState();
@@ -8845,7 +8886,7 @@ public:
             }
         }
     }
-    void arrangeRedo() {
+    void redoArrange() {
         if(queryRedoArrange()) {
             _arrangeStateHistory.redo();
             updateCurrentArrangeState();
@@ -8856,6 +8897,9 @@ public:
         }
     }
 
+    static struct ChannelViewState {
+        sample_t faderGainDB;
+    }
     static struct TrackViewState {
         TrackView trackView;
         RegionView[] regionViews;
@@ -8875,6 +8919,7 @@ public:
 
     enum ArrangeStateType {
         empty,
+        masterBusEdit,
         tracksEdit,
         selectedTrackEdit,
         selectedRegionsEdit
@@ -8919,6 +8964,7 @@ public:
         }
 
         static union StateData {
+            ChannelViewState masterBusState;
             TrackViewStateList trackStates;
             TrackViewState selectedTrackState;
             RegionViewState[] selectedRegionStates;
@@ -9273,6 +9319,7 @@ private:
     void _selectTrack(TrackView trackView) {
         _selectedTrack = trackView;
         _arrangeChannelStrip.update();
+        _arrangeChannelStrip.redraw();
     }
 
     void _removeSelectedRegions() {
