@@ -2317,7 +2317,7 @@ private:
     string _name; // name for this region
 }
 
-class Channel {
+abstract class Channel {
     this(nframes_t sampleRate) {
         _sampleRate = sampleRate;
 
@@ -2779,9 +2779,11 @@ public:
                 _transportOffset = _loopStart;
             }
 
-            _masterBus.processStereoInterleaved(mixBuf, bufNFrames, nChannels);
+            if(_masterBus !is null) {
+                _masterBus.processStereoInterleaved(mixBuf, bufNFrames, nChannels);
+            }
         }
-        else {
+        else if(_masterBus !is null) {
             _masterBus.processSilence(bufNFrames / nChannels);
         }
     }
@@ -2811,9 +2813,11 @@ public:
                 _transportOffset = _loopStart;
             }
 
-            _masterBus.processStereoNonInterleaved(mixBuf1, mixBuf2, bufNFrames);
+            if(_masterBus !is null) {
+                _masterBus.processStereoNonInterleaved(mixBuf1, mixBuf2, bufNFrames);
+            }
         }
-        else {
+        else if(_masterBus !is null) {
             _masterBus.processSilence(bufNFrames);
         }
     }
@@ -5845,15 +5849,15 @@ public:
             updateFaderFromChannel();
         }
 
-        void draw(ref Scoped!Context cr) {
+        void draw(ref Scoped!Context cr, pixels_t channelStripXOffset) {
             immutable pixels_t windowWidth = cast(pixels_t)(getWindow().getWidth());
             immutable pixels_t windowHeight = cast(pixels_t)(getWindow().getHeight());
 
             _faderYOffset = windowHeight - (meterHeightPixels + faderHeightPixels / 2 + 25);
 
-            immutable pixels_t faderXOffset = 20;
+            immutable pixels_t faderXOffset = channelStripXOffset + 20;
             immutable pixels_t meterXOffset = faderXOffset + faderBackgroundWidthPixels + 35;
-            immutable pixels_t labelXOffset = channelStripWidth / 2;
+            immutable pixels_t labelXOffset = channelStripXOffset + channelStripWidth / 2;
 
             drawFader(cr, faderXOffset, _faderYOffset);
             drawMeter(cr, meterXOffset, _faderYOffset);
@@ -6402,6 +6406,8 @@ public:
             if(_selectedTrack !is null) {
                 _selectedTrackChannelStrip = _selectedTrack.channelStrip;
                 _selectedTrackChannelStrip.updateFaderFromChannel();
+
+                _masterBusView.channelStrip.updateFaderFromChannel();
             }
             else {
                 _selectedTrackChannelStrip = null;
@@ -6426,7 +6432,7 @@ public:
 
             // draw the channel strip for the currently selected track
             if(_selectedTrackChannelStrip !is null) {
-                _selectedTrackChannelStrip.draw(cr);
+                _selectedTrackChannelStrip.draw(cr, 0);
             }
 
             // draw the channel strip for the master bus
@@ -6434,8 +6440,7 @@ public:
                 cr.save();
                 scope(exit) cr.restore();
 
-                cr.translate(ChannelStrip.channelStripWidth, 0);
-                _masterBusView.channelStrip.draw(cr);
+                _masterBusView.channelStrip.draw(cr, ChannelStrip.channelStripWidth);
             }
 
             // draw right borders
@@ -6465,7 +6470,10 @@ public:
                 trackView.channelStrip.refresh();
             }
 
-            if(_selectedTrackChannelStrip !is null && _selectedTrackChannelStrip.redrawRequested) {
+            _masterBusView.channelStrip.refresh();
+
+            if((_selectedTrackChannelStrip !is null && _selectedTrackChannelStrip.redrawRequested) ||
+               _masterBusView.channelStrip.redrawRequested) {
                 redraw();
             }
 
@@ -6476,6 +6484,8 @@ public:
             if(_selectedTrackChannelStrip !is null) {
                 _selectedTrackChannelStrip.sizeChanged();
             }
+
+            _masterBusView.channelStrip.sizeChanged();
         }
 
         bool onMotionNotify(Event event, Widget widget) {
@@ -6485,6 +6495,10 @@ public:
 
                 if(_selectedTrackChannelStrip !is null && _selectedTrackFaderMoving) {
                     _selectedTrackChannelStrip.updateFaderFromMouse(_mouseY);
+                    redraw();
+                }
+                else if(_masterBusFaderMoving) {
+                    _masterBusView.channelStrip.updateFaderFromMouse(_mouseY);
                     redraw();
                 }
             }
@@ -6500,22 +6514,45 @@ public:
                 }
                 _doubleClickTime = MonoTime.currTime;
 
-                if(_selectedTrackChannelStrip !is null) {
-                    if(event.button.button == leftButton) {
+                bool mouseAction;
+                if(event.button.button == leftButton) {
+                    if(_selectedTrackChannelStrip !is null) {
                         if(_selectedTrackChannelStrip.faderBox.containsPoint(_mouseX, _mouseY) ||
                            _selectedTrackChannelStrip.faderReadoutBox.containsPoint(_mouseX, _mouseY)) {
                             if(doubleClick) {
                                 _selectedTrackChannelStrip.zeroFader();
                                 redraw();
+                                mouseAction = true;
                             }
                             else {
                                 _selectedTrackFaderMoving = true;
                                 _selectedTrackFaderStartGainDB = _selectedTrack.faderGainDB;
+                                mouseAction = true;
                             }
                         }
                         else if(_selectedTrackChannelStrip.meterBox.containsPoint(_mouseX, _mouseY) ||
                                 _selectedTrackChannelStrip.meterReadoutBox.containsPoint(_mouseX, _mouseY)) {
                             _selectedTrackChannelStrip.resetMeters();
+                            redraw();
+                            mouseAction = true;
+                        }
+                    }
+
+                    if(!mouseAction) {
+                        if(_masterBusView.channelStrip.faderBox.containsPoint(_mouseX, _mouseY) ||
+                           _masterBusView.channelStrip.faderReadoutBox.containsPoint(_mouseX, _mouseY)) {
+                            if(doubleClick) {
+                                _masterBusView.channelStrip.zeroFader();
+                                redraw();
+                            }
+                            else {
+                                _masterBusFaderMoving = true;
+                                _masterBusFaderStartGainDB = _masterBusView.faderGainDB;
+                            }
+                        }
+                        else if(_masterBusView.channelStrip.meterBox.containsPoint(_mouseX, _mouseY) ||
+                                _masterBusView.channelStrip.meterReadoutBox.containsPoint(_mouseX, _mouseY)) {
+                            _masterBusView.channelStrip.resetMeters();
                             redraw();
                         }
                     }
@@ -6532,6 +6569,14 @@ public:
                         appendArrangeState(currentArrangeState!(ArrangeStateType.selectedTrackEdit));
                     }
                 }
+
+                if(_masterBusFaderMoving) {
+                    _masterBusFaderMoving = false;
+                    if(_masterBusFaderStartGainDB != _masterBusView.faderGainDB) {
+                        // TODO implement this
+                        //appendArrangeState(currentArrangeState!(ArrangeStateType.masterBusEdit));
+                    }
+                }
             }
             return false;
         }
@@ -6542,6 +6587,9 @@ public:
         ChannelStrip _selectedTrackChannelStrip;
         bool _selectedTrackFaderMoving;
         sample_t _selectedTrackFaderStartGainDB;
+
+        bool _masterBusFaderMoving;
+        sample_t _masterBusFaderStartGainDB;
 
         pixels_t _mouseX;
         pixels_t _mouseY;
