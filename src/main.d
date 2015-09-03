@@ -2317,7 +2317,152 @@ private:
     string _name; // name for this region
 }
 
-final class Track {
+class Channel {
+    this(nframes_t sampleRate) {
+        _sampleRate = sampleRate;
+
+        _meter[0] = new TruePeakDSP();
+        _meter[1] = new TruePeakDSP();
+        _meter[0].init(_sampleRate);
+        _meter[1].init(_sampleRate);
+    }
+
+    @property final nframes_t sampleRate() const { return _sampleRate; }
+
+    @property final bool mute() const @nogc nothrow { return _mute; }
+    @property final bool mute(bool enable) { return (_mute = enable); }
+    @property final bool solo() const @nogc nothrow { return _solo; }
+    @property final bool solo(bool enable) { return (_solo = enable); }
+
+    @property final bool leftSolo() const @nogc nothrow { return _leftSolo; }
+    @property final bool leftSolo(bool enable) {
+        if(enable && _rightSolo) {
+            _rightSolo = false;
+        }
+        return (_leftSolo = enable);
+    }
+    @property final bool rightSolo() const @nogc nothrow { return _rightSolo; }
+    @property final bool rightSolo(bool enable) {
+        if(enable && _leftSolo) {
+            _leftSolo = false;
+        }
+        return (_rightSolo = enable);
+    }
+
+    final void processSilence(nframes_t bufferLength) @nogc nothrow {
+        for(channels_t channelIndex = 0; channelIndex < 2; ++channelIndex) {
+            processMeter(channelIndex, _zeroBuffer.ptr, min(bufferLength, _zeroBuffer.length));
+        }
+    }
+
+    final void resetMeterLeft() @nogc nothrow {
+        _meter[0].reset();
+        _peakMax[0] = 0;
+        _level[0] = 0;
+        _lastLevelMax[0] = 0;
+    }
+
+    final void resetMeterRight() @nogc nothrow {
+        _meter[1].reset();
+        _peakMax[1] = 0;
+        _level[1] = 0;
+        _lastLevelMax[1] = 0;
+    }
+
+    final void resetMeters() @nogc nothrow {
+        _meter[0].reset();
+        _meter[1].reset();
+        _peakMax = 0;
+        _level = 0;
+        _lastLevelMax = 0;
+    }
+
+    @property final const(sample_t[2]) level() {
+        _resetLastLevel = true;
+        sample_t[2] retValue;
+        retValue[0] = _lastLevelMax[0];
+        retValue[1] = _lastLevelMax[1];
+        return retValue;
+    }
+    @property final ref const(sample_t[2]) peakMax() const { return _peakMax; }
+
+    @property final sample_t faderGainDB() const @nogc nothrow {
+        return 20 * log10(_faderGain);
+    }
+    @property final sample_t faderGainDB(sample_t db) {
+        return (_faderGain = pow(10, db / 20));
+    }
+
+protected:
+    final void processMeter(channels_t channelIndex, sample_t* buffer, nframes_t nframes) @nogc nothrow {
+        _meter[channelIndex].process(buffer, nframes);
+
+        float m, p;
+        _meter[channelIndex].read(m, p);
+
+        _level[channelIndex] = m;
+        if(_resetLastLevel || _lastLevelMax[channelIndex] < m) {
+            _lastLevelMax[channelIndex] = m;
+        }
+
+        if(_peakMax[channelIndex] < p) {
+            _peakMax[channelIndex] = p;
+        }
+    }
+
+    sample_t[maxBufferLength][2] buffer;
+
+private:
+    const(nframes_t) _sampleRate;
+
+    bool _mute;
+    bool _solo;
+    bool _leftSolo;
+    bool _rightSolo;
+
+    TruePeakDSP[2] _meter;
+    sample_t[maxBufferLength] _zeroBuffer = 0;
+    sample_t[2] _peakMax = 0;
+    sample_t[2] _level = 0;
+    sample_t[2] _lastLevelMax = 0;
+    bool _resetLastLevel;
+
+    sample_t _faderGain = 1.0;
+}
+
+final class MasterBus : Channel {
+public:
+    void processStereoInterleaved(sample_t* mixBuf,
+                                  nframes_t bufNFrames,
+                                  channels_t nChannels) @nogc nothrow {
+        for(auto i = 0, j = 0; i < bufNFrames; i += nChannels, ++j) {
+            buffer[0][j] = mixBuf[i];
+            buffer[1][j] = mixBuf[i + 1];
+        }
+
+        processMeter(0, buffer[0].ptr, bufNFrames);
+        processMeter(1, buffer[1].ptr, bufNFrames);
+    }
+
+    void processStereoNonInterleaved(sample_t* mixBuf1,
+                                     sample_t* mixBuf2,
+                                     nframes_t bufNFrames) @nogc nothrow {
+        for(auto i = 0; i < bufNFrames; ++i) {
+            buffer[0][i] = mixBuf1[i];
+            buffer[1][i] = mixBuf2[i];
+        }
+
+        processMeter(0, buffer[0].ptr, bufNFrames);
+        processMeter(1, buffer[1].ptr, bufNFrames);
+    }
+
+package:
+    this(nframes_t sampleRate) {
+        super(sampleRate);
+    }
+}
+
+final class Track : Channel {
 public:
     void addRegion(Region region) {
         region.resizeDelegate = resizeDelegate;
@@ -2327,80 +2472,11 @@ public:
         }
     }
 
-    void processSilence(nframes_t bufferLength) @nogc nothrow {
-        for(channels_t channelIndex = 0; channelIndex < 2; ++channelIndex) {
-            _processMeter(channelIndex, _zeroBuffer.ptr, min(bufferLength, _zeroBuffer.length));
-        }
-    }
-
-    void resetMeterLeft() @nogc nothrow {
-        _meter[0].reset();
-        _peakMax[0] = 0;
-        _level[0] = 0;
-        _lastLevelMax[0] = 0;
-    }
-
-    void resetMeterRight() @nogc nothrow {
-        _meter[1].reset();
-        _peakMax[1] = 0;
-        _level[1] = 0;
-        _lastLevelMax[1] = 0;
-    }
-
-    void resetMeters() @nogc nothrow {
-        _meter[0].reset();
-        _meter[1].reset();
-        _peakMax = 0;
-        _level = 0;
-        _lastLevelMax = 0;
-    }
-
     const(Region[]) regions() const { return _regions; }
-
-    @property bool mute() const @nogc nothrow { return _mute; }
-    @property bool mute(bool enable) { return (_mute = enable); }
-    @property bool solo() const @nogc nothrow { return _solo; }
-    @property bool solo(bool enable) { return (_solo = enable); }
-
-    @property bool leftSolo() const @nogc nothrow { return _leftSolo; }
-    @property bool leftSolo(bool enable) {
-        if(enable && _rightSolo) {
-            _rightSolo = false;
-        }
-        return (_leftSolo = enable);
-    }
-    @property bool rightSolo() const @nogc nothrow { return _rightSolo; }
-    @property bool rightSolo(bool enable) {
-        if(enable && _leftSolo) {
-            _leftSolo = false;
-        }
-        return (_rightSolo = enable);
-    }
-
-    @property sample_t faderGainDB() const @nogc nothrow {
-        return 20 * log10(_faderGain);
-    }
-    @property sample_t faderGainDB(sample_t db) {
-        return (_faderGain = pow(10, db / 20));
-    }
-
-    @property const(sample_t[2]) level() {
-        _resetLastLevel = true;
-        sample_t[2] retValue;
-        retValue[0] = _lastLevelMax[0];
-        retValue[1] = _lastLevelMax[1];
-        return retValue;
-    }
-    @property ref const(sample_t[2]) peakMax() const { return _peakMax; }
 
 package:
     this(nframes_t sampleRate) {
-        _sampleRate = sampleRate;
-
-        _meter[0] = new TruePeakDSP();
-        _meter[1] = new TruePeakDSP();
-        _meter[0].init(_sampleRate);
-        _meter[1].init(_sampleRate);
+        super(sampleRate);
     }
 
     void mixStereoInterleaved(nframes_t offset,
@@ -2420,16 +2496,16 @@ package:
 
                                 mixBuf[i] += sample;
                                 if(leftSolo) {
-                                    _buffer[0][j] = sample;
-                                    _buffer[1][j] = 0;
+                                    buffer[0][j] = sample;
+                                    buffer[1][j] = 0;
                                 }
                                 else if(rightSolo) {
-                                    _buffer[0][j] = 0;
-                                    _buffer[1][j] = sample;
+                                    buffer[0][j] = 0;
+                                    buffer[1][j] = sample;
                                 }
                                 else {
-                                    _buffer[0][j] = sample;
-                                    _buffer[1][j] = sample;
+                                    buffer[0][j] = sample;
+                                    buffer[1][j] = sample;
                                 }
                             }
                             // stereo region
@@ -2439,18 +2515,18 @@ package:
 
                                 if(leftSolo) {
                                     mixBuf[i] += sample1;
-                                    _buffer[0][j] = sample1;
-                                    _buffer[1][j] = 0;
+                                    buffer[0][j] = sample1;
+                                    buffer[1][j] = 0;
                                 }
                                 else if(rightSolo) {
                                     mixBuf[i] += sample2;
-                                    _buffer[0][j] = 0;
-                                    _buffer[1][j] = sample2;
+                                    buffer[0][j] = 0;
+                                    buffer[1][j] = sample2;
                                 }
                                 else {
                                     mixBuf[i] += sample1 + sample2;
-                                    _buffer[0][j] = sample1;
-                                    _buffer[1][j] = sample2;
+                                    buffer[0][j] = sample1;
+                                    buffer[1][j] = sample2;
                                 }
                             }
                         }
@@ -2462,19 +2538,19 @@ package:
 
                                 if(leftSolo) {
                                     mixBuf[i] += sample;
-                                    _buffer[0][j] = sample;
-                                    _buffer[1][j] = 0;
+                                    buffer[0][j] = sample;
+                                    buffer[1][j] = 0;
                                 }
                                 else if(rightSolo) {
                                     mixBuf[i + 1] += sample;
-                                    _buffer[0][j] = 0;
-                                    _buffer[1][j] = sample;
+                                    buffer[0][j] = 0;
+                                    buffer[1][j] = sample;
                                 }
                                 else {
                                     mixBuf[i] += sample;
                                     mixBuf[i + 1] += sample;
-                                    _buffer[0][j] = sample;
-                                    _buffer[1][j] = sample;
+                                    buffer[0][j] = sample;
+                                    buffer[1][j] = sample;
                                 }
                             }
                             // stereo region
@@ -2484,27 +2560,27 @@ package:
 
                                 if(leftSolo) {
                                     mixBuf[i] += sample1;
-                                    _buffer[0][j] = sample1;
-                                    _buffer[1][j] = 0;
+                                    buffer[0][j] = sample1;
+                                    buffer[1][j] = 0;
                                 }
                                 else if(rightSolo) {
                                     mixBuf[i + 1] += sample2;
-                                    _buffer[0][j] = 0;
-                                    _buffer[1][j] = sample2;
+                                    buffer[0][j] = 0;
+                                    buffer[1][j] = sample2;
                                 }
                                 else {
                                     mixBuf[i] += sample1;
                                     mixBuf[i + 1] += sample2;
-                                    _buffer[0][j] = sample1;
-                                    _buffer[1][j] = sample2;
+                                    buffer[0][j] = sample1;
+                                    buffer[1][j] = sample2;
                                 }
                             }
                         }
                     }
                 }
             }
-            _processMeter(0, _buffer[0].ptr, bufNFrames);
-            _processMeter(1, _buffer[1].ptr, bufNFrames);
+            processMeter(0, buffer[0].ptr, bufNFrames);
+            processMeter(1, buffer[1].ptr, bufNFrames);
         }
         else {
             processSilence(bufNFrames);
@@ -2526,19 +2602,19 @@ package:
 
                             if(leftSolo) {
                                 mixBuf1[i] += sample;
-                                _buffer[0][i] = sample;
-                                _buffer[1][i] = 0;
+                                buffer[0][i] = sample;
+                                buffer[1][i] = 0;
                             }
                             else if(rightSolo) {
                                 mixBuf2[i] += sample;
-                                _buffer[0][i] = 0;
-                                _buffer[1][i] = sample;
+                                buffer[0][i] = 0;
+                                buffer[1][i] = sample;
                             }
                             else {
                                 mixBuf1[i] += sample;
                                 mixBuf2[i] += sample;
-                                _buffer[0][i] = sample;
-                                _buffer[1][i] = sample;
+                                buffer[0][i] = sample;
+                                buffer[1][i] = sample;
                             }
                         }
                         // stereo region
@@ -2548,26 +2624,26 @@ package:
 
                             if(leftSolo) {
                                 mixBuf1[i] += sample1;
-                                _buffer[0][i] = sample1;
-                                _buffer[1][i] = 0;
+                                buffer[0][i] = sample1;
+                                buffer[1][i] = 0;
                             }
                             else if(rightSolo) {
                                 mixBuf2[i] += sample2;
-                                _buffer[0][i] = 0;
-                                _buffer[1][i] = sample2;
+                                buffer[0][i] = 0;
+                                buffer[1][i] = sample2;
                             }
                             else {
                                 mixBuf1[i] += sample1;
                                 mixBuf2[i] += sample2;
-                                _buffer[0][i] = sample1;
-                                _buffer[1][i] = sample2;
+                                buffer[0][i] = sample1;
+                                buffer[1][i] = sample2;
                             }
                         }
                     }
                 }
             }
-            _processMeter(0, _buffer[0].ptr, bufNFrames);
-            _processMeter(1, _buffer[1].ptr, bufNFrames);
+            processMeter(0, buffer[0].ptr, bufNFrames);
+            processMeter(1, buffer[1].ptr, bufNFrames);
         }
         else {
             processSilence(bufNFrames);
@@ -2577,41 +2653,7 @@ package:
     ResizeDelegate resizeDelegate;
 
 private:
-    void _processMeter(channels_t channelIndex, sample_t* buffer, nframes_t nframes) @nogc nothrow {
-        _meter[channelIndex].process(buffer, nframes);
-
-        float m, p;
-        _meter[channelIndex].read(m, p);
-
-        _level[channelIndex] = m;
-        if(_resetLastLevel || _lastLevelMax[channelIndex] < m) {
-            _lastLevelMax[channelIndex] = m;
-        }
-
-        if(_peakMax[channelIndex] < p) {
-            _peakMax[channelIndex] = p;
-        }
-    }
-
     Region[] _regions;
-
-    bool _mute;
-    bool _solo;
-
-    bool _leftSolo;
-    bool _rightSolo;
-
-    sample_t _faderGain = 1.0;
-
-    nframes_t _sampleRate;
-    sample_t[maxBufferLength][2] _buffer;
-    sample_t[maxBufferLength] _zeroBuffer = 0;
-
-    TruePeakDSP[2] _meter;
-    sample_t[2] _peakMax = 0;
-    sample_t[2] _level = 0;
-    sample_t[2] _lastLevelMax = 0;
-    bool _resetLastLevel;
 }
 
 abstract class Mixer {
@@ -2620,6 +2662,8 @@ public:
         _appName = appName;
 
         initializeMixer();
+
+        _masterBus = new MasterBus(sampleRate);
     }
 
     ~this() {
@@ -2655,6 +2699,12 @@ public:
 
     @property final string appName() const @nogc nothrow {
         return _appName;
+    }
+    @property final MasterBus masterBus() @nogc nothrow {
+        return _masterBus;
+    }
+    @property final const(MasterBus) masterBus() @nogc nothrow const {
+        return _masterBus;
     }
     @property final nframes_t nframes() const @nogc nothrow {
         return _nframes;
@@ -2728,6 +2778,11 @@ public:
             if(_looping && _transportOffset >= _loopEnd) {
                 _transportOffset = _loopStart;
             }
+
+            _masterBus.processStereoInterleaved(mixBuf, bufNFrames, nChannels);
+        }
+        else {
+            _masterBus.processSilence(bufNFrames / nChannels);
         }
     }
 
@@ -2755,6 +2810,11 @@ public:
             if(_looping && _transportOffset >= _loopEnd) {
                 _transportOffset = _loopStart;
             }
+
+            _masterBus.processStereoNonInterleaved(mixBuf1, mixBuf2, bufNFrames);
+        }
+        else {
+            _masterBus.processSilence(bufNFrames);
         }
     }
 
@@ -2776,6 +2836,7 @@ private:
     string _appName;
 
     Track[] _tracks;
+    MasterBus _masterBus;
     nframes_t _nframes;
     nframes_t _transportOffset;
     bool _playing;
@@ -3120,6 +3181,7 @@ public:
         _accelGroup = new AccelGroup();
 
         _mixer = mixer;
+        _masterBusView = new MasterBusView();
         _samplesPerPixel = defaultSamplesPerPixel;
 
         _arrangeStateHistory = new StateHistory!ArrangeState(ArrangeState());
@@ -4521,6 +4583,7 @@ public:
             enum degrees = PI / 180.0;
 
             cr.save();
+            scope(exit) cr.restore();
 
             cr.setOperator(cairo_operator_t.SOURCE);
             cr.setAntialias(cairo_antialias_t.FAST);
@@ -4702,21 +4765,24 @@ public:
                     PgCairo.showLayout(cr, _regionHeaderLabelLayout);
                 }
 
-                cr.save();
-                enum labelPadding = borderWidth + 1;
-                int labelWidth, labelHeight;
-                labelWidth += labelPadding;
-                _regionHeaderLabelLayout.setText(region.mute ? region.name ~ " (muted)" : region.name);
-                _regionHeaderLabelLayout.getPixelSize(labelWidth, labelHeight);
-                if(xOffset == 0 && regionOffset < viewOffset && labelWidth + labelPadding > width) {
-                    cr.translate(xOffset - (labelWidth - width), yOffset);
-                    drawRegionLabel();
+                {
+                    cr.save();
+                    scope(exit) cr.restore();
+
+                    enum labelPadding = borderWidth + 1;
+                    int labelWidth, labelHeight;
+                    labelWidth += labelPadding;
+                    _regionHeaderLabelLayout.setText(region.mute ? region.name ~ " (muted)" : region.name);
+                    _regionHeaderLabelLayout.getPixelSize(labelWidth, labelHeight);
+                    if(xOffset == 0 && regionOffset < viewOffset && labelWidth + labelPadding > width) {
+                        cr.translate(xOffset - (labelWidth - width), yOffset);
+                        drawRegionLabel();
+                    }
+                    else if(labelWidth <= width || regionOffset + region.nframes > viewOffset + viewWidthSamples) {
+                        cr.translate(xOffset + labelPadding, yOffset);
+                        drawRegionLabel();
+                    }
                 }
-                else if(labelWidth <= width || regionOffset + region.nframes > viewOffset + viewWidthSamples) {
-                    cr.translate(xOffset + labelPadding, yOffset);
-                    drawRegionLabel();
-                }
-                cr.restore();
 
                 // height of the area containing the waveform, in pixels
                 height = heightPixels - headerHeight;
@@ -4999,8 +5065,6 @@ public:
                     Context.pathDestroy(borderPath);
                 }
             }
-
-            cr.restore();
         }
 
         StateHistory!ArrangeState _arrangeStateHistory;
@@ -5056,6 +5120,8 @@ public:
             _boundingBox.y1 = yOffset + buttonHeight;
 
             cr.save();
+            scope(exit) cr.restore();
+
             cr.setAntialias(cairo_antialias_t.GRAY);
             cr.setLineWidth(1.0);
 
@@ -5147,8 +5213,6 @@ public:
                 cr.fill();
                 Context.pathDestroy(borderPath);
             }
-
-            cr.restore();
         }
 
         @property Track track() { return _track; }
@@ -5300,7 +5364,47 @@ public:
         @property override Color enabledColor() const { return Color(1.0, 0.65, 0.0); }
     }
 
-    final class TrackView {
+    interface ChannelView {
+        void processSilence(nframes_t bufferLength);
+        @property const(sample_t[2]) level();
+        @property ref const(sample_t[2]) peakMax();
+
+        void resetMeterLeft() @nogc nothrow;
+        void resetMeterRight() @nogc nothrow;
+        void resetMeters() @nogc nothrow;
+        @property sample_t faderGainDB() const @nogc nothrow;
+        @property sample_t faderGainDB(sample_t db);
+
+        @property string name() const;
+    }
+
+    final class MasterBusView : ChannelView {
+    public:
+        enum masterBusName = "Master";
+
+        this() {
+            _channelStrip = new ChannelStrip(this);
+        }
+
+        override void processSilence(nframes_t bufferLength) { _mixer.masterBus.processSilence(bufferLength); }
+        @property override const(sample_t[2]) level() { return _mixer.masterBus.level; }
+        @property override ref const(sample_t[2]) peakMax() { return _mixer.masterBus.peakMax; }
+
+        override void resetMeterLeft() @nogc nothrow { _mixer.masterBus.resetMeterLeft(); }
+        override void resetMeterRight() @nogc nothrow { _mixer.masterBus.resetMeterRight(); }
+        override void resetMeters() @nogc nothrow { _mixer.masterBus.resetMeters(); }
+        @property override sample_t faderGainDB() const @nogc nothrow { return _mixer.masterBus.faderGainDB; }
+        @property override sample_t faderGainDB(sample_t db) { return (_mixer.masterBus.faderGainDB = db); }
+
+        @property override string name() const { return masterBusName; }
+
+        @property ChannelStrip channelStrip() { return _channelStrip; }
+
+    private:
+        ChannelStrip _channelStrip;
+    }
+
+    final class TrackView : ChannelView {
     public:
         RegionView addRegion(RegionView regionView) {
             synchronized {
@@ -5349,6 +5453,8 @@ public:
             immutable Color gradientBottom = Color(0.15, 0.15, 0.15);
 
             cr.save();
+            scope(exit) cr.restore();
+
             cr.setOperator(cairo_operator_t.OVER);
 
             // compute the bounding box for this track stub
@@ -5387,8 +5493,10 @@ public:
             cr.setSourceRgb(1.0, 1.0, 1.0);
 
             // draw the numeric track index
-            cr.save();
             {
+                cr.save();
+                scope(exit) cr.restore();
+
                 _trackLabelLayout.setText(to!string(trackIndex + 1));
                 int labelWidth, labelHeight;
                 _trackLabelLayout.getPixelSize(labelWidth, labelHeight);
@@ -5397,15 +5505,16 @@ public:
                 PgCairo.updateLayout(cr, _trackLabelLayout);
                 PgCairo.showLayout(cr, _trackLabelLayout);
             }
-            cr.restore();
 
             immutable pixels_t xOffset = trackNumberWidth + labelPadding * 2;
 
             // draw the track label
             _minHeightPixels = 0;
             pixels_t trackLabelHeight;
-            cr.save();
             {
+                cr.save();
+                scope(exit) cr.restore();
+
                 _trackLabelLayout.setText(name);
                 int labelWidth, labelHeight;
                 _trackLabelLayout.getPixelSize(labelWidth, labelHeight);
@@ -5415,7 +5524,6 @@ public:
                 PgCairo.updateLayout(cr, _trackLabelLayout);
                 PgCairo.showLayout(cr, _trackLabelLayout);
             }
-            cr.restore();
 
             // draw the mute/solo buttons
             pixels_t buttonXOffset = xOffset;
@@ -5424,8 +5532,10 @@ public:
             _minHeightPixels += TrackButton.buttonWidth + (labelPadding / 2);
 
             // draw separators
-            cr.save();
             {
+                cr.save();
+                scope(exit) cr.restore();
+
                 // draw a separator above the first track
                 if(trackIndex == 0) {
                     cr.moveTo(0, yOffset);
@@ -5443,9 +5553,6 @@ public:
                 cr.setSourceRgb(0.0, 0.0, 0.0);
                 cr.stroke();
             }
-            cr.restore();
-
-            cr.restore();
         }
 
         final class TrackButtonStrip {
@@ -5497,20 +5604,20 @@ public:
             return _trackButtonStrip;
         }
 
-        @property ChannelStrip channelStrip() { return _channelStrip; }
-
         @property bool mute() const { return _track.mute; }
         @property bool solo() const { return _track.solo; }
 
-        void processSilence(nframes_t bufferLength) { _track.processSilence(bufferLength); }
-        @property const(sample_t[2]) level() { return _track.level; }
-        @property ref const(sample_t[2]) peakMax() const { return _track.peakMax; }
+        @property ChannelStrip channelStrip() { return _channelStrip; }
 
-        void resetMeterLeft() @nogc nothrow { _track.resetMeterLeft(); }
-        void resetMeterRight() @nogc nothrow { _track.resetMeterRight(); }
-        void resetMeters() @nogc nothrow { _track.resetMeters(); }
-        @property sample_t faderGainDB() const @nogc nothrow { return _track.faderGainDB; }
-        @property sample_t faderGainDB(sample_t db) { return (_track.faderGainDB = db); }
+        override void processSilence(nframes_t bufferLength) { _track.processSilence(bufferLength); }
+        @property override const(sample_t[2]) level() { return _track.level; }
+        @property override ref const(sample_t[2]) peakMax() const { return _track.peakMax; }
+
+        override void resetMeterLeft() @nogc nothrow { _track.resetMeterLeft(); }
+        override void resetMeterRight() @nogc nothrow { _track.resetMeterRight(); }
+        override void resetMeters() @nogc nothrow { _track.resetMeters(); }
+        @property override sample_t faderGainDB() const @nogc nothrow { return _track.faderGainDB; }
+        @property override sample_t faderGainDB(sample_t db) { return (_track.faderGainDB = db); }
 
         bool validZoom(float verticalScaleFactor) {
             return cast(pixels_t)(max(_baseHeightPixels * verticalScaleFactor, RegionView.headerHeight)) >=
@@ -5524,7 +5631,7 @@ public:
         @property RegionView[] regionViews() { return _regionViews; }
         @property RegionView[] regionViews(RegionView[] newRegionViews) { return (_regionViews = newRegionViews); }
 
-        @property string name() const { return _name; }
+        @property override string name() const { return _name; }
         @property string name(string newName) { return (_name = newName); }
 
         @property ref const(BoundingBox) stubBox() const { return _stubBox; }
@@ -5585,6 +5692,9 @@ public:
     public:
         immutable Duration peakHoldTime = 1500.msecs; // amount of time to maintain meter peak levels
 
+        enum channelStripWidth = defaultChannelStripWidth;
+        enum channelStripLabelFont = "Arial 8";
+
         enum meterHeightPixels = 300;
         enum meterChannelWidthPixels = 8;
         enum meterWidthPixels = meterChannelWidthPixels * 2 + 4;
@@ -5625,6 +5735,9 @@ public:
                 _boundingBox.y1 = readoutYOffset + dbReadoutHeight;
 
                 // draw the readout background
+                cr.save();
+                scope(exit) cr.restore();
+
                 cr.setAntialias(cairo_antialias_t.GRAY);
                 cr.rectangle(readoutXOffset, readoutYOffset, dbReadoutWidth, dbReadoutHeight);
                 cr.setSourceRgb(0.0, 0.0, 0.0);
@@ -5724,31 +5837,35 @@ public:
             }
         }
 
-        this(TrackView track) {
-            _track = track;
+        this(ChannelView channelView) {
+            _channelView = channelView;
 
             _faderReadout = new FaderReadout();
             _meterReadout = new MeterReadout();
-            updateFaderFromTrack();
+            updateFaderFromChannel();
         }
 
         void draw(ref Scoped!Context cr) {
             immutable pixels_t windowWidth = cast(pixels_t)(getWindow().getWidth());
             immutable pixels_t windowHeight = cast(pixels_t)(getWindow().getHeight());
 
-            pixels_t xOffset = 20;
             _faderYOffset = windowHeight - (meterHeightPixels + faderHeightPixels / 2 + 25);
 
-            drawFader(cr, xOffset, _faderYOffset);
-            xOffset += faderBackgroundWidthPixels + 30;
-            drawMeter(cr, xOffset, _faderYOffset);
+            immutable pixels_t faderXOffset = 20;
+            immutable pixels_t meterXOffset = faderXOffset + faderBackgroundWidthPixels + 35;
+            immutable pixels_t labelXOffset = channelStripWidth / 2;
+
+            drawFader(cr, faderXOffset, _faderYOffset);
+            drawMeter(cr, meterXOffset, _faderYOffset);
+            drawLabel(cr, labelXOffset, _faderYOffset - 75);
         }
 
         void drawFader(ref Scoped!Context cr, pixels_t faderXOffset, pixels_t faderYOffset) {
-            if(_track !is null) {
+            if(_channelView !is null) {
                 enum degrees = PI / 180.0;
 
                 cr.save();
+                scope(exit) cr.restore();
 
                 cr.setOperator(cairo_operator_t.OVER);
                 cr.setAntialias(cairo_antialias_t.GRAY);
@@ -5806,14 +5923,13 @@ public:
                 immutable pixels_t readoutYOffset =
                     faderYOffset - (faderHeightPixels / 2 + DbReadout.dbReadoutHeight + 5);
                 _faderReadout.draw(cr, readoutXOffset, readoutYOffset);
-
-                cr.restore();
             }
         }
 
         void drawMeter(ref Scoped!Context cr, pixels_t meterXOffset, pixels_t meterYOffset) {
-            if(_track !is null) {
+            if(_channelView !is null) {
                 cr.save();
+                scope(exit) cr.restore();
 
                 cr.setOperator(cairo_operator_t.OVER);
                 cr.setAntialias(cairo_antialias_t.GRAY);
@@ -5900,8 +6016,8 @@ public:
                 cr.fill();
 
                 // draw the meter levels
-                immutable sample_t levelDb1 = 20 * log10(_track.level[0]);
-                immutable sample_t levelDb2 = 20 * log10(_track.level[1]);
+                immutable sample_t levelDb1 = 20 * log10(_channelView.level[0]);
+                immutable sample_t levelDb2 = 20 * log10(_channelView.level[1]);
 
                 immutable pixels_t levelHeight1 = min(cast(pixels_t)(_deflect0Db(levelDb1) * meterHeightPixels),
                                                       meterHeightPixels);
@@ -5951,6 +6067,27 @@ public:
             }
         }
 
+        void drawLabel(ref Scoped!Context cr, pixels_t labelXOffset, pixels_t labelYOffset) {
+            cr.save();
+            scope(exit) cr.restore();
+
+            if(!_channelStripLabelLayout) {
+                PgFontDescription desc;
+                _channelStripLabelLayout = PgCairo.createLayout(cr);
+                desc = PgFontDescription.fromString(channelStripLabelFont);
+                _channelStripLabelLayout.setFontDescription(desc);
+                desc.free();
+            }
+
+            _channelStripLabelLayout.setText(_channelView.name);
+            int labelWidth, labelHeight;
+            _channelStripLabelLayout.getPixelSize(labelWidth, labelHeight);
+            cr.moveTo(labelXOffset - labelWidth / 2, labelYOffset);
+            cr.setSourceRgb(1.0, 1.0, 1.0);
+            PgCairo.updateLayout(cr, _channelStripLabelLayout);
+            PgCairo.showLayout(cr, _channelStripLabelLayout);
+        }
+
         void sizeChanged() {
             if(_meterGradient !is null) {
                 _meterGradient.destroy();
@@ -5965,8 +6102,8 @@ public:
 
         void updatePeaks() {
             // update peak hold times
-            _peak1 = _track.peakMax[0];
-            _peak2 = _track.peakMax[1];
+            _peak1 = _channelView.peakMax[0];
+            _peak2 = _channelView.peakMax[1];
 
             if(_readoutPeak1 < _peak1) {
                 _readoutPeak1 = _peak1;
@@ -5985,7 +6122,7 @@ public:
                     _totalPeakTime1 = 0.msecs;
                 }
                 else {
-                    _track.resetMeterLeft();
+                    _channelView.resetMeterLeft();
                 }
             }
             else {
@@ -5994,7 +6131,7 @@ public:
                     _totalPeakTime1 += elapsed;
                     if(_totalPeakTime1 >= peakHoldTime) {
                         _peak1Falling = _peak1;
-                        _track.resetMeterLeft();
+                        _channelView.resetMeterLeft();
                     }
                 }
                 else {
@@ -6013,7 +6150,7 @@ public:
                     _totalPeakTime2 = 0.msecs;
                 }
                 else {
-                    _track.resetMeterRight();
+                    _channelView.resetMeterRight();
                 }
             }
             else {
@@ -6022,7 +6159,7 @@ public:
                     _totalPeakTime2 += elapsed;
                     if(_totalPeakTime2 >= peakHoldTime) {
                         _peak2Falling = _peak2;
-                        _track.resetMeterRight();
+                        _channelView.resetMeterRight();
                     }
                 }
                 else {
@@ -6048,17 +6185,17 @@ public:
                 _lastRefresh = MonoTime.currTime;
             }
 
-            if(_processSilence && _track !is null) {
+            if(_processSilence && _channelView !is null) {
                 auto elapsed = (MonoTime.currTime - _lastRefresh).split!("msecs").msecs;
                 _lastRefresh = MonoTime.currTime;
 
                 // this check is required for the meter implementation
                 if(elapsed > 0) {
-                    _track.processSilence(cast(nframes_t)(_mixer.sampleRate / 1000 * elapsed));
+                    _channelView.processSilence(cast(nframes_t)(_mixer.sampleRate / 1000 * elapsed));
                 }
 
-                immutable sample_t levelDb1 = 20 * log10(_track.level[0]);
-                immutable sample_t levelDb2 = 20 * log10(_track.level[1]);
+                immutable sample_t levelDb1 = 20 * log10(_channelView.level[0]);
+                immutable sample_t levelDb2 = 20 * log10(_channelView.level[1]);
                 if(levelDb1 <= -70 && levelDb2 <= -70 &&
                    _peak1Falling.isNull && _peak2Falling.isNull) {
                     _processSilence = false;
@@ -6070,8 +6207,8 @@ public:
         }
 
         void resetMeters() {
-            if(_track !is null) {
-                _track.resetMeters();
+            if(_channelView !is null) {
+                _channelView.resetMeters();
                 _peak1 = _peak2 = _readoutPeak1 = _readoutPeak2 = -float.infinity;
                 _peak1Falling.nullify();
                 _peak2Falling.nullify();
@@ -6080,26 +6217,27 @@ public:
         }
 
         void zeroFader() {
-            if(_track !is null) {
-                _track.faderGainDB = 0;
-                _track.resetMeters();
-                updateFaderFromTrack();
+            if(_channelView !is null) {
+                _channelView.faderGainDB = 0;
+                _channelView.resetMeters();
+                updateFaderFromChannel();
             }
         }
 
         void updateFaderFromMouse(pixels_t mouseY) {
             _faderAdjustmentPixels = clamp(mouseY - _faderYOffset, 0, meterHeightPixels);
-            if(_track !is null) {
-                _track.faderGainDB =
+            if(_channelView !is null) {
+                _channelView.faderGainDB =
                     _deflectInverse6Db(1 - cast(float)(_faderAdjustmentPixels) / cast(float)(meterHeightPixels));
-                _faderReadout.db = _track.faderGainDB;
+                _faderReadout.db = _channelView.faderGainDB;
             }
         }
 
-        void updateFaderFromTrack() {
-            if(_track !is null) {
-                _faderAdjustmentPixels = cast(pixels_t)((1 - _deflect6Db(_track.faderGainDB)) * meterHeightPixels);
-                _faderReadout.db = _track.faderGainDB;
+        void updateFaderFromChannel() {
+            if(_channelView !is null) {
+                _faderAdjustmentPixels =
+                    cast(pixels_t)((1 - _deflect6Db(_channelView.faderGainDB)) * meterHeightPixels);
+                _faderReadout.db = _channelView.faderGainDB;
             }
             else {
                 _faderAdjustmentPixels = cast(pixels_t)((1 - _deflect6Db(0)) * meterHeightPixels);
@@ -6107,7 +6245,7 @@ public:
             }
         }
 
-        @property TrackView track() { return _track; }
+        @property ChannelView channelView() { return _channelView; }
 
         @property bool redrawRequested() {
             return _mixerPlaying || _processSilence;
@@ -6212,7 +6350,9 @@ public:
             return db;
         }
 
-        TrackView _track;
+        ChannelView _channelView;
+
+        PgLayout _channelStripLabelLayout;
 
         FaderReadout _faderReadout;
         MeterReadout _meterReadout;
@@ -6246,7 +6386,7 @@ public:
     final class ArrangeChannelStrip : DrawingArea {
     public:
         this() {
-            _arrangeChannelStripWidth = defaultChannelStripWidth;
+            _arrangeChannelStripWidth = defaultChannelStripWidth * 2;
             setSizeRequest(_arrangeChannelStripWidth, 0);
 
             addOnDraw(&drawCallback);
@@ -6261,7 +6401,7 @@ public:
         void update() {
             if(_selectedTrack !is null) {
                 _selectedTrackChannelStrip = _selectedTrack.channelStrip;
-                _selectedTrackChannelStrip.updateFaderFromTrack();
+                _selectedTrackChannelStrip.updateFaderFromChannel();
             }
             else {
                 _selectedTrackChannelStrip = null;
@@ -6277,6 +6417,9 @@ public:
                 _arrangeChannelStripRefresh = new Timeout(cast(uint)(1.0 / refreshRate * 1000), &onRefresh, false);
             }
 
+            cr.save();
+            scope(exit) cr.restore();
+
             // draw the background
             cr.setSourceRgb(0.1, 0.1, 0.1);
             cr.paint();
@@ -6286,11 +6429,30 @@ public:
                 _selectedTrackChannelStrip.draw(cr);
             }
 
-            // draw a right border
-            cr.moveTo(_arrangeChannelStripWidth, 0);
-            cr.lineTo(_arrangeChannelStripWidth, getWindow.getHeight());
-            cr.setSourceRgb(0.0, 0.0, 0.0);
-            cr.stroke();
+            // draw the channel strip for the master bus
+            {
+                cr.save();
+                scope(exit) cr.restore();
+
+                cr.translate(ChannelStrip.channelStripWidth, 0);
+                _masterBusView.channelStrip.draw(cr);
+            }
+
+            // draw right borders
+            {
+                cr.save();
+                scope(exit) cr.restore();
+
+                cr.setAntialias(cairo_antialias_t.NONE);
+                cr.setLineWidth(1.0);
+
+                cr.moveTo(_arrangeChannelStripWidth / 2, 0);
+                cr.lineTo(_arrangeChannelStripWidth / 2, getWindow.getHeight());
+                cr.moveTo(_arrangeChannelStripWidth - 1, 0);
+                cr.lineTo(_arrangeChannelStripWidth - 1, getWindow.getHeight());
+                cr.setSourceRgb(0.0, 0.0, 0.0);
+                cr.stroke();
+            }
 
             return true;
         }
@@ -6583,6 +6745,7 @@ public:
 
         void drawBackground(ref Scoped!Context cr) {
             cr.save();
+            scope(exit) cr.restore();
 
             nframes_t secondsDistanceSamples = _mixer.sampleRate;
             nframes_t tickDistanceSamples = cast(nframes_t)(secondsDistanceSamples * _timeStripScaleFactor);
@@ -6611,8 +6774,6 @@ public:
                 cr.setSourceRgb(0.1, 0.1, 0.1);
                 cr.stroke();
             }
-
-            cr.restore();            
         }
 
         void drawTimeStrip(ref Scoped!Context cr) {
@@ -6623,6 +6784,7 @@ public:
             enum timeStripBackgroundPadding = 2;
 
             cr.save();
+            scope(exit) cr.restore();
 
             // draw a black background for the timeStrip
             cr.rectangle(0, 0, viewWidthPixels, timeStripHeightPixels - timeStripBackgroundPadding);
@@ -6750,8 +6912,6 @@ public:
                 PgCairo.updateLayout(cr, _timeStripMarkerLayout);
                 PgCairo.showLayout(cr, _timeStripMarkerLayout);
             }
-
-            cr.restore();
         }
 
         void drawTracks(ref Scoped!Context cr) {
@@ -6767,6 +6927,7 @@ public:
             enum transportHeadHeight = 10;
 
             cr.save();
+            scope(exit) cr.restore();
 
             if(_mode == Mode.editRegion && !_mixer.playing) {
                 return;
@@ -6795,13 +6956,12 @@ public:
             cr.lineTo(_transportPixelsOffset, transportHeadHeight);
             cr.closePath();
             cr.fill();
-
-            cr.restore();
         }
 
         void drawSelectBox(ref Scoped!Context cr) {
             if(_action == Action.selectBox) {
                 cr.save();
+                scope(exit) cr.restore();
 
                 cr.setOperator(cairo_operator_t.OVER);
                 cr.setAntialias(cairo_antialias_t.NONE);
@@ -6812,8 +6972,6 @@ public:
                 cr.fillPreserve();
                 cr.setSourceRgb(0.0, 1.0, 0.0);
                 cr.stroke();
-
-                cr.restore();
             }
         }
 
@@ -6821,6 +6979,7 @@ public:
             enum taperFactor = 0.75;
 
             cr.save();
+            scope(exit) cr.restore();
 
             if(!_markerLabelLayout) {
                 PgFontDescription desc;
@@ -6878,8 +7037,6 @@ public:
                 cr.setSourceRgb(1.0, 1.0, 1.0);
                 cr.stroke();
             }
-
-            cr.restore();
         }
 
         void redraw() {
@@ -9138,6 +9295,7 @@ private:
     SequenceBrowser _sequenceBrowser;
 
     Mixer _mixer;
+    MasterBusView _masterBusView;
     TrackView[] _trackViews;
     RegionView[] _regionViews;
     Appender!(AudioSequence[]) _audioSequencesApp;
