@@ -19,6 +19,7 @@ import std.traits;
 import std.typetuple;
 import std.range;
 import std.cstream;
+import std.file;
 
 import core.memory;
 import core.time;
@@ -1080,11 +1081,26 @@ struct ProgressTaskCallback(ProgressState) if(__traits(isSame, TemplateOf!Progre
     bool cancelled;
 }
 
+enum AudioFileFormat {
+    wavFilterName = "WAV",
+    flacFilterName = "FLAC",
+    oggVorbisFilterName = "Ogg/Vorbis",
+    aiffFilterName = "AIFF",
+    cafFilterName = "CAF",
+}
+
+enum AudioBitDepth {
+    pcm16Bit,
+    pcm24Bit
+}
+
 alias LoadState = ProgressState!(StageDesc("read", "Loading file"),
                                  StageDesc("resample", "Resampling"),
                                  StageDesc("computeOverview", "Computing overview"));
 alias ComputeOnsetsState = ProgressState!(StageDesc("computeOnsets", "Computing onsets"));
 alias NormalizeState = ProgressState!(StageDesc("normalize", "Normalizing"));
+
+alias SaveState = ProgressState!(StageDesc("write", "Writing file"));
 
 auto sliceMin(T)(T sourceData) if(isIterable!T && isNumeric!(typeof(sourceData[size_t.init]))) {
     alias BaseSampleType = typeof(sourceData[size_t.init]);
@@ -1394,7 +1410,9 @@ public:
         // attempt to open the given file
         infile = sf_open(fileName.toStringz(), SFM_READ, &sfinfo);
         if(!infile) {
-            progressCallback(LoadState.complete, 0);
+            if(progressCallback !is null) {
+                progressCallback(LoadState.complete, 0);
+            }
             return null;
         }
 
@@ -1457,7 +1475,7 @@ public:
                                              baseName(fileName));
 
         if(progressCallback !is null) {
-            if(!progressCallback(LoadState.complete, 1.0)) {
+            if(!progressCallback(LoadState.complete, 1)) {
                 newSequence.destroy();
                 return null;
             }
@@ -2488,10 +2506,50 @@ package:
         super(sampleRate);
     }
 
+    void bounceStereoInterleaved(nframes_t offset,
+                                 nframes_t bufNFrames,
+                                 channels_t nChannels,
+                                 sample_t* mixBuf) @nogc nothrow {
+        _mixStereoInterleaved(offset, bufNFrames, nChannels, mixBuf);
+    }
+
     void mixStereoInterleaved(nframes_t offset,
                               nframes_t bufNFrames,
                               channels_t nChannels,
                               sample_t* mixBuf) @nogc nothrow {
+        _mixStereoInterleaved(offset, bufNFrames, nChannels, mixBuf);
+
+        if(!mute) {
+            processMeter(0, buffer[0].ptr, bufNFrames);
+            processMeter(1, buffer[1].ptr, bufNFrames);
+        }
+        else {
+            processSilence(bufNFrames);
+        }
+    }
+
+    void mixStereoNonInterleaved(nframes_t offset,
+                                 nframes_t bufNFrames,
+                                 sample_t* mixBuf1,
+                                 sample_t* mixBuf2) @nogc nothrow {
+        _mixStereoNonInterleaved(offset, bufNFrames, mixBuf1, mixBuf2);
+
+        if(!mute) {
+            processMeter(0, buffer[0].ptr, bufNFrames);
+            processMeter(1, buffer[1].ptr, bufNFrames);
+        }
+        else {
+            processSilence(bufNFrames);
+        }
+    }
+
+    ResizeDelegate resizeDelegate;
+
+private:
+    void _mixStereoInterleaved(nframes_t offset,
+                               nframes_t bufNFrames,
+                               channels_t nChannels,
+                               sample_t* mixBuf) @nogc nothrow {
         if(!mute) {
             sample_t tempSample;
             for(auto i = 0, j = 0; i < bufNFrames; i += nChannels, ++j) {
@@ -2588,18 +2646,13 @@ package:
                     }
                 }
             }
-            processMeter(0, buffer[0].ptr, bufNFrames);
-            processMeter(1, buffer[1].ptr, bufNFrames);
-        }
-        else {
-            processSilence(bufNFrames);
         }
     }
 
-    void mixStereoNonInterleaved(nframes_t offset,
-                                 nframes_t bufNFrames,
-                                 sample_t* mixBuf1,
-                                 sample_t* mixBuf2) @nogc nothrow {
+    void _mixStereoNonInterleaved(nframes_t offset,
+                                  nframes_t bufNFrames,
+                                  sample_t* mixBuf1,
+                                  sample_t* mixBuf2) @nogc nothrow {
         if(!mute) {
             sample_t tempSample;
             for(auto i = 0; i < bufNFrames; ++i) {
@@ -2651,17 +2704,9 @@ package:
                     }
                 }
             }
-            processMeter(0, buffer[0].ptr, bufNFrames);
-            processMeter(1, buffer[1].ptr, bufNFrames);
-        }
-        else {
-            processSilence(bufNFrames);
         }
     }
 
-    ResizeDelegate resizeDelegate;
-
-private:
     Region[] _regions;
 }
 
@@ -2677,6 +2722,136 @@ public:
 
     ~this() {
         cleanupMixer();
+    }
+
+    void exportSessionToFile(string fileName,
+                             AudioFileFormat audioFileFormat,
+                             AudioBitDepth bitDepth,
+                             SaveState.Callback progressCallback = null) {
+        // default to stereo for exporting
+        enum exportChannels = 2;
+
+        void removeFile() {
+            try {
+                std.file.remove(fileName);
+            }
+            catch(FileException e) {
+            }
+        }
+
+        SNDFILE* outfile;
+        SF_INFO sfinfo;
+
+        sfinfo.samplerate = sampleRate;
+        sfinfo.frames = nframes;
+        sfinfo.channels = exportChannels;
+        switch(audioFileFormat) {
+            case AudioFileFormat.wavFilterName:
+                sfinfo.format = SF_FORMAT_WAV;
+                break;
+
+            case AudioFileFormat.flacFilterName:
+                sfinfo.format = SF_FORMAT_FLAC;
+                break;
+
+            case AudioFileFormat.oggVorbisFilterName:
+                sfinfo.format = SF_FORMAT_OGG | SF_FORMAT_VORBIS;
+                break;
+
+            case AudioFileFormat.aiffFilterName:
+                sfinfo.format = SF_FORMAT_AIFF;
+                break;
+
+            case AudioFileFormat.cafFilterName:
+                sfinfo.format = SF_FORMAT_CAF;
+                break;
+
+            default:
+                if(progressCallback !is null) {
+                    progressCallback(SaveState.complete, 0);
+                    removeFile();
+                }
+                throw new AudioError("Invalid audio file format");
+        }
+
+        if(bitDepth == AudioBitDepth.pcm16Bit) {
+            sfinfo.format |= SF_FORMAT_PCM_16;
+        }
+        else if(bitDepth == AudioBitDepth.pcm24Bit) {
+            sfinfo.format |= SF_FORMAT_PCM_24;
+        }
+
+        if(!sf_format_check(&sfinfo)) {
+            if(progressCallback !is null) {
+                progressCallback(SaveState.complete, 0);
+                removeFile();
+            }
+            throw new AudioError("Invalid output file parameters for " ~ fileName);
+        }
+
+        // attempt to open the specified file
+        outfile = sf_open(fileName.toStringz(), SFM_WRITE, &sfinfo);
+        if(!outfile) {
+            if(progressCallback !is null) {
+                progressCallback(SaveState.complete, 0);
+                removeFile();
+            }
+            throw new AudioError("Could not open file " ~ fileName ~ " for writing");
+        }
+
+        // close the file when leaving this scope
+        scope(exit) sf_close(outfile);
+
+        // reset the bounce transport
+        _bounceTransportOffset = 0;
+
+        // counters for updating the progress bar
+        immutable size_t progressIncrement = (nframes * exportChannels) / SaveState.stepsPerStage;
+        size_t progressCount;
+
+        // write all audio data in the current session to the specified file
+        ScopedArray!(sample_t[]) buffer = new sample_t[](maxBufferLength * exportChannels);
+        sf_count_t writeTotal;
+        sf_count_t writeCount;
+        while(writeTotal < nframes * exportChannels) {
+            auto immutable processNFrames =
+                writeTotal + maxBufferLength * exportChannels < nframes * exportChannels ?
+                maxBufferLength * exportChannels : nframes * exportChannels - writeTotal;
+
+            bounceStereoInterleaved(cast(nframes_t)(processNFrames), exportChannels, buffer.ptr);
+
+            static if(is(sample_t == float)) {
+                writeCount = sf_write_float(outfile, buffer.ptr, processNFrames);
+            }
+            else if(is(sample_t == double)) {
+                writeCount = sf_write_double(outfile, buffer.ptr, processNFrames);
+            }
+
+            if(writeCount != processNFrames) {
+                if(progressCallback !is null) {
+                    progressCallback(SaveState.complete, 0);
+                    removeFile();
+                }
+                throw new AudioError("Could not write to file " ~ fileName);
+            }
+
+            writeTotal += writeCount;
+
+            if(progressCallback !is null && writeTotal >= progressCount) {
+                progressCount += progressIncrement;
+                if(!progressCallback(SaveState.write,
+                                     cast(double)(writeTotal) / cast(double)(nframes * exportChannels))) {
+                    removeFile();
+                    return;
+                }
+            }
+        }
+
+        if(progressCallback !is null) {
+            if(!progressCallback(SaveState.complete, 1)) {
+                removeFile();
+            }
+        }
     }
 
     final void reset() {
@@ -2762,31 +2937,34 @@ public:
         _looping = false;
     }
 
-    final void mixStereoInterleaved(nframes_t bufNFrames, channels_t nChannels, sample_t* mixBuf) @nogc nothrow {
+    final void bounceStereoInterleaved(nframes_t bufNFrames,
+                                       channels_t nChannels,
+                                       sample_t* mixBuf) {
+        // initialize the buffer to silence
+        import core.stdc.string: memset;
+        memset(mixBuf, 0, sample_t.sizeof * bufNFrames);
+
+        _bounceTracksStereoInterleaved(_bounceTransportOffset, bufNFrames, nChannels, mixBuf);
+
+        _bounceTransportOffset += bufNFrames / nChannels;
+    }
+
+    final void mixStereoInterleaved(nframes_t bufNFrames,
+                                    channels_t nChannels,
+                                    sample_t* mixBuf) @nogc nothrow {
         // initialize the buffer to silence
         import core.stdc.string: memset;
         memset(mixBuf, 0, sample_t.sizeof * bufNFrames);
 
         // mix all tracks down to stereo
         if(!_transportFinished() && _playing) {
-            if(_soloTrack) {
-                foreach(t; _tracks) {
-                    if(t.solo) {
-                        t.mixStereoInterleaved(_transportOffset, bufNFrames, nChannels, mixBuf);
-                    }
-                }
-            }
-            else {
-                foreach(t; _tracks) {
-                    t.mixStereoInterleaved(_transportOffset, bufNFrames, nChannels, mixBuf);
-                }
-            }
+            _mixTracksStereoInterleaved(_transportOffset, bufNFrames, nChannels, mixBuf);
+
+            _transportOffset += bufNFrames / nChannels;
 
             if(_masterBus !is null) {
                 _masterBus.processStereoInterleaved(mixBuf, bufNFrames, nChannels);
             }
-
-            _transportOffset += bufNFrames / nChannels;
 
             if(_looping && _transportOffset >= _loopEnd) {
                 _transportOffset = _loopStart;
@@ -2794,7 +2972,9 @@ public:
         }
     }
 
-    final void mixStereoNonInterleaved(nframes_t bufNFrames, sample_t* mixBuf1, sample_t* mixBuf2) @nogc nothrow {
+    final void mixStereoNonInterleaved(nframes_t bufNFrames,
+                                       sample_t* mixBuf1,
+                                       sample_t* mixBuf2) @nogc nothrow {
         // initialize the buffers to silence
         import core.stdc.string: memset;
         memset(mixBuf1, 0, sample_t.sizeof * bufNFrames);
@@ -2802,25 +2982,16 @@ public:
 
         // mix all tracks down to stereo
         if(!_transportFinished() && _playing) {
-            if(_soloTrack) {
-                foreach(t; _tracks) {
-                    if(t.solo) {
-                        t.mixStereoNonInterleaved(_transportOffset, bufNFrames, mixBuf1, mixBuf2);
-                    }
-                }
-            }
-            foreach(t; _tracks) {
-                t.mixStereoNonInterleaved(_transportOffset, bufNFrames, mixBuf1, mixBuf2);
-            }
-
-            if(_masterBus !is null) {
-                _masterBus.processStereoNonInterleaved(mixBuf1, mixBuf2, bufNFrames);
-            }
+            _mixTracksStereoNonInterleaved(_transportOffset, bufNFrames, mixBuf1, mixBuf2);
 
             _transportOffset += bufNFrames;
 
             if(_looping && _transportOffset >= _loopEnd) {
                 _transportOffset = _loopStart;
+            }
+
+            if(_masterBus !is null) {
+                _masterBus.processStereoNonInterleaved(mixBuf1, mixBuf2, bufNFrames);
             }
         }
     }
@@ -2830,6 +3001,43 @@ protected:
     void cleanupMixer() nothrow;
 
 private:
+    final void _mixTracksStereoInterleaved(string MixFunc = "mixStereoInterleaved")
+        (nframes_t offset,
+         nframes_t bufNFrames,
+         channels_t nChannels,
+         sample_t* mixBuf) @nogc nothrow {
+        if(_soloTrack) {
+            foreach(t; _tracks) {
+                if(t.solo) {
+                    mixin("t." ~ MixFunc ~ "(offset, bufNFrames, nChannels, mixBuf);");
+                }
+            }
+        }
+        else {
+            foreach(t; _tracks) {
+                mixin("t." ~ MixFunc ~ "(offset, bufNFrames, nChannels, mixBuf);");
+            }
+        }
+    }
+
+    final void _mixTracksStereoNonInterleaved(nframes_t offset,
+                                              nframes_t bufNFrames,
+                                              sample_t* mixBuf1,
+                                              sample_t* mixBuf2) @nogc nothrow {
+        if(_soloTrack) {
+            foreach(t; _tracks) {
+                if(t.solo) {
+                    t.mixStereoNonInterleaved(offset, bufNFrames, mixBuf1, mixBuf2);
+                }
+            }
+        }
+        foreach(t; _tracks) {
+            t.mixStereoNonInterleaved(offset, bufNFrames, mixBuf1, mixBuf2);
+        }
+    }
+
+    alias _bounceTracksStereoInterleaved = _mixTracksStereoInterleaved!"bounceStereoInterleaved";
+
     // stop playing if the transport is at the end of the project
     bool _transportFinished() @nogc nothrow {
         if(_playing && _transportOffset >= lastFrame) {
@@ -2846,6 +3054,7 @@ private:
     MasterBus _masterBus;
     nframes_t _nframes;
     nframes_t _transportOffset;
+    nframes_t _bounceTransportOffset;
     bool _playing;
     bool _looping;
     bool _soloTrack;
@@ -3120,18 +3329,19 @@ struct Color {
 
 class ErrorDialog : MessageDialog {
 public:
+    static display(Window parentWindow, string errorMessage) {
+        auto dialog = new ErrorDialog(parentWindow, errorMessage);
+        dialog.run();
+        dialog.destroy();
+    }
+
+protected:
     this(Window parentWindow, string errorMessage) {
         super(parentWindow,
               DialogFlags.MODAL,
               MessageType.ERROR,
               ButtonsType.OK,
               "Error: " ~ errorMessage);
-    }
-
-    static display(Window parentWindow, string errorMessage) {
-        auto dialog = new ErrorDialog(parentWindow, errorMessage);
-        dialog.run();
-        dialog.destroy();
     }
 }
 
@@ -3350,11 +3560,11 @@ public:
 
         void onNew() {
             if(!_savedState) {
-                MessageDialog dialog = new MessageDialog(_parentWindow,
-                                                         GtkDialogFlags.MODAL,
-                                                         MessageType.QUESTION,
-                                                         ButtonsType.OK_CANCEL,
-                                                         "Are you sure? All unsaved changes will be lost.");
+                auto dialog = new MessageDialog(_parentWindow,
+                                                GtkDialogFlags.MODAL,
+                                                MessageType.QUESTION,
+                                                ButtonsType.OK_CANCEL,
+                                                "Are you sure? All unsaved changes will be lost.");
 
                 auto response = dialog.run();
                 if(response == ResponseType.OK) {
@@ -3369,11 +3579,11 @@ public:
         }
 
         void onQuit() {
-            MessageDialog dialog = new MessageDialog(_parentWindow,
-                                                     GtkDialogFlags.MODAL,
-                                                     MessageType.QUESTION,
-                                                     ButtonsType.OK_CANCEL,
-                                                     "Are you sure? All unsaved changes will be lost.");
+            auto dialog = new MessageDialog(_parentWindow,
+                                            GtkDialogFlags.MODAL,
+                                            MessageType.QUESTION,
+                                            ButtonsType.OK_CANCEL,
+                                            "Are you sure? All unsaved changes will be lost.");
 
             auto response = dialog.run();
             if(response == ResponseType.OK) {
@@ -4128,7 +4338,7 @@ public:
                             _region.appendEditState(_region.currentEditState(true), "Normalize region");
                         }
                     });
-                beginProgressTask!(NormalizeState, DefaultProgressTask)(progressTask);
+                beginProgressTask!(NormalizeState)(progressTask);
                 _canvas.redraw();
             }
         }
@@ -4201,7 +4411,7 @@ public:
 
                     progressCallback(ComputeOnsetsState.complete, 1);
                 });
-            beginProgressTask!(ComputeOnsetsState, DefaultProgressTask)(progressTask);
+            beginProgressTask!(ComputeOnsetsState)(progressTask);
             _canvas.redraw();
         }
 
@@ -4220,7 +4430,7 @@ public:
 
                     progressCallback(ComputeOnsetsState.complete, 1);
                 });
-            beginProgressTask!(ComputeOnsetsState, DefaultProgressTask)(progressTask);
+            beginProgressTask!(ComputeOnsetsState)(progressTask);
             _canvas.redraw();
         }
 
@@ -8416,12 +8626,9 @@ public:
         }
 
         if(regionTaskList.data.length > 0) {
-            beginProgressTask!(LoadState, RegionTask, true)(regionTaskList.data);
+            beginProgressTask!(LoadState, true, RegionTask)(regionTaskList.data);
             _canvas.redraw();
         }
-    }
-
-    void exportSessionToFile(string fileName) {
     }
 
     void onImportFile() {
@@ -8464,16 +8671,21 @@ public:
                                                        null);
             _exportFileChooser.setSelectMultiple(false);
 
-            auto wavFilter = new FileFilter();
-            wavFilter.setName("WAV");
-            wavFilter.addPattern("*.wav");
-            _exportFileChooser.addFilter(wavFilter);
+            auto addFilter(string name, string pattern) {
+                auto fileFilter = new FileFilter();
+                fileFilter.setName(name);
+                fileFilter.addPattern(pattern);
+                _exportFileChooser.addFilter(fileFilter);
+                return fileFilter;
+            }
 
-            auto aiffFilter = new FileFilter();
-            aiffFilter.setName("AIFF");
-            _exportFileChooser.addFilter(aiffFilter);
+            auto defaultFilter = addFilter(AudioFileFormat.wavFilterName, "*.wav");
+            addFilter(AudioFileFormat.flacFilterName, "*.flac");
+            addFilter(AudioFileFormat.oggVorbisFilterName, "*.ogg");
+            addFilter(AudioFileFormat.aiffFilterName, "*.aiff");
+            addFilter(AudioFileFormat.cafFilterName, "*.caf");
 
-            _exportFileChooser.setFilter(wavFilter);
+            _exportFileChooser.setFilter(defaultFilter);
         }
 
         auto response = _exportFileChooser.run();
@@ -8482,7 +8694,35 @@ public:
             auto fileName = URI.filenameFromUri(_exportFileChooser.getUri(), hostname);
             _exportFileChooser.hide();
 
-            exportSessionToFile(fileName);
+            if(std.file.exists(fileName)) {
+                auto dialog = new MessageDialog(_parentWindow,
+                                                GtkDialogFlags.MODAL,
+                                                MessageType.QUESTION,
+                                                ButtonsType.OK_CANCEL,
+                                                "Are you sure? " ~ fileName ~ " will be overwritten.");
+                auto overwriteResponse = dialog.run();
+                dialog.destroy();
+                if(overwriteResponse != ResponseType.OK) {
+                    return;
+                }
+            }
+
+            auto progressCallback = ProgressTaskCallback!(SaveState)(thisTid);
+            auto progressTask = progressTask(
+                fileName,
+                delegate void() {
+                    try {
+                        _mixer.exportSessionToFile(fileName,
+                                                   cast(AudioFileFormat)
+                                                   (_exportFileChooser.getFilter().getName()),
+                                                   AudioBitDepth.pcm16Bit, // TODO allow the user to specify this
+                                                   progressCallback);
+                    }
+                    catch(AudioError e) {
+                        ErrorDialog.display(_parentWindow, e.msg);
+                    }
+                });
+            beginProgressTask!(SaveState, true)(progressTask);
         }
         else if(response == ResponseType.CANCEL) {
             _exportFileChooser.hide();
@@ -8499,7 +8739,10 @@ public:
         }
     }
 
-    auto beginProgressTask(ProgressState, ProgressTask, bool cancelButton = false)(ProgressTask[] taskList)
+    auto beginProgressTask(ProgressState,
+                           bool cancelButton = false,
+                           ProgressTask = DefaultProgressTask)
+        (ProgressTask[] taskList)
         if(__traits(isSame, TemplateOf!ProgressState, .ProgressState) &&
            __traits(isSame, TemplateOf!ProgressTask, .ProgressTask)) {
             enum progressRefreshRate = 10; // in Hz
@@ -8596,10 +8839,13 @@ public:
             }
         }
 
-    void beginProgressTask(ProgressState, ProgressTask, bool cancelButton = false)(ProgressTask task) {
+    void beginProgressTask(ProgressState,
+                           bool cancelButton = false,
+                           ProgressTask = DefaultProgressTask)
+        (ProgressTask task) {
         ProgressTask[] taskList = new ProgressTask[](1);
         taskList[0] = task;
-        beginProgressTask!(ProgressState, ProgressTask, cancelButton)(taskList);
+        beginProgressTask!(ProgressState, cancelButton, ProgressTask)(taskList);
     }
 
     void onShowOnsets(CheckMenuItem showOnsets) {
