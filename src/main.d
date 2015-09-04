@@ -1135,18 +1135,38 @@ auto sliceMax(T)(T sourceData) if(isIterable!T && isNumeric!(typeof(sourceData[s
     return maxSample;
 }
 
+enum SampleRateConverter {
+    best,
+    medium,
+    fastest
+}
+
 sample_t[] convertSampleRate(sample_t[] audioBuffer,
                              channels_t nChannels,
                              nframes_t oldSampleRate,
                              nframes_t newSampleRate,
+                             SampleRateConverter sampleRateConverter,
                              LoadState.Callback progressCallback = null) {
     if(newSampleRate != oldSampleRate && newSampleRate > 0) {
         if(progressCallback !is null) {
             progressCallback(LoadState.resample, 0);
         }
 
-        // constant indicating the algorithm to use for sample rate conversion
-        enum converter = SRC_SINC_MEDIUM_QUALITY; // TODO allow the user to specify this
+        // select the algorithm to use for sample rate conversion
+        int converterType;
+        final switch(sampleRateConverter) {
+            case SampleRateConverter.best:
+                converterType = SRC_SINC_BEST_QUALITY;
+                break;
+
+            case SampleRateConverter.medium:
+                converterType = SRC_SINC_MEDIUM_QUALITY;
+                break;
+
+            case SampleRateConverter.fastest:
+                converterType = SRC_SINC_FASTEST;
+                break;
+        }
 
         // libsamplerate requires floats
         static assert(is(sample_t == float));
@@ -1169,7 +1189,7 @@ sample_t[] convertSampleRate(sample_t[] audioBuffer,
         srcData.src_ratio = srcRatio;
 
         // compute the sample rate conversion
-        int error = src_simple(&srcData, converter, cast(int)(nChannels));
+        int error = src_simple(&srcData, converterType, cast(int)(nChannels));
         if(error) {
             throw new AudioError("Sample rate conversion failed: " ~ to!string(src_strerror(error)));
         }
@@ -1398,6 +1418,9 @@ public:
     // create a sequence from a file
     static AudioSequence fromFile(string fileName,
                                   nframes_t sampleRate,
+                                  Nullable!SampleRateConverter
+                                  delegate(nframes_t originalSampleRate, nframes_t newSampleRate)
+                                  resampleCallback = null,
                                   LoadState.Callback progressCallback = null) {
         SNDFILE* infile;
         SF_INFO sfinfo;
@@ -1419,6 +1442,22 @@ public:
 
         // close the file when leaving this scope
         scope(exit) sf_close(infile);
+
+        // get audio file parameters
+        immutable nframes_t originalSampleRate = cast(nframes_t)(sfinfo.samplerate);
+        immutable channels_t nChannels = cast(channels_t)(sfinfo.channels);
+
+        // determine if the audio should be resampled
+        Nullable!SampleRateConverter sampleRateConverter;
+        if(sampleRate != originalSampleRate) {
+            if(resampleCallback !is null) {
+                sampleRateConverter = resampleCallback(originalSampleRate, sampleRate);
+            }
+            else {
+                // resample by default
+                sampleRateConverter = SampleRateConverter.init;
+            }
+        }
 
         // allocate contiguous audio buffer
         sample_t[] audioBuffer = new sample_t[](cast(size_t)(sfinfo.frames * sfinfo.channels));
@@ -1452,15 +1491,13 @@ public:
         }
         while(readCount && readTotal < audioBuffer.length);
 
-        immutable nframes_t originalSampleRate = cast(nframes_t)(sfinfo.samplerate);
-        immutable channels_t nChannels = cast(channels_t)(sfinfo.channels);
-
         // resample, if necessary
-        if(sampleRate != originalSampleRate) {
+        if(!sampleRateConverter.isNull()) {
             audioBuffer = convertSampleRate(audioBuffer,
                                             nChannels,
                                             originalSampleRate,
                                             sampleRate,
+                                            sampleRateConverter,
                                             progressCallback);
         }
 
@@ -2775,11 +2812,15 @@ public:
                 throw new AudioError("Invalid audio file format");
         }
 
-        if(bitDepth == AudioBitDepth.pcm16Bit) {
-            sfinfo.format |= SF_FORMAT_PCM_16;
-        }
-        else if(bitDepth == AudioBitDepth.pcm24Bit) {
-            sfinfo.format |= SF_FORMAT_PCM_24;
+        if(audioFileFormat == AudioFileFormat.wavFilterName ||
+           audioFileFormat == AudioFileFormat.aiffFilterName ||
+           audioFileFormat == AudioFileFormat.cafFilterName) {
+            if(bitDepth == AudioBitDepth.pcm16Bit) {
+                sfinfo.format |= SF_FORMAT_PCM_16;
+            }
+            else if(bitDepth == AudioBitDepth.pcm24Bit) {
+                sfinfo.format |= SF_FORMAT_PCM_24;
+            }
         }
 
         if(!sf_format_check(&sfinfo)) {
@@ -4164,17 +4205,69 @@ public:
         Dialog _dialog;
     }
 
+    final class SampleRateDialog : ArrangeDialog {
+    public:
+        this(nframes_t originalSampleRate, nframes_t newSampleRate) {
+            _originalSampleRate = originalSampleRate;
+            _newSampleRate = newSampleRate;
+
+            super();
+        }
+
+        @property SampleRateConverter selectedSampleRateConverter() const { return _selectedSampleRateConverter; }
+
+    protected:
+        override void populate(Box content) {
+            auto box = new Box(Orientation.VERTICAL, 5);
+            box.packStart(new Label("This audio file has a sample rate of " ~
+                                    to!string(_originalSampleRate) ~ "Hz."), false, false, 0);
+            box.packStart(new Label("Resample to " ~
+                                    to!string(_newSampleRate) ~ " Hz?"), false, false, 0);
+            _resampleQualityComboBox = new ComboBoxText();
+            foreach(index, resampleQualityString; _resampleQualityStrings) {
+                _resampleQualityComboBox.insertText(index, resampleQualityString);
+            }
+            _resampleQualityComboBox.setActive(0);
+            box.packEnd(_resampleQualityComboBox, false, false, 0);
+            content.packStart(box, false, false, 10);
+        }
+
+        override void onOK(Button button) {
+            foreach(sampleRateConverter, resampleQualityString; _resampleQualityStrings) {
+                if(resampleQualityString == _resampleQualityComboBox.getActiveText()) {
+                    _selectedSampleRateConverter = sampleRateConverter;
+                    break;
+                }
+            }
+        }
+
+    private:
+        static this() {
+            _resampleQualityStrings = [SampleRateConverter.best : "Best",
+                                       SampleRateConverter.medium : "Medium",
+                                       SampleRateConverter.fastest : "Fastest"];
+            assert(_resampleQualityStrings.length > 0);
+        }
+
+        nframes_t _originalSampleRate;
+        nframes_t _newSampleRate;
+
+        static immutable string[SampleRateConverter] _resampleQualityStrings;
+        SampleRateConverter _selectedSampleRateConverter;
+        ComboBoxText _resampleQualityComboBox;
+    }
+
     final class BitDepthDialog : ArrangeDialog {
     public:
-        AudioBitDepth selectedBitDepth;
+        @property AudioBitDepth selectedBitDepth() const { return _selectedBitDepth; }
 
     protected:
         override void populate(Box content) {
             auto box = new Box(Orientation.VERTICAL, 5);
             box.packStart(new Label("Bit Depth"), false, false, 0);
             _bitDepthComboBox = new ComboBoxText();
-            foreach(bitDepthString; _bitDepthStrings) {
-                _bitDepthComboBox.appendText(bitDepthString);
+            foreach(index, bitDepthString; _bitDepthStrings) {
+                _bitDepthComboBox.insertText(index, bitDepthString);
             }
             _bitDepthComboBox.setActive(0);
             box.packEnd(_bitDepthComboBox, false, false, 0);
@@ -4184,7 +4277,7 @@ public:
         override void onOK(Button button) {
             foreach(audioBitDepth, bitDepthString; _bitDepthStrings) {
                 if(bitDepthString == _bitDepthComboBox.getActiveText()) {
-                    selectedBitDepth = audioBitDepth;
+                    _selectedBitDepth = audioBitDepth;
                     break;
                 }
             }
@@ -4198,6 +4291,7 @@ public:
         }
 
         static immutable string[AudioBitDepth] _bitDepthStrings;
+        AudioBitDepth _selectedBitDepth;
         ComboBoxText _bitDepthComboBox;
     }
 
@@ -8651,7 +8745,21 @@ public:
     void loadRegionsFromFiles(const(string[]) fileNames) {
         auto progressCallback = ProgressTaskCallback!(LoadState)(thisTid);
         void loadRegionTask(string fileName) {
-            auto newSequence = AudioSequence.fromFile(fileName, _mixer.sampleRate, progressCallback);
+            Nullable!SampleRateConverter resampleCallback(nframes_t originalSampleRate, nframes_t newSampleRate) {
+                Nullable!SampleRateConverter result;
+
+                auto sampleRateDialog = new SampleRateDialog(originalSampleRate, newSampleRate);
+                auto sampleRateResponse = sampleRateDialog.run();
+                if(sampleRateResponse == ResponseType.OK) {
+                    result = sampleRateDialog.selectedSampleRateConverter;
+                }
+
+                return result;
+            }
+            auto newSequence = AudioSequence.fromFile(fileName,
+                                                      _mixer.sampleRate,
+                                                      &resampleCallback,
+                                                      progressCallback);
             if(newSequence is null && !progressCallback.cancelled) {
                 ErrorDialog.display(_parentWindow, "Could not load file " ~ baseName(fileName));
             }
@@ -8759,7 +8867,9 @@ public:
                 if(bitDepthResponse != ResponseType.OK) {
                     return;
                 }
-                audioBitDepth = bitDepthDialog.selectedBitDepth;
+                else {
+                    audioBitDepth = bitDepthDialog.selectedBitDepth;
+                }
             }
 
             auto progressCallback = ProgressTaskCallback!(SaveState)(thisTid);
