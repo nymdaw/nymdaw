@@ -3578,8 +3578,8 @@ public:
 
             Menu regionMenu = append("_Region");
             _createEditRegionMenu(regionMenu,
-                                  _stretchSelectionMenuItem,
                                   _normalizeMenuItem,
+                                  _stretchSelectionMenuItem,
                                   _showOnsetsMenuItem,
                                   _onsetDetectionMenuItem,
                                   _linkChannelsMenuItem);
@@ -3732,15 +3732,15 @@ public:
         }
 
         void updateRegionMenu() {
-            _updateEditRegionMenu(_stretchSelectionMenuItem,
-                                  _normalizeMenuItem,
+            _updateEditRegionMenu(_normalizeMenuItem,
+                                  _stretchSelectionMenuItem,
                                   _showOnsetsMenuItem,
                                   _onsetDetectionMenuItem,
                                   _linkChannelsMenuItem);
 
             immutable bool editMode = _mode == Mode.editRegion;
-            _stretchSelectionMenuItem.setSensitive(editMode && _stretchSelectionMenuItem.getSensitive());
             _normalizeMenuItem.setSensitive(editMode && _normalizeMenuItem.getSensitive());
+            _stretchSelectionMenuItem.setSensitive(editMode && _stretchSelectionMenuItem.getSensitive());
             _showOnsetsMenuItem.setSensitive(editMode && _showOnsetsMenuItem.getSensitive());
             _onsetDetectionMenuItem.setSensitive(editMode && _onsetDetectionMenuItem.getSensitive());
             _linkChannelsMenuItem.setSensitive(editMode && _linkChannelsMenuItem.getSensitive());
@@ -3755,8 +3755,8 @@ public:
         CheckMenuItem _softCopyMenuItem;
         CheckMenuItem _hardCopyMenuItem;
 
-        MenuItem _stretchSelectionMenuItem;
         MenuItem _normalizeMenuItem;
+        MenuItem _stretchSelectionMenuItem;
         CheckMenuItem _showOnsetsMenuItem;
         MenuItem _onsetDetectionMenuItem;
         CheckMenuItem _linkChannelsMenuItem;
@@ -8002,16 +8002,16 @@ public:
                         if(_editRegionMenu is null) {
                             _editRegionMenu = new Menu();
                             _createEditRegionMenu(_editRegionMenu,
-                                                  _stretchSelectionMenuItem,
                                                   _normalizeMenuItem,
+                                                  _stretchSelectionMenuItem,
                                                   _showOnsetsMenuItem,
                                                   _onsetDetectionMenuItem,
                                                   _linkChannelsMenuItem);
                             _editRegionMenu.attachToWidget(this, null);
                         }
 
-                        _updateEditRegionMenu(_stretchSelectionMenuItem,
-                                              _normalizeMenuItem,
+                        _updateEditRegionMenu(_normalizeMenuItem,
+                                              _stretchSelectionMenuItem,
                                               _showOnsetsMenuItem,
                                               _onsetDetectionMenuItem,
                                               _linkChannelsMenuItem);
@@ -9477,18 +9477,18 @@ private:
     }
 
     void _createEditRegionMenu(ref Menu editRegionMenu,
-                               ref MenuItem stretchSelectionMenuItem,
                                ref MenuItem normalizeMenuItem,
+                               ref MenuItem stretchSelectionMenuItem,
                                ref CheckMenuItem showOnsetsMenuItem,
                                ref MenuItem onsetDetectionMenuItem,
                                ref CheckMenuItem linkChannelsMenuItem) {
-        stretchSelectionMenuItem = new MenuItem(delegate void(MenuItem) { new StretchSelectionDialog(); },
-                                                 "Stretch Selection...");
-        editRegionMenu.append(stretchSelectionMenuItem);
-
         normalizeMenuItem = new MenuItem(delegate void (MenuItem) { new NormalizeDialog(); },
                                          "Normalize...");
         editRegionMenu.append(normalizeMenuItem);
+
+        stretchSelectionMenuItem = new MenuItem(delegate void(MenuItem) { new StretchSelectionDialog(); },
+                                                "Stretch Selection...");
+        editRegionMenu.append(stretchSelectionMenuItem);
 
         showOnsetsMenuItem = new CheckMenuItem("Show Onsets");
         showOnsetsMenuItem.addOnToggled(&onShowOnsets);
@@ -9503,15 +9503,15 @@ private:
         editRegionMenu.append(linkChannelsMenuItem);
     }
 
-    void _updateEditRegionMenu(ref MenuItem stretchSelectionMenuItem,
-                               ref MenuItem normalizeMenuItem,
+    void _updateEditRegionMenu(ref MenuItem normalizeMenuItem,
+                               ref MenuItem stretchSelectionMenuItem,
                                ref CheckMenuItem showOnsetsMenuItem,
                                ref MenuItem onsetDetectionMenuItem,
                                ref CheckMenuItem linkChannelsMenuItem) {
         if(_editRegion !is null) {
-            stretchSelectionMenuItem.setSensitive(_editRegion.subregionSelected);
-
             normalizeMenuItem.setSensitive(true);
+
+            stretchSelectionMenuItem.setSensitive(_editRegion.subregionSelected);
 
             showOnsetsMenuItem.setSensitive(true);
             showOnsetsMenuItem.setActive(_editRegion.showOnsets);
@@ -9899,8 +9899,8 @@ private:
 
     Menu _trackMenu;
     Menu _editRegionMenu;
-    MenuItem _stretchSelectionMenuItem;
     MenuItem _normalizeMenuItem;
+    MenuItem _stretchSelectionMenuItem;
     CheckMenuItem _showOnsetsMenuItem;
     MenuItem _onsetDetectionMenuItem;
     CheckMenuItem _linkChannelsMenuItem;
