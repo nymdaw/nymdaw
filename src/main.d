@@ -72,6 +72,7 @@ import gtk.TreeViewColumn;
 import gtk.CellRendererText;
 import gtk.ListStore;
 import gtk.FileFilter;
+import gtk.ComboBoxText;
 
 import gtkc.gtktypes;
 
@@ -4104,12 +4105,16 @@ public:
             populate(content);
 
             if(okButton) {
-                content.packEnd(createOKCancelButtons(&onOK, &onCancel), false, false, 10);
+                content.packEnd(createOKCancelButtons(&_onOKImpl, &_onCancelImpl), false, false, 10);
             }
             else {
-                content.packEnd(createCancelButton(&onCancel), false, false, 10);
+                content.packEnd(createCancelButton(&_onCancelImpl), false, false, 10);
             }
             _dialog.showAll();
+        }
+
+        auto run() {
+            return _dialog.run();
         }
 
         static ButtonBox createCancelButton(void delegate(Button) onCancel) {
@@ -4131,21 +4136,69 @@ public:
         }
 
     protected:
-        final void destroyDialog() {
-            _dialog.destroy();
-        }
-
         void populate(Box content);
 
-        void onOK(Button button) {
-            destroyDialog();
+        void onOK(Button button) {}
+        void onCancel(Button button) {}
+
+    private:
+        final void _destroyDialog() {
+            if(_dialog !is null) {
+                _dialog.destroy();
+                _dialog = null;
+            }
         }
-        void onCancel(Button button) {
-            destroyDialog();
+
+        final void _onOKImpl(Button button) {
+            _dialog.response(ResponseType.OK);
+            onOK(button);
+            _destroyDialog();
+        }
+
+        final void _onCancelImpl(Button button) {
+            _dialog.response(ResponseType.CANCEL);
+            onCancel(button);
+            _destroyDialog();
+        }
+
+        Dialog _dialog;
+    }
+
+    final class BitDepthDialog : ArrangeDialog {
+    public:
+        AudioBitDepth selectedBitDepth;
+
+    protected:
+        override void populate(Box content) {
+            auto box = new Box(Orientation.VERTICAL, 5);
+            box.packStart(new Label("Bit Depth"), false, false, 0);
+            _bitDepthComboBox = new ComboBoxText();
+            foreach(bitDepthString; _bitDepthStrings) {
+                _bitDepthComboBox.appendText(bitDepthString);
+            }
+            _bitDepthComboBox.setActive(0);
+            box.packEnd(_bitDepthComboBox, false, false, 0);
+            content.packStart(box, false, false, 10);
+        }
+
+        override void onOK(Button button) {
+            foreach(audioBitDepth, bitDepthString; _bitDepthStrings) {
+                if(bitDepthString == _bitDepthComboBox.getActiveText()) {
+                    selectedBitDepth = audioBitDepth;
+                    break;
+                }
+            }
         }
 
     private:
-        Dialog _dialog;
+        static this() {
+            _bitDepthStrings = [AudioBitDepth.pcm16Bit : "16-bit PCM",
+                                AudioBitDepth.pcm24Bit : "24-bit PCM"];
+            assert(_bitDepthStrings.length > 0);
+        }
+
+        static immutable string[AudioBitDepth] _bitDepthStrings;
+        ComboBoxText _bitDepthComboBox;
     }
 
     final class RenameTrackDialog : ArrangeDialog {
@@ -4165,13 +4218,9 @@ public:
         override void onOK(Button button) {
             if(_trackView !is null) {
                 _trackView.name = _nameEntry.getText();
-                destroyDialog();
 
                 _trackStubs.redraw();
                 _arrangeChannelStrip.redraw();
-            }
-            else {
-                destroyDialog();
             }
         }
 
@@ -4217,13 +4266,9 @@ public:
             if(_region !is null) {
                 _region.onsetParams.onsetThreshold = _onsetThresholdAdjustment.getValue();
                 _region.onsetParams.silenceThreshold = _silenceThresholdAdjustment.getValue();
-                destroyDialog();
 
                 _region.computeOnsets();
                 _canvas.redraw();
-            }
-            else {
-                destroyDialog();
             }
         }
 
@@ -4259,7 +4304,6 @@ public:
                 else if(stretchRatio == 0) {
                     stretchRatio = 1;
                 }
-                destroyDialog();
 
                 _region.subregionEndFrame =
                     _region.region.stretchSubregion(_editRegion.subregionStartFrame,
@@ -4271,9 +4315,6 @@ public:
                 _region.appendEditState(_region.currentEditState(true, true), "Stretch subregion");
 
                 _canvas.redraw();
-            }
-            else {
-                destroyDialog();
             }
         }
 
@@ -4312,7 +4353,6 @@ public:
         override void onOK(Button button) {
             bool selectionOnly = _normalizeSelectionOnly.getActive();
             bool entireRegion = _normalizeEntireRegion.getActive();
-            destroyDialog();
 
             if(_region !is null) {
                 auto progressCallback = ProgressTaskCallback!(NormalizeState)(thisTid);
@@ -7914,6 +7954,8 @@ public:
                         _editRegion.subregionSelected =
                             !(_editRegion.subregionStartFrame == _editRegion.subregionEndFrame);
 
+                        _editRegion.appendEditState(_editRegion.currentEditState(false), "Selection modified");
+
                         _setAction(Action.none);
                         redraw();
                         break;
@@ -8707,6 +8749,19 @@ public:
                 }
             }
 
+            AudioBitDepth audioBitDepth;
+            string audioFileFormat = _exportFileChooser.getFilter().getName();
+            if(audioFileFormat == AudioFileFormat.wavFilterName ||
+               audioFileFormat == AudioFileFormat.aiffFilterName ||
+               audioFileFormat == AudioFileFormat.cafFilterName) {
+                auto bitDepthDialog = new BitDepthDialog();
+                auto bitDepthResponse = bitDepthDialog.run();
+                if(bitDepthResponse != ResponseType.OK) {
+                    return;
+                }
+                audioBitDepth = bitDepthDialog.selectedBitDepth;
+            }
+
             auto progressCallback = ProgressTaskCallback!(SaveState)(thisTid);
             auto progressTask = progressTask(
                 fileName,
@@ -8714,8 +8769,8 @@ public:
                     try {
                         _mixer.exportSessionToFile(fileName,
                                                    cast(AudioFileFormat)
-                                                   (_exportFileChooser.getFilter().getName()),
-                                                   AudioBitDepth.pcm16Bit, // TODO allow the user to specify this
+                                                   audioFileFormat,
+                                                   audioBitDepth,
                                                    progressCallback);
                     }
                     catch(AudioError e) {
