@@ -1,21 +1,69 @@
-dseq internal source code is copyright 2015 Thomas Smith.
+All original code is located in the "src" subdirectory, copyright 2015 Thomas Smith.
 
-Some dseq dependencies are included in the source tree.
-Their respective licenses are compatible with the GPL V3.
+All code adapted from 3rd-party libraries is located in the "deps" subdirectory.
+The adaptations were made by Thomas Smith, with the original authors credited below.
+
+All dependencies included in the source tree have licenses compatible with the GPL V3.
 
 Waf build system:
 https://waf.io/
 Authors: Thomas Nagy et al.
 License: New BSD
 
+Directory: deps/aubio
+The aubio library can be found at:
+http://aubio.org/
+Author: Paul Brossier
+License: GPL V3
+
+Directory: deps/coreaudio
+This directory contains code that calls Apple's CoreAudio library, based on documentation found at:
+http://kaniini.dereferenced.org/2014/08/31/CoreAudio-sucks.html
+
+Directory: deps/jack
+The libjack library can be found at:
+https://github.com/jackaudio
+Authors: Paul Davis et al.
+License: LGPL
 The dlang-jack wrapper is adapted from:
 https://github.com/martinez/dlang-jack
-http://code.dlang.org/packages/jack
 Author: Denis Martinez
 License: BSL-1.0
 
-The libsndfile wrapper is adapted from:
+Directory: deps/meters
+The metering code is adapted from:
+https://github.com/x42/meters.lv2
+Author: Robin Gareus
+License: GPL V2
+
+Directory: deps/portaudio
+The portaudio library can be found at:
+http://portaudio.com/
+Authors: Ross Bencina, Phil Burk
+License: MIT
+The portaudio wrapper is adapted from:
+https://github.com/D-Programming-Deimos/portaudio
+Authors: Walter Bright, Martin Nowak
+License: MIT
+
+Directory: deps/rubberband
+The rubberband library can be found at:
+http://breakfastquay.com/rubberband/
+Author: Chris Cannam
+License: GPL V2
+
+Directory: deps/samplerate
+The samplerate library can be found at:
+http://www.mega-nerd.com/SRC/
+Author: Erik de Castro Lopo
+License: GPL V2
+
+Directory: deps/sndfile
+The sndfile library can be found at:
+http://www.mega-nerd.com/libsndfile/
+Author: Erik de Castro Lopo
+License: GPL V2.1
+The sndfile wrapper is adapted from:
 https://github.com/p0nce/DerelictSndFile
-http://code.dlang.org/packages/derelict_extras-sndfile
 Author: ponce
 License: Public Domain
