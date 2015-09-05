@@ -1099,6 +1099,7 @@ alias LoadState = ProgressState!(StageDesc("read", "Loading file"),
                                  StageDesc("resample", "Resampling"),
                                  StageDesc("computeOverview", "Computing overview"));
 alias ComputeOnsetsState = ProgressState!(StageDesc("computeOnsets", "Computing onsets"));
+alias GainState = ProgressState!(StageDesc("gain", "Adjusting gain"));
 alias NormalizeState = ProgressState!(StageDesc("normalize", "Normalizing"));
 
 alias SaveState = ProgressState!(StageDesc("write", "Writing file"));
@@ -1932,19 +1933,64 @@ public:
         _sequenceChanged(prevNFrames, newNFrames);
     }
 
+    // adjust the gain, in dBFS, for the subregion from startFrame to endFrame
+    void gain(nframes_t localStartFrame,
+              nframes_t localEndFrame,
+              sample_t gainDB,
+              GainState.Callback progressCallback = null) {
+        if(progressCallback !is null) {
+            progressCallback(GainState.gain, 0);
+        }
+
+        sample_t[] audioBuffer = _audioSlice[localStartFrame * nChannels .. localEndFrame * nChannels].toArray;
+        _gainBuffer(audioBuffer, gainDB);
+
+        // write the gain-adjusted buffer to the audio sequence
+        auto immutable prevNFrames = _audioSeq.nframes;
+        _audioSeq.replace(AudioSegment(audioBuffer, nChannels),
+                          (_sliceStartFrame + localStartFrame) * nChannels,
+                          (_sliceStartFrame + localEndFrame) * nChannels);
+        auto immutable newNFrames = _audioSeq.nframes;
+        _sequenceChanged(prevNFrames, newNFrames);
+
+        if(progressCallback !is null) {
+            progressCallback(GainState.complete, 1);
+        }        
+    }
+
+    // adjust the gain, in dBFS, for the entire region
+    void gain(sample_t gainDB, GainState.Callback progressCallback = null) {
+        if(progressCallback !is null) {
+            progressCallback(GainState.gain, 0);
+        }
+
+        sample_t[] audioBuffer = _audioSeq[].toArray;
+        _gainBuffer(audioBuffer, gainDB);
+
+        // write the gain-adjusted region to the audio sequence
+        auto immutable prevNFrames = _audioSeq.nframes;
+        _audioSeq.replace(AudioSegment(audioBuffer, nChannels), 0, _audioSeq.length);
+        auto immutable newNFrames = _audioSeq.nframes;
+        _sequenceChanged(prevNFrames, newNFrames);
+
+        if(progressCallback !is null) {
+            progressCallback(GainState.complete, 1);
+        }
+    }
+
     // normalize subregion from startFrame to endFrame to the given maximum gain, in dBFS
     void normalize(nframes_t localStartFrame,
                    nframes_t localEndFrame,
-                   sample_t maxGain = 0.1f,
+                   sample_t maxGainDB = 0.1f,
                    NormalizeState.Callback progressCallback = null) {
         if(progressCallback !is null) {
             progressCallback(NormalizeState.normalize, 0);
         }
 
         sample_t[] audioBuffer = _audioSlice[localStartFrame * nChannels .. localEndFrame * nChannels].toArray;
-        _normalizeBuffer(audioBuffer, maxGain);
+        _normalizeBuffer(audioBuffer, maxGainDB);
 
-        // write the normalized selection to the audio sequence
+        // write the normalized buffer to the audio sequence
         auto immutable prevNFrames = _audioSeq.nframes;
         _audioSeq.replace(AudioSegment(audioBuffer, nChannels),
                           (_sliceStartFrame + localStartFrame) * nChannels,
@@ -1957,16 +2003,16 @@ public:
         }
     }
 
-    // normalize entire region (including nonvisible pieces) to the given maximum gain, in dBFS
-    void normalize(sample_t maxGain = -0.1f, NormalizeState.Callback progressCallback = null) {
+    // normalize entire region to the given maximum gain, in dBFS
+    void normalize(sample_t maxGainDB = -0.1f, NormalizeState.Callback progressCallback = null) {
         if(progressCallback !is null) {
             progressCallback(NormalizeState.normalize, 0);
         }
 
         sample_t[] audioBuffer = _audioSeq[].toArray;
-        _normalizeBuffer(audioBuffer, maxGain);
+        _normalizeBuffer(audioBuffer, maxGainDB);
 
-        // write the normalized selection to the audio sequence
+        // write the normalized region to the audio sequence
         auto immutable prevNFrames = _audioSeq.nframes;
         _audioSeq.replace(AudioSegment(audioBuffer, nChannels), 0, _audioSeq.length);
         auto immutable newNFrames = _audioSeq.nframes;
@@ -1975,6 +2021,48 @@ public:
         if(progressCallback !is null) {
             progressCallback(NormalizeState.complete, 1);
         }
+    }
+
+    // reverse a subregion
+    void reverse(nframes_t localStartFrame, nframes_t localEndFrame) {
+        sample_t[] audioBuffer = _audioSlice[localStartFrame * nChannels .. localEndFrame * nChannels].toArray;
+        std.algorithm.reverse(audioBuffer);
+
+        // write the reversed buffer to the audio sequence
+        auto immutable prevNFrames = _audioSeq.nframes;
+        _audioSeq.replace(AudioSegment(audioBuffer, nChannels),
+                          (_sliceStartFrame + localStartFrame) * nChannels,
+                          (_sliceStartFrame + localEndFrame) * nChannels);
+        auto immutable newNFrames = _audioSeq.nframes;
+        _sequenceChanged(prevNFrames, newNFrames);
+    }
+
+    // fade in a subregion
+    void fadeIn(nframes_t localStartFrame, nframes_t localEndFrame) {
+        sample_t[] audioBuffer = _audioSlice[localStartFrame * nChannels .. localEndFrame * nChannels].toArray;
+        _fadeInBuffer(audioBuffer);
+
+        // write the faded buffer to the audio sequence
+        auto immutable prevNFrames = _audioSeq.nframes;
+        _audioSeq.replace(AudioSegment(audioBuffer, nChannels),
+                          (_sliceStartFrame + localStartFrame) * nChannels,
+                          (_sliceStartFrame + localEndFrame) * nChannels);
+        auto immutable newNFrames = _audioSeq.nframes;
+        _sequenceChanged(prevNFrames, newNFrames);
+    }
+
+    // fade out a subregion
+    void fadeOut(nframes_t localStartFrame, nframes_t localEndFrame) {
+        sample_t[] audioBuffer = _audioSlice[localStartFrame * nChannels .. localEndFrame * nChannels].toArray;
+        _fadeOutBuffer(audioBuffer);
+
+        // write the faded buffer to the audio sequence
+        auto immutable prevNFrames = _audioSeq.nframes;
+        _audioSeq.replace(AudioSegment(audioBuffer, nChannels),
+                          (_sliceStartFrame + localStartFrame) * nChannels,
+                          (_sliceStartFrame + localEndFrame) * nChannels);
+        auto immutable newNFrames = _audioSeq.nframes;
+        _sequenceChanged(prevNFrames, newNFrames);
     }
 
     sample_t getMin(channels_t channelIndex,
@@ -2199,9 +2287,23 @@ package:
     ResizeDelegate resizeDelegate;
 
 private:
+    // adjust the gain of an audio buffer; note that this does not send a progress completion message
+    static void _gainBuffer(sample_t[] audioBuffer,
+                            sample_t gainDB,
+                            GainState.Callback progressCallback = null) {
+        sample_t sampleFactor = pow(10, gainDB / 20);
+        foreach(i, ref s; audioBuffer) {
+            s *= sampleFactor;
+
+            if(progressCallback !is null && i % (audioBuffer.length / GainState.stepsPerStage) == 0) {
+                progressCallback(GainState.gain, cast(double)(i) / cast(double)(audioBuffer.length));
+            }
+        }
+    }
+
     // normalize an audio buffer; note that this does not send a progress completion message
     static void _normalizeBuffer(sample_t[] audioBuffer,
-                                 sample_t maxGain = 0.1f,
+                                 sample_t maxGainDB = 0.1f,
                                  NormalizeState.Callback progressCallback = null) {
         // calculate the maximum sample
         sample_t minSample = 1;
@@ -2212,14 +2314,30 @@ private:
         }
         maxSample = max(abs(minSample), abs(maxSample));
 
-        // normalize the selection
-        sample_t sampleFactor =  pow(10, (maxGain > 0 ? 0 : maxGain) / 20) / maxSample;
+        // normalize the buffer
+        sample_t sampleFactor = pow(10, (maxGainDB > 0 ? 0 : maxGainDB) / 20) / maxSample;
         foreach(i, ref s; audioBuffer) {
             s *= sampleFactor;
 
             if(progressCallback !is null && i % (audioBuffer.length / NormalizeState.stepsPerStage) == 0) {
                 progressCallback(NormalizeState.normalize, cast(double)(i) / cast(double)(audioBuffer.length));
             }
+        }
+    }
+
+    // linearly fade in an audio buffer, in-place
+    static void _fadeInBuffer(sample_t[] audioBuffer) {
+        immutable sample_t bufferLength = cast(sample_t)(audioBuffer.length);
+        foreach(i, ref s; audioBuffer) {
+            s *= cast(sample_t)(i) / bufferLength;
+        }
+    }
+
+    // linearly fade out an audio buffer, in-place
+    static void _fadeOutBuffer(sample_t[] audioBuffer) {
+        immutable sample_t bufferLength = cast(sample_t)(audioBuffer.length);
+        foreach(i, ref s; audioBuffer) {
+            s *= 1 - cast(sample_t)(i) / bufferLength;
         }
     }
 
@@ -3578,7 +3696,11 @@ public:
 
             Menu regionMenu = append("_Region");
             _createEditRegionMenu(regionMenu,
+                                  _gainMenuItem,
                                   _normalizeMenuItem,
+                                  _reverseMenuItem,
+                                  _fadeInMenuItem,
+                                  _fadeOutMenuItem,
                                   _stretchSelectionMenuItem,
                                   _showOnsetsMenuItem,
                                   _onsetDetectionMenuItem,
@@ -3732,14 +3854,22 @@ public:
         }
 
         void updateRegionMenu() {
-            _updateEditRegionMenu(_normalizeMenuItem,
+            _updateEditRegionMenu(_gainMenuItem,
+                                  _normalizeMenuItem,
+                                  _reverseMenuItem,
+                                  _fadeInMenuItem,
+                                  _fadeOutMenuItem,
                                   _stretchSelectionMenuItem,
                                   _showOnsetsMenuItem,
                                   _onsetDetectionMenuItem,
                                   _linkChannelsMenuItem);
 
             immutable bool editMode = _mode == Mode.editRegion;
+            _gainMenuItem.setSensitive(editMode && _gainMenuItem.getSensitive());
             _normalizeMenuItem.setSensitive(editMode && _normalizeMenuItem.getSensitive());
+            _reverseMenuItem.setSensitive(editMode && _reverseMenuItem.getSensitive());
+            _fadeInMenuItem.setSensitive(editMode && _fadeInMenuItem.getSensitive());
+            _fadeOutMenuItem.setSensitive(editMode && _fadeOutMenuItem.getSensitive());
             _stretchSelectionMenuItem.setSensitive(editMode && _stretchSelectionMenuItem.getSensitive());
             _showOnsetsMenuItem.setSensitive(editMode && _showOnsetsMenuItem.getSensitive());
             _onsetDetectionMenuItem.setSensitive(editMode && _onsetDetectionMenuItem.getSensitive());
@@ -3755,7 +3885,11 @@ public:
         CheckMenuItem _softCopyMenuItem;
         CheckMenuItem _hardCopyMenuItem;
 
+        MenuItem _gainMenuItem;
         MenuItem _normalizeMenuItem;
+        MenuItem _reverseMenuItem;
+        MenuItem _fadeInMenuItem;
+        MenuItem _fadeOutMenuItem;
         MenuItem _stretchSelectionMenuItem;
         CheckMenuItem _showOnsetsMenuItem;
         MenuItem _onsetDetectionMenuItem;
@@ -4415,6 +4549,72 @@ public:
     private:
         RegionView _region;
         Adjustment _stretchSelectionFactorAdjustment;
+    }
+
+    final class GainDialog : ArrangeDialog {
+    protected:
+        override void populate(Box content) {
+            _region = _editRegion;
+
+            _gainEntireRegion = new RadioButton(cast(ListSG)(null), "Entire Region");
+            _gainSelectionOnly = new RadioButton(_gainEntireRegion, "Selection Only");
+            _gainSelectionOnly.setSensitive(_editRegion.subregionSelected);
+            if(_editRegion.subregionSelected) {
+                _gainSelectionOnly.setActive(true);
+            }
+            else {
+                _gainEntireRegion.setActive(true);
+            }
+
+            auto hBox = new Box(Orientation.HORIZONTAL, 10);
+            hBox.add(_gainEntireRegion);
+            hBox.add(_gainSelectionOnly);
+            content.packStart(hBox, false, false, 10);
+
+            content.packStart(new Label("Gain (dbFS)"), false, false, 0);
+            _gainAdjustment = new Adjustment(0, -70, 10, 0.01, 0.5, 0);
+            auto gainScale = new Scale(Orientation.HORIZONTAL, _gainAdjustment);
+            gainScale.setDigits(3);
+            content.packStart(gainScale, false, false, 10);
+        }
+
+        override void onOK(Button button) {
+            bool selectionOnly = _gainSelectionOnly.getActive();
+            bool entireRegion = _gainEntireRegion.getActive();
+
+            if(_region !is null) {
+                auto progressCallback = ProgressTaskCallback!(GainState)(thisTid);
+                auto progressTask = progressTask(
+                    _region.name,
+                    delegate void() {
+                        if(_region.subregionSelected && selectionOnly) {
+                            _region.region.gain(_region.subregionStartFrame,
+                                                _region.subregionEndFrame,
+                                                cast(sample_t)(_gainAdjustment.getValue()),
+                                                progressCallback);
+                            if(_editRegion.showOnsets) {
+                                _editRegion.computeOnsets();
+                            }
+                            _region.appendEditState(_region.currentEditState(true), "Adjust subregion gain");
+                        }
+                        else if(entireRegion) {
+                            _region.region.gain(cast(sample_t)(_gainAdjustment.getValue()), progressCallback);
+                            if(_editRegion.showOnsets) {
+                                _editRegion.computeOnsets();
+                            }
+                            _region.appendEditState(_region.currentEditState(true), "Adjust region gain");
+                        }
+                    });
+                beginProgressTask!(GainState)(progressTask);
+                _canvas.redraw();
+            }
+        }
+
+    private:
+        RegionView _region;
+        RadioButton _gainEntireRegion;
+        RadioButton _gainSelectionOnly;
+        Adjustment _gainAdjustment;
     }
 
     final class NormalizeDialog : ArrangeDialog {
@@ -8002,7 +8202,11 @@ public:
                         if(_editRegionMenu is null) {
                             _editRegionMenu = new Menu();
                             _createEditRegionMenu(_editRegionMenu,
+                                                  _gainMenuItem,
                                                   _normalizeMenuItem,
+                                                  _reverseMenuItem,
+                                                  _fadeInMenuItem,
+                                                  _fadeOutMenuItem,
                                                   _stretchSelectionMenuItem,
                                                   _showOnsetsMenuItem,
                                                   _onsetDetectionMenuItem,
@@ -8010,7 +8214,11 @@ public:
                             _editRegionMenu.attachToWidget(this, null);
                         }
 
-                        _updateEditRegionMenu(_normalizeMenuItem,
+                        _updateEditRegionMenu(_gainMenuItem,
+                                              _normalizeMenuItem,
+                                              _reverseMenuItem,
+                                              _fadeInMenuItem,
+                                              _fadeOutMenuItem,
                                               _stretchSelectionMenuItem,
                                               _showOnsetsMenuItem,
                                               _onsetDetectionMenuItem,
@@ -9477,14 +9685,58 @@ private:
     }
 
     void _createEditRegionMenu(ref Menu editRegionMenu,
+                               ref MenuItem gainMenuItem,
                                ref MenuItem normalizeMenuItem,
+                               ref MenuItem reverseMenuItem,
+                               ref MenuItem fadeInMenuItem,
+                               ref MenuItem fadeOutMenuItem,
                                ref MenuItem stretchSelectionMenuItem,
                                ref CheckMenuItem showOnsetsMenuItem,
                                ref MenuItem onsetDetectionMenuItem,
                                ref CheckMenuItem linkChannelsMenuItem) {
-        normalizeMenuItem = new MenuItem(delegate void (MenuItem) { new NormalizeDialog(); },
+        gainMenuItem = new MenuItem(delegate void(MenuItem) { new GainDialog(); },
+                                    "Gain...");
+        editRegionMenu.append(gainMenuItem);
+
+        normalizeMenuItem = new MenuItem(delegate void(MenuItem) { new NormalizeDialog(); },
                                          "Normalize...");
         editRegionMenu.append(normalizeMenuItem);
+
+        reverseMenuItem = new MenuItem(delegate void(MenuItem) {
+                if(_mode == Mode.editRegion && _editRegion !is null && _editRegion.subregionSelected) {
+                    _editRegion.region.reverse(_editRegion.subregionStartFrame, _editRegion.subregionEndFrame);
+                    if(_editRegion.showOnsets) {
+                        _editRegion.computeOnsets();
+                    }
+                    _editRegion.appendEditState(_editRegion.currentEditState(true), "Reverse subregion");
+                    _canvas.redraw();
+                }
+            }, "Reverse Selection...");
+        editRegionMenu.append(reverseMenuItem);
+
+        fadeInMenuItem = new MenuItem(delegate void(MenuItem) {
+                if(_mode == Mode.editRegion && _editRegion !is null && _editRegion.subregionSelected) {
+                    _editRegion.region.fadeIn(_editRegion.subregionStartFrame, _editRegion.subregionEndFrame);
+                    if(_editRegion.showOnsets) {
+                        _editRegion.computeOnsets();
+                    }
+                    _editRegion.appendEditState(_editRegion.currentEditState(true), "Fade in subregion");
+                    _canvas.redraw();
+                }
+            }, "Fade In Selection...");
+        editRegionMenu.append(fadeInMenuItem);
+
+        fadeOutMenuItem = new MenuItem(delegate void(MenuItem) {
+                if(_mode == Mode.editRegion && _editRegion !is null && _editRegion.subregionSelected) {
+                    _editRegion.region.fadeOut(_editRegion.subregionStartFrame, _editRegion.subregionEndFrame);
+                    if(_editRegion.showOnsets) {
+                        _editRegion.computeOnsets();
+                    }
+                    _editRegion.appendEditState(_editRegion.currentEditState(true), "Fade out subregion");
+                    _canvas.redraw();
+                }
+            }, "Fade Out Selection...");
+        editRegionMenu.append(fadeOutMenuItem);
 
         stretchSelectionMenuItem = new MenuItem(delegate void(MenuItem) { new StretchSelectionDialog(); },
                                                 "Stretch Selection...");
@@ -9503,14 +9755,22 @@ private:
         editRegionMenu.append(linkChannelsMenuItem);
     }
 
-    void _updateEditRegionMenu(ref MenuItem normalizeMenuItem,
+    void _updateEditRegionMenu(ref MenuItem gainMenuItem,
+                               ref MenuItem normalizeMenuItem,
+                               ref MenuItem reverseMenuItem,
+                               ref MenuItem fadeInMenuItem,
+                               ref MenuItem fadeOutMenuItem,
                                ref MenuItem stretchSelectionMenuItem,
                                ref CheckMenuItem showOnsetsMenuItem,
                                ref MenuItem onsetDetectionMenuItem,
                                ref CheckMenuItem linkChannelsMenuItem) {
         if(_editRegion !is null) {
+            gainMenuItem.setSensitive(true);
             normalizeMenuItem.setSensitive(true);
 
+            reverseMenuItem.setSensitive(_editRegion.subregionSelected);
+            fadeInMenuItem.setSensitive(_editRegion.subregionSelected);
+            fadeOutMenuItem.setSensitive(_editRegion.subregionSelected);
             stretchSelectionMenuItem.setSensitive(_editRegion.subregionSelected);
 
             showOnsetsMenuItem.setSensitive(true);
@@ -9899,7 +10159,11 @@ private:
 
     Menu _trackMenu;
     Menu _editRegionMenu;
+    MenuItem _gainMenuItem;
     MenuItem _normalizeMenuItem;
+    MenuItem _reverseMenuItem;
+    MenuItem _fadeInMenuItem;
+    MenuItem _fadeOutMenuItem;
     MenuItem _stretchSelectionMenuItem;
     CheckMenuItem _showOnsetsMenuItem;
     MenuItem _onsetDetectionMenuItem;
