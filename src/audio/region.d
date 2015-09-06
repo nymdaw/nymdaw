@@ -220,7 +220,7 @@ public:
     }
 
     this(AudioSegment originalBuffer, nframes_t sampleRate, channels_t nChannels, string name) {
-        sequence = new Sequence!(AudioSegment)(originalBuffer);
+        sequence = new SequenceT!(AudioSegment).Sequence(originalBuffer);
 
         _mutex = new Mutex;
 
@@ -341,9 +341,9 @@ public:
         return newSequence;
     }
 
-    Sequence!(AudioSegment) sequence;
+    SequenceT!(AudioSegment).Sequence sequence;
     alias sequence this;
-    alias PieceTable = Sequence!(AudioSegment).PieceTable;
+    alias AudioPieceTable = SequenceT!(AudioSegment).PieceTable;
 
     void addSoftLink(Link link) {
         synchronized(_mutex) {
@@ -516,8 +516,8 @@ private sample_t[] convertSampleRate(sample_t[] audioBuffer,
 
 struct Onset {
     nframes_t onsetFrame;
-    AudioSequence.PieceTable leftSource;
-    AudioSequence.PieceTable rightSource;
+    AudioSequence.AudioPieceTable leftSource;
+    AudioSequence.AudioPieceTable rightSource;
 }
 
 struct OnsetParams {
@@ -530,7 +530,7 @@ struct OnsetParams {
     sample_t silenceThreshold = -90;
 }
 
-alias OnsetSequence = Sequence!(Onset[]);
+alias OnsetSequence = SequenceT!(Onset[]).Sequence;
 
 final class Region {
 public:
@@ -596,7 +596,7 @@ public:
     // returns an array of frames at which an onset occurs in a given piece table, with frames given locally
     // all channels are summed before computing onsets
     static Onset[] getOnsetsLinkedChannels(ref const(OnsetParams) params,
-                                           AudioSequence.PieceTable pieceTable,
+                                           AudioSequence.AudioPieceTable pieceTable,
                                            nframes_t sampleRate,
                                            channels_t nChannels,
                                            ComputeOnsetsState.Callback progressCallback = null) {
@@ -611,7 +611,7 @@ public:
 
     // returns an array of frames at which an onset occurs in a given piece table, with frames given locally
     static Onset[] getOnsetsSingleChannel(ref const(OnsetParams) params,
-                                          AudioSequence.PieceTable pieceTable,
+                                          AudioSequence.AudioPieceTable pieceTable,
                                           nframes_t sampleRate,
                                           channels_t nChannels,
                                           channels_t channelIndex,
@@ -692,8 +692,8 @@ public:
                            nframes_t localEndFrame,
                            bool linkChannels = false,
                            channels_t singleChannelIndex = 0,
-                           AudioSequence.PieceTable leftSource = AudioSequence.PieceTable.init,
-                           AudioSequence.PieceTable rightSource = AudioSequence.PieceTable.init) {
+                           AudioSequence.AudioPieceTable leftSource = AudioSequence.AudioPieceTable.init,
+                           AudioSequence.AudioPieceTable rightSource = AudioSequence.AudioPieceTable.init) {
         immutable channels_t stretchNChannels = linkChannels ? nChannels : 1;
         immutable bool useSource = leftSource && rightSource;
 
@@ -1051,12 +1051,12 @@ public:
     }
 
     // returns a slice of the internal audio sequence, using local indexes as input
-    AudioSequence.PieceTable getSliceLocal(nframes_t localFrameStart, nframes_t localFrameEnd) {
+    AudioSequence.AudioPieceTable getSliceLocal(nframes_t localFrameStart, nframes_t localFrameEnd) {
         return _audioSlice[localFrameStart * nChannels .. localFrameEnd * nChannels];
     }
 
     // insert a subregion at a local offset; does nothing if the offset is not within this region
-    void insertLocal(AudioSequence.PieceTable insertSlice, nframes_t localFrameOffset) {
+    void insertLocal(AudioSequence.AudioPieceTable insertSlice, nframes_t localFrameOffset) {
         if(localFrameOffset >= 0 && localFrameOffset < nframes) {
             auto immutable prevNFrames = _audioSeq.nframes;
             _audioSeq.insert(insertSlice, (_sliceStartFrame + localFrameOffset) * nChannels);
@@ -1289,7 +1289,7 @@ private:
 
     // channelIndex is ignored when linkChannels == true
     static Onset[] _getOnsets(ref const(OnsetParams) params,
-                              AudioSequence.PieceTable pieceTable,
+                              AudioSequence.AudioPieceTable pieceTable,
                               nframes_t sampleRate,
                               channels_t nChannels,
                               channels_t channelIndex,
@@ -1409,19 +1409,19 @@ private:
 
     // wrap the piece table into a reference type
     static final class AudioSlice {
-        this(AudioSequence.PieceTable pieceTable) {
+        this(AudioSequence.AudioPieceTable pieceTable) {
             slice = pieceTable;
         }
 
-        AudioSequence.PieceTable slice;
+        AudioSequence.AudioPieceTable slice;
     }
     AudioSlice _currentAudioSlice;
 
     // current slice of the audio sequence, based on _sliceStartFrame and _sliceEndFrame
-    @property ref AudioSequence.PieceTable _audioSlice() @nogc nothrow {
+    @property ref AudioSequence.AudioPieceTable _audioSlice() @nogc nothrow {
         return _currentAudioSlice.slice;
     }
-    @property ref AudioSequence.PieceTable _audioSlice(T)(T newAudioSlice) {
+    @property ref AudioSequence.AudioPieceTable _audioSlice(T)(T newAudioSlice) {
         atomicStore(*cast(shared)(&_currentAudioSlice), cast(shared)(new AudioSlice(newAudioSlice)));
         return _currentAudioSlice.slice;
     }

@@ -5,13 +5,15 @@ public import util.statehistory;
 private import std.array;
 private import std.container.dlist;
 private import std.conv;
-private import std.cstream;
-private import std.stdio;
+private import std.cstream : derr;
 
 private import core.sync.mutex;
 
-final class Sequence(Buffer) if(is(typeof((Buffer.init)[size_t.init]))) {
-public:
+template isValidBuffer(Buffer) {
+    enum isValidBuffer = is(typeof((Buffer.init)[size_t.init]));
+}
+
+template SequenceT(Buffer) if(isValidBuffer!(Buffer)) {
     static if(is(Buffer == U[], U)) {
         enum BufferCacheIsPointer = false;
         alias BufferCache = Buffer;
@@ -23,80 +25,16 @@ public:
 
     alias Element = typeof((Buffer.init)[size_t.init]);
 
-    // original buffer must not be empty
-    this(Buffer originalBuffer) {
-        assert(originalBuffer.length > 0);
-        _originalBuffer = originalBuffer;
-
-        _mutex = new Mutex;
-
-        PieceEntry[] table;
-        table ~= PieceEntry(_originalBuffer, 0);
-        _stateHistory = new StateHistory!PieceTable(PieceTable(table));
-    }
-
-    bool queryUndo() {
-        return _stateHistory.queryUndo();
-    }
-    bool queryRedo() {
-        return _stateHistory.queryRedo();
-    }
-
-    void undo() {
-        _stateHistory.undo();
-    }
-    void redo() {
-        _stateHistory.redo();
-    }
-
-    // insert a new buffer at logicalOffset and append the result to the piece table history
-    void insert(T)(T buffer, size_t logicalOffset) {
-        synchronized(_mutex) {
-            _appendToHistory(_currentPieceTable.insert(buffer, logicalOffset));
-        }
-    }
-
-    // delete all indices in the range [logicalStart, logicalEnd) and append the result to the piece table history
-    void remove(size_t logicalStart, size_t logicalEnd) {
-        synchronized(_mutex) {
-            _appendToHistory(_currentPieceTable.remove(logicalStart, logicalEnd));
-        }
-    }
-
-    // removes elements in the given range, then insert a new buffer at the start of that range
-    // append the result to the piece table history
-    void replace(T)(T buffer, size_t logicalStart, size_t logicalEnd) {
-        synchronized(_mutex) {
-            _appendToHistory(_currentPieceTable.remove(logicalStart, logicalEnd).insert(buffer, logicalStart));
-        }
-    }
-
-    auto opSlice(size_t logicalStart, size_t logicalEnd) {
-        return _currentPieceTable[logicalStart .. logicalEnd];
-    }
-    auto opSlice() {
-        return _currentPieceTable[];
-    }
-
-    auto ref opIndex(size_t index) @nogc nothrow {
-        return _currentPieceTable[index];
-    }
-
-    @property size_t length() {
-        return _currentPieceTable.length;
-    }
-    alias opDollar = length;
-
-    static struct PieceEntry {
+    struct PieceEntry {
         Buffer buffer;
         size_t logicalOffset;
 
-        @property size_t length() const {
+        @property size_t length() {
             return buffer.length;
         }
     }
 
-    static struct PieceTable {
+    struct PieceTable {
     public:
         this(PieceEntry[] table) {
             this.table = table;
@@ -104,6 +42,8 @@ public:
 
         debug:
         void debugPrint() {
+            import std.stdio : write, writeln;
+
             write("[");
             foreach(piece; table) {
                 write("(", piece.length, ", ", piece.logicalOffset, "), ");
@@ -112,78 +52,79 @@ public:
         }
 
         // insert a new buffer at logicalOffset
-        PieceTable insert(T)(T buffer, size_t logicalOffset) if(is(T == Buffer) || is(T == PieceTable)) {
-            if(logicalOffset > logicalLength) {
-                derr.writefln("Warning: requested insertion to a piece table with length ", logicalLength,
-                              " at logical offset ", logicalOffset);
-                return PieceTable();
-            }
-
-            // construct a new piece table appender
-            Appender!(PieceEntry[]) pieceTable;
-
-            // check if the existing table is empty
-            if(table.empty) {
-                // insert the new piece provided by the given argument
-                static if(is(T == Buffer)) {
-                    pieceTable.put(PieceEntry(buffer, 0));
+        PieceTable insert(T)(T buffer, size_t logicalOffset)
+            if(is(T == Buffer) || is(T == PieceTable)) {
+                if(logicalOffset > logicalLength) {
+                    derr.writefln("Warning: requested insertion to a piece table with length ", logicalLength,
+                                  " at logical offset ", logicalOffset);
+                    return PieceTable();
                 }
-                else if(is(T == PieceTable)) {
-                    foreach(piece; buffer.table) {
-                        pieceTable.put(PieceEntry(piece.buffer, piece.logicalOffset));
+
+                // construct a new piece table appender
+                Appender!(PieceEntry[]) pieceTable;
+
+                // check if the existing table is empty
+                if(table.empty) {
+                    // insert the new piece provided by the given argument
+                    static if(is(T == Buffer)) {
+                        pieceTable.put(PieceEntry(buffer, 0));
+                    }
+                    else if(is(T == PieceTable)) {
+                        foreach(piece; buffer.table) {
+                            pieceTable.put(PieceEntry(piece.buffer, piece.logicalOffset));
+                        }
+                    }
+
+                    return PieceTable(pieceTable.data);
+                }
+
+                // copy elements from the previous piece table until the insertion point is found
+                size_t nCopied;
+                foreach(ref piece; table) {
+                    if(piece.logicalOffset + piece.length >= logicalOffset) {
+                        break;
+                    }
+                    else {
+                        pieceTable.put(piece);
+                        ++nCopied;
+                    }
+                }
+
+                if(table[nCopied].logicalOffset + table[nCopied].length >= logicalOffset) {
+                    auto splitIndex = logicalOffset - table[nCopied].logicalOffset;
+                    auto splitFirstHalfBuffer = table[nCopied].buffer[0 .. splitIndex];
+                    auto splitSecondHalfBuffer = table[nCopied].buffer[splitIndex .. $];
+                    if(splitFirstHalfBuffer.length > 0) {
+                        pieceTable.put(PieceEntry(splitFirstHalfBuffer, table[nCopied].logicalOffset));
+                    }
+
+                    // insert the new piece provided by the given argument
+                    static if(is(T == Buffer)) {
+                        pieceTable.put(PieceEntry(buffer, logicalOffset));
+                    }
+                    else if(is(T == PieceTable)) {
+                        foreach(piece; buffer.table) {
+                            pieceTable.put(PieceEntry(piece.buffer, piece.logicalOffset + logicalOffset));
+                        }
+                    }
+
+                    // insert another new piece containing the remaining part of the split piece
+                    if(splitSecondHalfBuffer.length > 0) {
+                        pieceTable.put(PieceEntry(splitSecondHalfBuffer, logicalOffset + buffer.length));
+                    }
+                }
+
+                // copy the remaining pieces and fix their logical offsets
+                ++nCopied;
+                if(nCopied < table.length) {
+                    foreach(i, ref piece; table[nCopied .. $]) {
+                        pieceTable.put(PieceEntry(table[nCopied + i].buffer,
+                                                  table[nCopied + i].logicalOffset + buffer.length));
                     }
                 }
 
                 return PieceTable(pieceTable.data);
             }
-
-            // copy elements from the previous piece table until the insertion point is found
-            size_t nCopied;
-            foreach(ref piece; table) {
-                if(piece.logicalOffset + piece.length >= logicalOffset) {
-                    break;
-                }
-                else {
-                    pieceTable.put(piece);
-                    ++nCopied;
-                }
-            }
-
-            if(table[nCopied].logicalOffset + table[nCopied].length >= logicalOffset) {
-                auto splitIndex = logicalOffset - table[nCopied].logicalOffset;
-                auto splitFirstHalfBuffer = table[nCopied].buffer[0 .. splitIndex];
-                auto splitSecondHalfBuffer = table[nCopied].buffer[splitIndex .. $];
-                if(splitFirstHalfBuffer.length > 0) {
-                    pieceTable.put(PieceEntry(splitFirstHalfBuffer, table[nCopied].logicalOffset));
-                }
-
-                // insert the new piece provided by the given argument
-                static if(is(T == Buffer)) {
-                    pieceTable.put(PieceEntry(buffer, logicalOffset));
-                }
-                else if(is(T == PieceTable)) {
-                    foreach(piece; buffer.table) {
-                        pieceTable.put(PieceEntry(piece.buffer, piece.logicalOffset + logicalOffset));
-                    }
-                }
-
-                // insert another new piece containing the remaining part of the split piece
-                if(splitSecondHalfBuffer.length > 0) {
-                    pieceTable.put(PieceEntry(splitSecondHalfBuffer, logicalOffset + buffer.length));
-                }
-            }
-
-            // copy the remaining pieces and fix their logical offsets
-            ++nCopied;
-            if(nCopied < table.length) {
-                foreach(i, ref piece; table[nCopied .. $]) {
-                    pieceTable.put(PieceEntry(table[nCopied + i].buffer,
-                                              table[nCopied + i].logicalOffset + buffer.length));
-                }
-            }
-
-            return PieceTable(pieceTable.data);
-        }
 
         // delete all indices in the range [logicalStart, logicalEnd)
         PieceTable remove(size_t logicalStart, size_t logicalEnd) {
@@ -388,7 +329,7 @@ public:
             return this;
         }
 
-        @property size_t logicalLength() const {
+        @property size_t logicalLength() {
             if(table.length > 0) {
                 return table[$ - 1].logicalOffset + table[$ - 1].length;
             }
@@ -402,7 +343,7 @@ public:
             return length > 0;
         }
 
-        @property bool empty() const {
+        @property bool empty() {
             return _pos >= length;
         }
 
@@ -443,22 +384,90 @@ public:
         size_t _cachedBufferEnd;
     }
 
-private:
-    void _appendToHistory(PieceEntry[] pieceTable) {
-        _stateHistory.appendState(PieceTable(pieceTable));
-    }
-    void _appendToHistory(PieceTable pieceTable) {
-        _stateHistory.appendState(pieceTable);
-    }
+    final class Sequence {
+    public:
+        // original buffer must not be empty
+        this(Buffer originalBuffer) {
+            assert(originalBuffer.length > 0);
+            _originalBuffer = originalBuffer;
 
-    @property ref PieceTable _currentPieceTable() @nogc nothrow {
-        return _stateHistory.currentState;
+            _mutex = new Mutex;
+
+            PieceEntry[] table;
+            table ~= PieceEntry(_originalBuffer, 0);
+            _stateHistory = new StateHistory!PieceTable(PieceTable(table));
+        }
+
+        bool queryUndo() {
+            return _stateHistory.queryUndo();
+        }
+        bool queryRedo() {
+            return _stateHistory.queryRedo();
+        }
+
+        void undo() {
+            _stateHistory.undo();
+        }
+        void redo() {
+            _stateHistory.redo();
+        }
+
+        // insert a new buffer at logicalOffset and append the result to the piece table history
+        void insert(T)(T buffer, size_t logicalOffset) {
+            synchronized(_mutex) {
+                _appendToHistory(_currentPieceTable.insert(buffer, logicalOffset));
+            }
+        }
+
+        // delete all indices in the range [logicalStart, logicalEnd) and
+        // append the result to the piece table history
+        void remove(size_t logicalStart, size_t logicalEnd) {
+            synchronized(_mutex) {
+                _appendToHistory(_currentPieceTable.remove(logicalStart, logicalEnd));
+            }
+        }
+
+        // removes elements in the given range, then insert a new buffer at the start of that range
+        // append the result to the piece table history
+        void replace(T)(T buffer, size_t logicalStart, size_t logicalEnd) {
+            synchronized(_mutex) {
+                _appendToHistory(_currentPieceTable.remove(logicalStart, logicalEnd).insert(buffer, logicalStart));
+            }
+        }
+
+        auto opSlice(size_t logicalStart, size_t logicalEnd) {
+            return _currentPieceTable[logicalStart .. logicalEnd];
+        }
+        auto opSlice() {
+            return _currentPieceTable[];
+        }
+
+        auto ref opIndex(size_t index) @nogc nothrow {
+            return _currentPieceTable[index];
+        }
+
+        @property size_t length() {
+            return _currentPieceTable.length;
+        }
+        alias opDollar = length;
+
+    private:
+        void _appendToHistory(PieceEntry[] pieceTable) {
+            _stateHistory.appendState(PieceTable(pieceTable));
+        }
+        void _appendToHistory(PieceTable pieceTable) {
+            _stateHistory.appendState(pieceTable);
+        }
+
+        @property ref PieceTable _currentPieceTable() @nogc nothrow {
+            return _stateHistory.currentState;
+        }
+
+        Mutex _mutex;
+
+        Buffer _originalBuffer;
+        StateHistory!(PieceTable) _stateHistory;
     }
-
-    Mutex _mutex;
-
-    Buffer _originalBuffer;
-    StateHistory!PieceTable _stateHistory;
 }
 
 // test sequence indexing

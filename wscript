@@ -38,6 +38,12 @@ def options( ctx ):
                     default = False,
                     dest = "release" )
 
+    ctx.add_option( "--doc",
+                    action = "store_true",
+                    help = ( "generate documentation from source" ),
+                    default = False,
+                    dest = "doc" )
+
 def configure( ctx ):
     opts = Options.options
 

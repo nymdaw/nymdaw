@@ -6709,7 +6709,7 @@ private:
     Nullable!size_t _maxMoveTrackIndex;
 
     RegionView _editRegion;
-    AudioSequence.PieceTable _copyBuffer;
+    AudioSequence.AudioPieceTable _copyBuffer;
 
     Marker[uint] _markers;
     Marker _moveMarker;
