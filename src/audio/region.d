@@ -1,4 +1,4 @@
-module audio.sequence;
+module audio.region;
 
 private import std.algorithm;
 private import std.container.dlist;
@@ -220,7 +220,7 @@ public:
     }
 
     this(AudioSegment originalBuffer, nframes_t sampleRate, channels_t nChannels, string name) {
-        sequence = new SequenceT!(AudioSegment).Sequence(originalBuffer);
+        sequence = new Sequence!(AudioSegment)(originalBuffer);
 
         _mutex = new Mutex;
 
@@ -230,7 +230,7 @@ public:
     }
 
     this(AudioSequence other) {
-        this(AudioSegment(other.sequence[].toArray, other.nChannels),
+        this(AudioSegment(other.sequence[].toArray(), other.nChannels),
              other.sampleRate, other.nChannels, other.name ~ " (copy)");
     }
 
@@ -341,9 +341,9 @@ public:
         return newSequence;
     }
 
-    SequenceT!(AudioSegment).Sequence sequence;
+    Sequence!(AudioSegment) sequence;
     alias sequence this;
-    alias AudioPieceTable = SequenceT!(AudioSegment).PieceTable;
+    alias AudioPieceTable = Sequence!(AudioSegment).PieceTable;
 
     void addSoftLink(Link link) {
         synchronized(_mutex) {
@@ -530,7 +530,7 @@ struct OnsetParams {
     sample_t silenceThreshold = -90;
 }
 
-alias OnsetSequence = SequenceT!(Onset[]).Sequence;
+alias OnsetSequence = Sequence!(Onset[]);
 
 final class Region {
 public:
@@ -884,7 +884,7 @@ public:
             progressCallback(GainState.gain, 0);
         }
 
-        sample_t[] audioBuffer = _audioSlice[localStartFrame * nChannels .. localEndFrame * nChannels].toArray;
+        sample_t[] audioBuffer = _audioSlice[localStartFrame * nChannels .. localEndFrame * nChannels].toArray();
         _gainBuffer(audioBuffer, gainDB);
 
         // write the gain-adjusted buffer to the audio sequence
@@ -906,7 +906,7 @@ public:
             progressCallback(GainState.gain, 0);
         }
 
-        sample_t[] audioBuffer = _audioSeq[].toArray;
+        sample_t[] audioBuffer = _audioSeq[].toArray();
         _gainBuffer(audioBuffer, gainDB);
 
         // write the gain-adjusted region to the audio sequence
@@ -929,7 +929,7 @@ public:
             progressCallback(NormalizeState.normalize, 0);
         }
 
-        sample_t[] audioBuffer = _audioSlice[localStartFrame * nChannels .. localEndFrame * nChannels].toArray;
+        sample_t[] audioBuffer = _audioSlice[localStartFrame * nChannels .. localEndFrame * nChannels].toArray();
         _normalizeBuffer(audioBuffer, maxGainDB);
 
         // write the normalized buffer to the audio sequence
@@ -951,7 +951,7 @@ public:
             progressCallback(NormalizeState.normalize, 0);
         }
 
-        sample_t[] audioBuffer = _audioSeq[].toArray;
+        sample_t[] audioBuffer = _audioSeq[].toArray();
         _normalizeBuffer(audioBuffer, maxGainDB);
 
         // write the normalized region to the audio sequence
@@ -967,7 +967,7 @@ public:
 
     // reverse a subregion
     void reverse(nframes_t localStartFrame, nframes_t localEndFrame) {
-        sample_t[] audioBuffer = _audioSlice[localStartFrame * nChannels .. localEndFrame * nChannels].toArray;
+        sample_t[] audioBuffer = _audioSlice[localStartFrame * nChannels .. localEndFrame * nChannels].toArray();
         std.algorithm.reverse(audioBuffer);
 
         // write the reversed buffer to the audio sequence
@@ -981,7 +981,7 @@ public:
 
     // fade in a subregion
     void fadeIn(nframes_t localStartFrame, nframes_t localEndFrame) {
-        sample_t[] audioBuffer = _audioSlice[localStartFrame * nChannels .. localEndFrame * nChannels].toArray;
+        sample_t[] audioBuffer = _audioSlice[localStartFrame * nChannels .. localEndFrame * nChannels].toArray();
         _fadeInBuffer(audioBuffer);
 
         // write the faded buffer to the audio sequence
@@ -995,7 +995,7 @@ public:
 
     // fade out a subregion
     void fadeOut(nframes_t localStartFrame, nframes_t localEndFrame) {
-        sample_t[] audioBuffer = _audioSlice[localStartFrame * nChannels .. localEndFrame * nChannels].toArray;
+        sample_t[] audioBuffer = _audioSlice[localStartFrame * nChannels .. localEndFrame * nChannels].toArray();
         _fadeOutBuffer(audioBuffer);
 
         // write the faded buffer to the audio sequence
