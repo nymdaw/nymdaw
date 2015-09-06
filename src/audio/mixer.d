@@ -273,7 +273,7 @@ public:
         memset(mixBuf, 0, sample_t.sizeof * bufNFrames);
 
         // mix all tracks down to stereo
-        if(!_transportFinished() && _playing) {
+        if(_playing && !_transportFinished()) {
             _mixTracksStereoInterleaved(_transportOffset, bufNFrames, nChannels, mixBuf);
 
             _transportOffset += bufNFrames / nChannels;
@@ -297,7 +297,7 @@ public:
         memset(mixBuf2, 0, sample_t.sizeof * bufNFrames);
 
         // mix all tracks down to stereo
-        if(!_transportFinished() && _playing) {
+        if(_playing && !_transportFinished()) {
             _mixTracksStereoNonInterleaved(_transportOffset, bufNFrames, mixBuf1, mixBuf2);
 
             _transportOffset += bufNFrames;
