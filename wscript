@@ -154,7 +154,7 @@ def configure( ctx ):
         ctx.check_cfg( package = "gtk+-x11-3.0",
                        args = [ "--cflags", "--libs" ],
                        uselib_store = "gtkd",
-                       mandatory = True )
+                       mandatory = False )
         if "-pthread" in ctx.env.LINKFLAGS_gtkd:
             ctx.env.LINKFLAGS_gtkd.remove( "-pthread" )
 
