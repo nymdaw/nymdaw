@@ -82,9 +82,9 @@ abstract class Channel {
     }
 
     /// Returns: The maximum sample values for the left and right channels
-    /// since the last call to this function.
-    /// This ensures that level peaks are properly rendered, since the UI most likely refreshes
-    /// at a slower rate than the meter processes incoming audio buffers.
+    ///          since the last call to this function.
+    ///          This ensures that level peaks are properly rendered, since the UI most likely refreshes
+    ///          at a slower rate than the meter processes incoming audio buffers.
     @property final const(sample_t[2]) level() {
         _resetLastLevel = true;
         sample_t[2] retValue;

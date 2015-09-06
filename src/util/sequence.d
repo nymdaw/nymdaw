@@ -294,8 +294,9 @@ public:
             return PieceTable(pieceTable.data);
         }
 
+        /// Params:
+        /// index = A logical index into the sequence. This function asserts if the index is out of range.
         /// Returns: The element at the given logical index; optimized for ascending sequential access.
-        /// This function asserts if the index is out of range.
         auto ref opIndex(size_t index) @nogc nothrow {
             if(_cachedBuffer) {
                 // if the index is in the cached buffer

@@ -92,7 +92,7 @@ public:
     }
 
     /// Returns: A range of state objects comprising the undo history.
-    /// The back element is the most recently appended operation.
+    ///          The back element is the most recently appended operation.
     @property auto undoHistory() {
         synchronized(_mutex) {
             return _undoHistory[];
@@ -100,7 +100,7 @@ public:
     }
 
     /// Returns: A range of state objects comprising the redo history.
-    /// The front element is the next operation to redo.
+    ///          The front element is the next operation to redo.
     @property auto redoHistory() {
         synchronized(_mutex) {
             return _redoHistory[];

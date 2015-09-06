@@ -30,6 +30,28 @@ alias channels_t = uint;
 /// No hardware input/output audio buffer should be larger than this in practice
 enum maxBufferLength = 8192;
 
+/// Enumeration of all currently supported audio file formats
+enum AudioFileFormat {
+    wavFilterName = "WAV",
+    flacFilterName = "FLAC",
+    oggVorbisFilterName = "Ogg/Vorbis",
+    aiffFilterName = "AIFF",
+    cafFilterName = "CAF",
+}
+
+/// Enumeration for audio bit depths, used for exporting audio files
+enum AudioBitDepth {
+    pcm16Bit,
+    pcm24Bit
+}
+
+/// Enumeration of sample rate conversion algorithms
+enum SampleRateConverter {
+    best,
+    medium,
+    fastest
+}
+
 /// Delegate for resizing the end of the mixer.
 /// Useful as a callback when adding regions, so that
 /// tracks and regions have no direct dependency on the mixer implementation.
