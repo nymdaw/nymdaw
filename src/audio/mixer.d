@@ -34,6 +34,7 @@ public:
 
     ~this() {
         cleanupMixer();
+        super.destroy();
     }
 
     void exportSessionToFile(string fileName,
