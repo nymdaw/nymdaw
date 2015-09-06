@@ -4,8 +4,12 @@ public import audio.channel;
 public import audio.region;
 public import audio.types;
 
+/// A concrete channel subclass representing a stereo output containing any number of audio regions.
 final class Track : Channel {
 public:
+    /// Register a region object with this track.
+    /// This will automatically increase the the mixer's last frame, if the added region extends beyond
+    /// the current end of the session.
     void addRegion(Region region) {
         region.resizeDelegate = resizeDelegate;
         _regions ~= region;
@@ -14,13 +18,23 @@ public:
         }
     }
 
+    /// Returns: An array of all region objects currently registered with this track.
     const(Region[]) regions() const { return _regions; }
 
 package:
+    /// This constructor should only be called by the mixer.
     this(nframes_t sampleRate) {
         super(sampleRate);
     }
 
+    /// This function should be called in place of the corresponding
+    /// mix function when bouncing to an audio file, since this
+    /// function eschews any metering calls
+    /// Params:
+    /// offset = The absolute frame index of playback, from the start of the session
+    /// bufNFrames = The the total length of the inverleaved output buffer, including all channels
+    /// nChannels = The total number of interleaved channels in the output buffer (typically two)
+    /// mixBuf = The interleaved output buffer
     void bounceStereoInterleaved(nframes_t offset,
                                  nframes_t bufNFrames,
                                  channels_t nChannels,
@@ -28,6 +42,12 @@ package:
         _mixStereoInterleaved(offset, bufNFrames, nChannels, mixBuf);
     }
 
+    /// Mix all registered regions into an interleaved stereo buffer and update the meters
+    /// Params:
+    /// offset = The absolute frame index of playback, from the start of the session
+    /// bufNFrames = The the total length of the inverleaved output buffer, including all channels
+    /// nChannels = The total number of interleaved channels in the output buffer (typically two)
+    /// mixBuf = The interleaved output buffer
     void mixStereoInterleaved(nframes_t offset,
                               nframes_t bufNFrames,
                               channels_t nChannels,
@@ -43,6 +63,12 @@ package:
         }
     }
 
+    /// Mix all registered regions into a non-interleaved stereo buffer and upate the meters
+    /// Params:
+    /// offset = The absolute frame index of playback, from the start of the session
+    /// bufNFrames = The individual length of each output buffer
+    /// mixBuf1 = The left output buffer
+    /// mixBuf2 = The right output buffer
     void mixStereoNonInterleaved(nframes_t offset,
                                  nframes_t bufNFrames,
                                  sample_t* mixBuf1,
@@ -61,6 +87,8 @@ package:
     ResizeDelegate resizeDelegate;
 
 private:
+    /// Copy the appropriate samples from all registered regions into an interleaved stereo output buffer,
+    /// and apply the fader gain.
     void _mixStereoInterleaved(nframes_t offset,
                                nframes_t bufNFrames,
                                channels_t nChannels,
@@ -164,6 +192,8 @@ private:
         }
     }
 
+    /// Copy the appropriate samples from all registered regions into non-interleaved stereo output buffers,
+    /// and apply the fader gain.
     void _mixStereoNonInterleaved(nframes_t offset,
                                   nframes_t bufNFrames,
                                   sample_t* mixBuf1,
@@ -222,5 +252,6 @@ private:
         }
     }
 
+    /// Array of all regions currently registered with this track
     Region[] _regions;
 }

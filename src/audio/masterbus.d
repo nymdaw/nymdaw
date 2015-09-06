@@ -2,8 +2,15 @@ module audio.masterbus;
 
 public import audio.channel;
 
+/// A channel subclass specifically for the master bus.
+/// This class allows the user to set the master fader gain
+/// (analogous to the master fader on an analog mixing board) and
+/// receive metering information for the master stereo output.
 final class MasterBus : Channel {
 public:
+    /// Process a stereo interleaved output audio buffer.
+    /// This will apply the current master fader gain and
+    /// update the left/right meters.
     void processStereoInterleaved(sample_t* mixBuf,
                                   nframes_t bufNFrames,
                                   channels_t nChannels) @nogc nothrow {
@@ -19,6 +26,9 @@ public:
         processMeter(1, buffer[1].ptr, bufNFrames);
     }
 
+    /// Process stereo non-interleaved output audio buffers.
+    /// This will apply the current master fader gain and
+    /// update the left/right meters.
     void processStereoNonInterleaved(sample_t* mixBuf1,
                                      sample_t* mixBuf2,
                                      nframes_t bufNFrames) @nogc nothrow {
@@ -35,6 +45,7 @@ public:
     }
 
 package:
+    /// This constructor should only be called by the mixer.
     this(nframes_t sampleRate) {
         super(sampleRate);
     }

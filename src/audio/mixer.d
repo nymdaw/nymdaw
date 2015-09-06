@@ -1,3 +1,5 @@
+/// Mixer abstract class and implementations for various audio drivers
+
 module audio.mixer;
 
 private import std.algorithm;
@@ -22,16 +24,33 @@ public import audio.masterbus;
 public import audio.track;
 public import audio.types;
 
+/// This class handles all audio output, such as real-time output to hardware or offline output to a file.
+/// It handles the master bus, stores all tracks in the session in an array,
+/// and provides routines to control the "transport", which indicates the temporal position of audio playback
+/// for the session.
+/// It also provides abstract methods to initialize and uninitialize a specific audio driver.
+/// Implementations of this class are responsible for setting up an audio thread and callback, which
+/// should call either `mixStereoInterleaved` or `mixStereoNonInterleaved` to fill the output device's
+/// audio buffers in real time.
+/// Note this class's constructor initializes the driver, but the user is responsible for manually
+/// calling `cleanupMixer` when the application exits. This ensures that the application will properly
+/// destroy the audio thread and exit cleanly, without a segmentation fault.
 abstract class Mixer {
 public:
+    /// Params:
+    /// appName = The application name, typically one word, lower case, useful for identifying
+    /// the applicatin e.g. to the JACK router
     this(string appName) {
         _appName = appName;
 
+        // abstract method to initialize the audio driver
         initializeMixer();
 
+        // initialize the master bus
         _masterBus = new MasterBus(sampleRate);
     }
 
+    /// Bounce the entire session to an audio file
     void exportSessionToFile(string fileName,
                              AudioFileFormat audioFileFormat,
                              AudioBitDepth bitDepth,
@@ -39,6 +58,7 @@ public:
         // default to stereo for exporting
         enum exportChannels = 2;
 
+        // helper function to remove the partially-written file in the case of an error
         void removeFile() {
             try {
                 std.file.remove(fileName);
@@ -93,6 +113,7 @@ public:
             }
         }
 
+        // ensure the constructed sfinfo object is valid
         if(!sf_format_check(&sfinfo)) {
             if(progressCallback !is null) {
                 progressCallback(SaveState.complete, 0);
@@ -166,6 +187,7 @@ public:
         }
     }
 
+    /// Reset the mixer to an empty state. This is useful for starting new sessions.
     final void reset() {
         _tracks = [];
         _nframes = 0;
@@ -176,6 +198,7 @@ public:
         _loopStart = _loopEnd = 0;
     }
 
+    /// Construct a track object and register it with the mixer
     final Track createTrack() {
         Track track = new Track(sampleRate);
         track.resizeDelegate = &resizeIfNecessary;
@@ -183,6 +206,9 @@ public:
         return track;
     }
 
+    /// Checks if `newNFrames` extends past the last frame of the mixer,
+    /// and if so, changes the last frame of the mixer to `newNFrames`.
+    /// Returns: `true` if and only if the mixer altered its final frame
     final bool resizeIfNecessary(nframes_t newNFrames) {
         if(newNFrames > _nframes) {
             _nframes = newNFrames;
@@ -191,42 +217,60 @@ public:
         return false;
     }
 
-    @property nframes_t sampleRate();
-
+    /// Returns: The application name, typically one word, lower case, useful for identifying
+    /// the applicatin e.g. to the JACK router
     @property final string appName() const @nogc nothrow {
         return _appName;
     }
+
+    /// The master bus object associated with the mixer
     @property final MasterBus masterBus() @nogc nothrow {
         return _masterBus;
     }
+    /// ditto 
     @property final const(MasterBus) masterBus() @nogc nothrow const {
         return _masterBus;
     }
+
+    /// The total number of frames in the current session.
+    /// This indicates the temporal length of the session.
     @property final nframes_t nframes() const @nogc nothrow {
         return _nframes;
     }
+    /// ditto
     @property final nframes_t nframes(nframes_t newNFrames) @nogc nothrow {
         return (_nframes = newNFrames);
     }
+
+    /// Safely get the index of the last frame in the session.
+    /// Returns: Either the last index of the last frame, or 0 if the session is empty.
     @property final nframes_t lastFrame() const @nogc nothrow {
         return (_nframes > 0 ? nframes - 1 : 0);
     }
+
+    /// The current frame index of playback.
     @property final nframes_t transportOffset() const @nogc nothrow {
         return _transportOffset;
     }
+    /// ditto
     @property final nframes_t transportOffset(nframes_t newOffset) @nogc nothrow {
         disableLoop();
         return (_transportOffset = min(newOffset, nframes));
     }
 
+    /// Indicates whether the mixer is current playing (i.e., moving the transport), or paused.
     @property final bool playing() const @nogc nothrow {
         return _playing;
     }
+
+    /// If the mixer is currently paused, begin playing
     final void play() nothrow {
         GC.disable(); // disable garbage collection while playing
 
         _playing = true;
     }
+
+    /// If the mixer is currently playing, pause the mixer
     final void pause() nothrow {
         disableLoop();
         _playing = false;
@@ -234,21 +278,33 @@ public:
         GC.enable(); // enable garbage collection while paused
     }
 
+    /// Whether any track registered with the mixer is currently in "solo" mode.
     @property final bool soloTrack() const @nogc nothrow { return _soloTrack; }
+    /// ditto
     @property final bool soloTrack(bool enable) @nogc nothrow { return (_soloTrack = enable); }
 
+    /// Indicates whether the mixer is currently looping a section of audio specified by the user.
     @property final bool looping() const @nogc nothrow {
         return _looping;
     }
+
+    /// Specify a section of audio to loop
     final void enableLoop(nframes_t loopStart, nframes_t loopEnd) @nogc nothrow {
         _looping = true;
         _loopStart = loopStart;
         _loopEnd = loopEnd;
     }
+
+    /// Disable looping and return to the conventional playback mode
     final void disableLoop() @nogc nothrow {
         _looping = false;
     }
 
+    /// Mix all registered tracks into an interleaved stereo buffer using a specialized bounce transport.
+    /// Params:
+    /// bufNFrames = The the total length of the inverleaved output buffer, including all channels
+    /// nChannels = The total number of interleaved channels in the output buffer (typically two)
+    /// mixBuf = The interleaved output buffer
     final void bounceStereoInterleaved(nframes_t bufNFrames,
                                        channels_t nChannels,
                                        sample_t* mixBuf) {
@@ -261,6 +317,11 @@ public:
         _bounceTransportOffset += bufNFrames / nChannels;
     }
 
+    /// Mix all registered tracks into an interleaved stereo buffer and update the playback transport
+    /// Params:
+    /// bufNFrames = The the total length of the inverleaved output buffer, including all channels
+    /// nChannels = The total number of interleaved channels in the output buffer (typically two)
+    /// mixBuf = The interleaved output buffer
     final void mixStereoInterleaved(nframes_t bufNFrames,
                                     channels_t nChannels,
                                     sample_t* mixBuf) @nogc nothrow {
@@ -284,6 +345,11 @@ public:
         }
     }
 
+    /// Mix all registered tracks into a non-interleaved stereo buffer and update the playback transport
+    /// Params:
+    /// bufNFrames = The individual length of each output buffer
+    /// mixBuf1 = The left output buffer
+    /// mixBuf2 = The right output buffer
     final void mixStereoNonInterleaved(nframes_t bufNFrames,
                                        sample_t* mixBuf1,
                                        sample_t* mixBuf2) @nogc nothrow {
@@ -308,10 +374,21 @@ public:
         }
     }
 
-    void initializeMixer();
-    void cleanupMixer() nothrow;
+    /// Abstract method to get the sample rate, in samples per second, of the session
+    public @property nframes_t sampleRate();
+
+    /// Abstract method to initialize the audio driver, audio thread and its associated callback function
+    protected void initializeMixer();
+
+    /// Abstract method to uninitialize the audio driver and destroy the audio thread
+    public void cleanupMixer() nothrow;
 
 private:
+    /// Template function to mix down all registered tracks to a single buffer,
+    /// with interleaved stereo channels.
+    /// At this time, the template argument should either be "mixStereoInterleaved" or
+    /// "bounceStereoInterleaved". This guarantees identical behavior when mixing or bouncing
+    /// to an interleaved stereo device or file.
     final void _mixTracksStereoInterleaved(string MixFunc = "mixStereoInterleaved")
         (nframes_t offset,
          nframes_t bufNFrames,
@@ -331,6 +408,8 @@ private:
         }
     }
 
+    /// Mix down all registered tracks to two separate buffers, corresponding to the left and right
+    /// channels of a stereo output device.
     final void _mixTracksStereoNonInterleaved(nframes_t offset,
                                               nframes_t bufNFrames,
                                               sample_t* mixBuf1,
@@ -347,9 +426,11 @@ private:
         }
     }
 
+    /// Wrap the template argument for `_mixTracksStereoInterleaved` in the case when the
+    /// mixer is bouncing the session to a file instead of playing it back on an audio device.
     alias _bounceTracksStereoInterleaved = _mixTracksStereoInterleaved!"bounceStereoInterleaved";
 
-    // stop playing if the transport is at the end of the project
+    /// Stop playing if the transport is at the end of the session
     bool _transportFinished() @nogc nothrow {
         if(_playing && _transportOffset >= lastFrame) {
             _playing = _looping; // don't stop playing if currently looping
@@ -359,23 +440,51 @@ private:
         return false;
     }
 
+    /// The application name, typically one word, lower case, useful for identifying
+    /// the applicatin e.g. to the JACK router
     string _appName;
 
+    /// Array of all tracks curently registered with the mixer
     Track[] _tracks;
+
+    /// The master bus object, should usually check for a null reference in the audio thread,
+    /// since the audio driver may be initialized prior to construction of the master bus
     MasterBus _masterBus;
+
+    /// The total number of frames in the current session.
+    /// This indicates the temporal length of the session.
     nframes_t _nframes;
+
+    /// The offset, in frames, of the current playback position.
+    /// Should always be greater than or equal to 0 and less than `_nframes`.
     nframes_t _transportOffset;
+
+    /// A separate transport offset used for bouncing the session offline.
     nframes_t _bounceTransportOffset;
+
+    /// Indicates whether the mixer is current playing (i.e., moving the transport), or paused.
     bool _playing;
+
+    /// Indicates whether the mixer is currently looping a section of audio specified by the user.
     bool _looping;
-    bool _soloTrack;
+
+    /// The start frame of the currently looping section, as specified by the user.
     nframes_t _loopStart;
+
+    /// The end frame of the currently looping section, as specified by the user.
     nframes_t _loopEnd;
+
+    /// Indicates whether there are any tracks for which "solo" mode is enabled.
+    bool _soloTrack;
 }
 
 version(HAVE_JACK) {
+    /// Mixer implementation using the JACK driver.
     final class JackMixer : Mixer {
     public:
+        /// Initialize the JACK mixer.
+        /// This creates a singleton instance of the mixer implementation that should exist
+        /// throughout the application's lifetime.
         this(string appName) {
             if(_instance !is null) {
                 throw new AudioError("Only one JackMixer instance may be constructed per process");
@@ -384,14 +493,24 @@ version(HAVE_JACK) {
             super(appName);
         }
 
+        /// The user is responsible for calling cleanupMixer() before the application exits
+        /// or the mixer destructor is called.
+        /// This ensures that the application won't crash when exiting.
+        ~this() {
+            _instance = null;
+        }
+
+        /// The sample rate is determined by the current JACK session
         @property override nframes_t sampleRate() { return jack_get_sample_rate(_client); }
 
-        override void initializeMixer() {
+        /// Initialize the JACK driver and create the audio thread
+        protected override void initializeMixer() {
             _client = jack_client_open(appName.toStringz, JackOptions.JackNoStartServer, null);
             if(!_client) {
                 throw new AudioError("jack_client_open failed");
             }
 
+            // set up the stereo output ports
             immutable char* mixPort1Name = "StereoMix1";
             immutable char* mixPort2Name = "StereoMix2";
             _mixPort1 = jack_port_register(_client,
@@ -420,7 +539,10 @@ version(HAVE_JACK) {
 
             // attempt to connect to physical playback ports
             const(char)** playbackPorts =
-                jack_get_ports(_client, null, null, JackPortFlags.JackPortIsInput | JackPortFlags.JackPortIsPhysical);
+                jack_get_ports(_client,
+                               null,
+                               null,
+                               JackPortFlags.JackPortIsInput | JackPortFlags.JackPortIsPhysical);
             if(playbackPorts && playbackPorts[1]) {
                 auto status1 = jack_connect(_client, jack_port_name(_mixPort1), playbackPorts[0]);
                 auto status2 = jack_connect(_client, jack_port_name(_mixPort2), playbackPorts[1]);
@@ -432,7 +554,8 @@ version(HAVE_JACK) {
             jack_free(playbackPorts);
         }
 
-        override void cleanupMixer() nothrow {
+        /// Clean up the JACK driver and destroy the audio thread
+        public override void cleanupMixer() nothrow {
             jack_client_close(_client);
         }
 
@@ -446,7 +569,8 @@ version(HAVE_JACK) {
             return 0;
         };
 
-        __gshared static JackMixer _instance; // there should be only one instance per process
+        /// There should be only one mixer instance per process.
+        __gshared static JackMixer _instance;
 
         jack_client_t* _client;
         jack_port_t* _mixPort1;
@@ -464,8 +588,12 @@ version(HAVE_COREAUDIO) {
 
     final class CoreAudioMixer : Mixer {
     public:
-        enum outputChannels = 2; // default to stereo
+        /// Default to stereo output
+        enum outputChannels = 2;
 
+        /// Initialize the CoreAudio mixer.
+        /// This creates a singleton instance of the mixer implementation that should exist
+        /// throughout the application's lifetime.
         this(string appName, nframes_t sampleRate = 44100) {
             if(_instance !is null) {
                 throw new AudioError("Only one CoreAudioMixer instance may be constructed per process");
@@ -475,19 +603,25 @@ version(HAVE_COREAUDIO) {
             super(appName);
         }
 
+        /// The user is responsible for calling cleanupMixer() before the application exits
+        /// or the mixer destructor is called.
+        /// This ensures that the application won't crash when exiting.
         ~this() {
             _instance = null;
         }
 
+        /// CoreAudio allows the application set its own sample rate
         @property override nframes_t sampleRate() { return _sampleRate; }
 
-        override void initializeMixer() {
+        /// Initialize the CoreAudio driver and create the audio thread
+        protected override void initializeMixer() {
             if(!coreAudioInit(sampleRate, outputChannels, &_coreAudioProcessCallback)) {
                 throw new AudioError(to!string(coreAudioErrorString()));
             }
         }
 
-        override void cleanupMixer() nothrow {
+        /// Clean up the CoreAudio driver and destroy the audio thread
+        public override void cleanupMixer() nothrow {
             coreAudioCleanup();
         }
 
@@ -498,7 +632,8 @@ version(HAVE_COREAUDIO) {
             _instance.mixStereoInterleaved(bufNFrames, nChannels, mixBuffer);
         }
 
-        __gshared static CoreAudioMixer _instance; // there should be only one instance per process
+        /// There should be only one mixer instance per process.
+        __gshared static CoreAudioMixer _instance;
 
         nframes_t _sampleRate;
     }
@@ -507,8 +642,12 @@ version(HAVE_COREAUDIO) {
 version(HAVE_PORTAUDIO) {
     final class PortAudioMixer : Mixer {
     public:
-        enum outputChannels = 2; // default to stereo
+        /// Default to stereo output
+        enum outputChannels = 2;
 
+        /// Initialize the PortAudio mixer.
+        /// This creates a singleton instance of the mixer implementation that should exist
+        /// throughout the application's lifetime.
         this(string appName, nframes_t sampleRate = 44100) {
             if(_instance !is null) {
                 throw new AudioError("Only one PortAudioMixer instance may be constructed per process");
@@ -518,18 +657,23 @@ version(HAVE_PORTAUDIO) {
             super(appName);
         }
 
+        /// The user is responsible for calling cleanupMixer() before the application exits
+        /// or the mixer destructor is called.
+        /// This ensures that the application won't crash when exiting.
         ~this() {
             _instance = null;
         }
 
+        /// PortAudio allows the application set its own sample rate
         @property override nframes_t sampleRate() { return _sampleRate; }
 
-        static struct Phase {
+        protected static struct Phase {
             sample_t left = 0;
             sample_t right = 0;
         }
 
-        override void initializeMixer() {
+        /// Initialize the PortAudio driver and create the audio thread
+        protected override void initializeMixer() {
             PaError err;
             Phase phaseData;
 
@@ -557,7 +701,8 @@ version(HAVE_PORTAUDIO) {
             }
         }
 
-        override void cleanupMixer() nothrow {
+        /// Clean up the PortAudio driver and destroy the audio thread
+        public override void cleanupMixer() nothrow {
             Pa_StopStream(_stream);
             Pa_CloseStream(_stream);
             Pa_Terminate();
@@ -576,9 +721,11 @@ version(HAVE_PORTAUDIO) {
             return paContinue;
         }
 
-        __gshared static PortAudioMixer _instance; // there should be only one instance per process
+        /// There should be only one mixer instance per process.
+        __gshared static PortAudioMixer _instance;
+
+        PaStream* _stream;
 
         nframes_t _sampleRate;
-        PaStream* _stream;
     }
 }
