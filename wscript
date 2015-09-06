@@ -122,15 +122,19 @@ def configure( ctx ):
 
     # Check for aubio
     ctx.check_cfg( package = "aubio",
-                   args = [ "aubio >= 0.4.1", "--cflags", "--libs" ],
+                   args = [ "aubio >= 0.4.0", "--cflags", "--libs" ],
                    uselib_store = "aubio",
                    mandatory = True )
 
     # Check for GtkD
-    ctx.check_cfg( package = "gtkd-3",
-                   args = [ "gtkd-3 >= 3.1.3", "--cflags", "--libs" ],
-                   uselib_store = "gtkd",
-                   mandatory = True )
+    if not ctx.check_cfg( package = "gtkd-3",
+                          args = [ "gtkd-3 >= 3.1.3", "--cflags", "--libs" ],
+                          uselib_store = "gtkd",
+                          mandatory = False ):
+        ctx.check_cfg( package = "gtkd3",
+                       args = [ "gtkd3 >= 3.1.3", "--cflags", "--libs" ],
+                       uselib_store = "gtkd",
+                       mandatory = True )
 
     # Try to fix the output from the gtkd-3 pkg-config entry on OSX and Linux
     if sys.platform == "darwin" or sys.platform == "linux2":

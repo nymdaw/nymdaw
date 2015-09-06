@@ -18,7 +18,7 @@ version(HAVE_PORTAUDIO) {
 
 private import util.scopedarray;
 
-public import audio.masterBus;
+public import audio.masterbus;
 public import audio.track;
 public import audio.types;
 
