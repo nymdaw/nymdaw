@@ -1,3 +1,5 @@
+/// The main ArrangeView widget and its associated classes.
+
 module ui.arrangeview;
 
 private import std.algorithm;
@@ -83,30 +85,37 @@ private import audio;
 private import ui.errordialog;
 private import ui.types;
 
+/// This widget draws a canvas that allows the user to manipulate tracks/regions.
+/// It also renders channel strips for tracks/busses.
 final class ArrangeView : Box {
 public:
-    enum defaultSamplesPerPixel = 500; // default zoom level, in samples per pixel
-    enum defaultTrackHeightPixels = 200; // default height in pixels of new tracks in the arrange view
-    enum defaultTrackStubWidth = 200; // default width in pixels for all track stubs
-    enum defaultChannelStripWidth = 100; // default width in pixels for the channel strip
-    enum refreshRate = 50; // rate in hertz at which to redraw the view when the transport is playing
-    enum mouseOverThreshold = 2; // threshold number of pixels in one direction for mouse over events
-    enum doubleClickMsecs = 500; // amount of time between two button clicks considered as a double click
+    enum defaultSamplesPerPixel = 500; /// Default zoom level, in samples per pixel
+    enum defaultTrackHeightPixels = 200; /// Default height in pixels of new tracks in the arrange view
+    enum defaultTrackStubWidth = 200; /// Default width in pixels for all track stubs
+    enum defaultChannelStripWidth = 100; /// Default width in pixels for the channel strip
+    enum refreshRate = 50; /// Rate in hertz at which to redraw the view when the transport is playing
+    enum mouseOverThreshold = 2; /// Threshold number of pixels in one direction for mouse over events
+    enum doubleClickMsecs = 500; /// Amount of time between two button clicks considered as a double click
 
-    // convenience constants for GTK mouse buttons
+    /// Convenience constant for the left mouse button
     enum leftButton = 1;
+
+    /// Convenience constant for the right mouse button
     enum rightButton = 3;
 
+    /// Operation mode for the arrange view
     enum Mode {
-        arrange,
-        editRegion
+        arrange, /// Perform operations on regions such as move, copy, or shrink
+        editRegion /// Edit a single region
     }
 
+    /// Mode for copying regions
     enum CopyMode {
-        soft,
-        hard
+        soft, /// Link pasted regions to the their source sequence
+        hard /// Clone the source sequence for pasted regions
     }
 
+    /// Various actions the user may perform
     enum Action {
         none,
         selectRegion,
@@ -131,7 +140,8 @@ public:
         moveMarker
     }
 
-    this(string appName, Window parentWindow, Mixer mixer) {
+    /// The mixer should already be initialized prior to calling this constructor
+    this(Window parentWindow, Mixer mixer) {
         _parentWindow = parentWindow;
         _accelGroup = new AccelGroup();
 
@@ -178,6 +188,7 @@ public:
         showAll();
     }
 
+    /// Menu bar to display at the top of the window
     final class ArrangeMenuBar : MenuBar {
     public:
         this() {
@@ -481,6 +492,8 @@ public:
         CheckMenuItem _linkChannelsMenuItem;
     }
 
+    /// Horizontal scrollbar for the arrange view.
+    /// This scrollbar moves the canvas view left/right along the time axis.
     final class ArrangeHScroll : Scrollbar {
     public:
         this() {
@@ -508,8 +521,8 @@ public:
                 _hAdjust.configure(_viewOffset, // scroll bar position
                                    viewMinSamples, // min position
                                    viewMaxSamples, // max position
-                                   stepSamples,
-                                   stepSamples * 5,
+                                   stepSamples, // small step size
+                                   stepSamples * 5, // large step size
                                    viewWidthSamples); // scroll bar size
             }
         }
@@ -527,6 +540,8 @@ public:
         Adjustment _hAdjust;
     }
 
+    /// Vertical scrollbar for the arrange view.
+    /// This scrollbar moves the canvas view up/down, allowing the user to view different tracks.
     final class ArrangeVScroll : Scrollbar {
     public:
         this() {
@@ -551,12 +566,12 @@ public:
                 totalHeightPixels += track.heightPixels;
             }
 
-            _vAdjust.configure(_verticalPixelsOffset,
-                               0,
-                               totalHeightPixels,
-                               totalHeightPixels / 20,
-                               totalHeightPixels / 10,
-                               _canvas.viewHeightPixels);
+            _vAdjust.configure(_verticalPixelsOffset, // scroll bar position
+                               0, // min position
+                               totalHeightPixels, // max position
+                               totalHeightPixels / 20, // small step size
+                               totalHeightPixels / 10, // large step size
+                               _canvas.viewHeightPixels); // scroll bar size
         }
 
         @property void pixelsOffset(pixels_t newValue) {
@@ -575,6 +590,10 @@ public:
         Adjustment _vAdjust;
     }
 
+    /// A browser window that shows all audio sequences in a tree view.
+    /// All regions associated with an audio sequence are displayed as children of that
+    /// sequence in the tree view. Additionally, when a region is selected,
+    /// the complete undo history for that region is displayed in a list view.
     final class SequenceBrowser {
     public:
         this() {
@@ -605,6 +624,10 @@ public:
             _dialog = null;
         }
 
+        /// A tree view, where the outer level is comprised of every audio sequence in the session.
+        /// Each sequence has children corresponding to every region associated with that sequence.
+        /// The children's names are rendered as "track.region", where "track" is the parent track
+        /// of that region.
         final class SequenceTreeView : ScrolledWindow {
         public:
             this() {
@@ -716,6 +739,7 @@ public:
             alias treeView this;
         }
 
+        /// A list view displaying the complete undo history for a region selected in the sequence tree view.
         final class RegionHistoryTreeView : ScrolledWindow {
         public:
             this() {
@@ -855,6 +879,9 @@ public:
         Dialog _dialog;
     }
 
+    /// An abstract class for drawing a dialog window.
+    /// These dialogs are typically used to configure arrange operations.
+    /// Most of these dialogs will have OK/Cancel buttons.
     abstract class ArrangeDialog {
     public:
         this(bool okButton = true) {
@@ -896,9 +923,13 @@ public:
         }
 
     protected:
+        /// Abstract member function called on dialog construction
         void populate(Box content);
 
+        /// Abstract member function called when the "OK" button is pressed
         void onOK(Button button) {}
+
+        /// Abstract member function called when the "Cancel" button is pressed
         void onCancel(Button button) {}
 
     private:
@@ -924,6 +955,8 @@ public:
         Dialog _dialog;
     }
 
+    /// Dialog for resampling an audio file.
+    /// Allows the user to select confirm the resample operation and select a preferred resampling algorithm.
     final class SampleRateDialog : ArrangeDialog {
     public:
         this(nframes_t originalSampleRate, nframes_t newSampleRate) {
@@ -976,6 +1009,7 @@ public:
         ComboBoxText _resampleQualityComboBox;
     }
 
+    /// Dialog for selecting the bit depth, when exporting an audio file (either 16-bit or 24-bit).
     final class BitDepthDialog : ArrangeDialog {
     public:
         @property AudioBitDepth selectedBitDepth() const { return _selectedBitDepth; }
@@ -1014,6 +1048,7 @@ public:
         ComboBoxText _bitDepthComboBox;
     }
 
+    /// Dialog for renaming the currently selected track.
     final class RenameTrackDialog : ArrangeDialog {
     protected:
         override void populate(Box content) {
@@ -1043,6 +1078,8 @@ public:
         Entry _nameEntry;
     }
 
+    /// Dialog for configuring parameters for the onset detection algorithm.
+    /// Applies only to the region currently being edited.
     final class OnsetDetectionDialog : ArrangeDialog {
     protected:
         override void populate(Box content) {
@@ -1091,6 +1128,7 @@ public:
         Adjustment _silenceThresholdAdjustment;
     }
 
+    /// Dialog for stretching a selected section of the region currently being edited.
     final class StretchSelectionDialog : ArrangeDialog {
     protected:
         override void populate(Box content) {
@@ -1136,6 +1174,7 @@ public:
         Adjustment _stretchSelectionFactorAdjustment;
     }
 
+    /// Dialog for adjusting the gain of a section of the region currently being edited, or the entire region.
     final class GainDialog : ArrangeDialog {
     protected:
         override void populate(Box content) {
@@ -1202,6 +1241,7 @@ public:
         Adjustment _gainAdjustment;
     }
 
+    /// Dialog for normalizing a section of the region currently being edited, or the entire region.
     final class NormalizeDialog : ArrangeDialog {
     protected:
         override void populate(Box content) {
@@ -1269,12 +1309,13 @@ public:
         Adjustment _normalizeGainAdjustment;
     }
 
+    /// Abstraction of a region object to facilitate rendering and edit operations.
     final class RegionView {
     public:
-        enum cornerRadius = 4; // radius of the rounded corners of the region, in pixels
-        enum borderWidth = 1; // width of the edges of the region, in pixels
-        enum headerHeight = 15; // height of the region's label, in pixels
-        enum headerFont = "Arial 10"; // font family and size to use for the region's label
+        enum cornerRadius = 4; /// Radius of the rounded corners of the region, in pixels
+        enum borderWidth = 1; /// Width of the edges of the region, in pixels
+        enum headerHeight = 15; /// Height of the region's label, in pixels
+        enum headerFont = "Arial 10"; /// Font family and size to use for the region's label
 
         static class RegionViewLink : AudioSequence.Link {
             this(RegionView regionView) {
@@ -4589,30 +4630,22 @@ public:
 
             if(event.type == EventType.BUTTON_PRESS && event.button.button == leftButton) {
                 // if the mouse is over a marker, move that marker
-                if(_mouseY >= markerYOffset && _mouseY < markerYOffset + markerHeightPixels) {
-                    foreach(ref marker; _markers) {
-                        if(marker.offset >= viewOffset && marker.offset < viewOffset + viewWidthSamples &&
-                           (cast(pixels_t)((marker.offset - viewOffset) / samplesPerPixel) -
-                            markerHeadWidthPixels / 2 <= _mouseX) &&
-                           (cast(pixels_t)((marker.offset - viewOffset) / samplesPerPixel) +
-                            markerHeadWidthPixels / 2 >= _mouseX)) {
-                            _moveMarker = marker;
-                            _setAction(Action.moveMarker);
-                            break;
-                        }
-                    }
+                auto marker = _mouseOverMarker();
+                if(!marker.isNull()) {
+                    _moveMarker = marker;
+                    _setAction(Action.moveMarker);
                 }
-
-                // if the mouse was not over a marker
-                if(_action != Action.moveMarker) {
-                    // if the mouse is over the time strip, move the transport
+                else {
+                    // if the mouse was not over a marker, but is over the time strip, move the transport
                     if(_mouseY >= 0 && _mouseY <
                        ((_vScroll.pixelsOffset < timeStripHeightPixels + markerHeightPixels) ?
-                        timeStripHeightPixels + markerHeightPixels - _vScroll.pixelsOffset : timeStripHeightPixels)) {
+                        timeStripHeightPixels + markerHeightPixels - _vScroll.pixelsOffset :
+                        timeStripHeightPixels)) {
                         _setAction(Action.moveTransport);
                     }
                     else {
                         bool newAction;
+
                         switch(_mode) {
                             // implement different behaviors for button presses depending on the current mode
                             case Mode.arrange:
@@ -4786,11 +4819,25 @@ public:
 
                 switch(_mode) {
                     case Mode.arrange:
-                        if(_arrangeMenu is null) {
-                            _createArrangeMenu();
+                        // if the mouse is over a marker, display the marker menu
+                        auto marker = _mouseOverMarker();
+                        if(!marker.isNull()) {
+                            _selectedMarker = marker;
+
+                            if(_markerMenu is null) {
+                                _createMarkerMenu();
+                            }
+                            _markerMenu.popup(buttonEvent.button, buttonEvent.time);
+                            _markerMenu.showAll();
                         }
-                        _arrangeMenu.popup(buttonEvent.button, buttonEvent.time);
-                        _arrangeMenu.showAll();
+                        // otherwise, display the arrange menu
+                        else {
+                            if(_arrangeMenu is null) {
+                                _createArrangeMenu();
+                            }
+                            _arrangeMenu.popup(buttonEvent.button, buttonEvent.time);
+                            _arrangeMenu.showAll();
+                        }
                         break;
 
                     case Mode.editRegion:
@@ -5441,6 +5488,23 @@ public:
         }
 
     private:
+        Nullable!Marker _mouseOverMarker() {
+            Nullable!Marker result;
+            if(_mouseY >= markerYOffset && _mouseY < markerYOffset + markerHeightPixels) {
+                foreach(ref marker; _markers) {
+                    if(marker.offset >= viewOffset && marker.offset < viewOffset + viewWidthSamples &&
+                       (cast(pixels_t)((marker.offset - viewOffset) / samplesPerPixel) -
+                        markerHeadWidthPixels / 2 <= _mouseX) &&
+                       (cast(pixels_t)((marker.offset - viewOffset) / samplesPerPixel) +
+                        markerHeadWidthPixels / 2 >= _mouseX)) {
+                        result = marker;
+                        return result;
+                    }
+                }
+            }
+            return result;
+        }
+
         void _mouseOverRegionEndpoints() {
             if(_mode == Mode.arrange) {
                 _mouseOverRegionStart = null;
@@ -6256,6 +6320,19 @@ private:
         _arrangeMenu.attachToWidget(this, null);
     }
 
+    void _createMarkerMenu() {
+        _markerMenu = new Menu();
+
+        _markerMenu.append(new MenuItem(delegate void(MenuItem menuItem) {
+                    if(_selectedMarker !is null && _selectedMarker.name.length == 1) {
+                        _markers.remove(to!wchar(_selectedMarker.name[0]));
+                        _canvas.redraw();
+                    }
+                }, "_Delete marker", true));
+
+        _markerMenu.attachToWidget(this, null);
+    }
+
     TrackView _createTrackView(string trackName) {
         synchronized {
             TrackView trackView;
@@ -6723,7 +6800,9 @@ private:
     RegionView _editRegion;
     AudioSequence.AudioPieceTable _copyBuffer;
 
+    Menu _markerMenu;
     Marker[uint] _markers;
+    Marker _selectedMarker;
     Marker _moveMarker;
 
     bool _mixerPlaying;

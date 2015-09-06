@@ -11,9 +11,11 @@ private import audio.mixer;
 
 private import ui.mainwindow;
 
+/// Applicatin entry point
 void main(string[] args) {
     string appName = "dseq";
 
+    // populate a list of all available audio drivers
     string[] availableAudioDrivers;
     version(HAVE_JACK) {
         availableAudioDrivers ~= "JACK";
@@ -43,6 +45,8 @@ void main(string[] args) {
         return;
     }
 
+    // construct the mixer from the audio driver specified at the command line
+    // if no driver is specified, try to pick a reasonable default
     try {
         Mixer mixer;
         switch(audioDriver.toUpper()) {
@@ -84,10 +88,13 @@ void main(string[] args) {
         }
         assert(mixer !is null);
 
+        // initialize gtk
         Main.init(args);
 
+        // construct the main window
         auto mainWindow = new AppMainWindow(appName, mixer, args);
 
+        // run the application
         Main.run();
     }
     catch(Exception e) {

@@ -1,4 +1,4 @@
-/// Various types used by the audio classes
+/// Various types used by classes in the audio module
 
 module audio.types;
 
