@@ -4,6 +4,9 @@ private import std.conv;
 
 private import core.memory;
 
+/// Scoped container for array types.
+/// Destroys and frees an array when it goes out of scope.
+/// Also recursively destroys every dimension for multi-dimensional arrays.
 struct ScopedArray(T) if (is(T t == U[], U)) {
 public:
     alias ArrayType = T;

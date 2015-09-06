@@ -6,8 +6,12 @@ private import std.range;
 private import core.sync.mutex;
 private import core.atomic;
 
+/// Generic class that implements undo/redo history via a "state" template parameter.
+/// Undo/redo operations are thread-safe.
+/// Updating the current state reference is guaranteed to be atomic.
 final class StateHistory(T) {
 public:
+    /// The state history should always contain at least one state
     this(T initialState) {
         _mutex = new Mutex;
 
@@ -15,7 +19,7 @@ public:
         _updateCurrentState();
     }
 
-    // returns true if an undo operation is currently possible
+    /// Returns: `true` if and only if an undo operation is currently possible
     bool queryUndo() {
         synchronized(_mutex) {
             auto undoRange = _undoHistory[];
@@ -28,7 +32,7 @@ public:
         }
     }
 
-    // returns true if a redo operation is currently possible
+    /// Returns: `true` if and only if a redo operation is currently possible
     bool queryRedo() {
         synchronized(_mutex) {
             auto redoRange = _redoHistory[];
@@ -36,8 +40,8 @@ public:
         }
     }
 
-    // undo the last operation, if possible
-    // this function will clear the redo history if the user subsequently appends a new operation
+    /// Undo the last operation, if possible.
+    /// This function will clear the redo history if the user subsequently appends a new operation.
     void undo() {
         synchronized(_mutex) {
             auto operation = takeOne(retro(_undoHistory[]));
@@ -55,7 +59,7 @@ public:
         }
     }
 
-    // redo the last operation, if possible
+    /// Redo the last operation, if possible.
     void redo() {
         synchronized(_mutex) {
             auto operation = takeOne(_redoHistory[]);
@@ -67,7 +71,8 @@ public:
         }
     }
 
-    // execute this function when the user effects a new undo-able state
+    /// Execute this function when the user effects a new undo-able state.
+    /// This function will clear the current redo history.
     void appendState(T t) {
         synchronized(_mutex) {
             _undoHistory.insertBack(t);
@@ -81,16 +86,21 @@ public:
         }
     }
 
-    // returns the current user-modifiable state
+    /// Returns: The current user-modifiable state
     @property ref T currentState() @nogc nothrow {
         return _currentState.state;
     }
 
+    /// Returns: A range of state objects comprising the undo history.
+    /// The back element is the most recently appended operation.
     @property auto undoHistory() {
         synchronized(_mutex) {
             return _undoHistory[];
         }
     }
+
+    /// Returns: A range of state objects comprising the redo history.
+    /// The front element is the next operation to redo.
     @property auto redoHistory() {
         synchronized(_mutex) {
             return _redoHistory[];
@@ -98,10 +108,12 @@ public:
     }
 
 private:
+    /// Atomically update the current state from the back of the undo history
     void _updateCurrentState() {
         atomicStore(*cast(shared)(&_currentState), cast(shared)(new CurrentState(_undoHistory.back)));
     }
 
+    /// Convenience class to wrap the state into a reference object
     static final class CurrentState {
         this(T state) {
             this.state = state;
@@ -109,6 +121,8 @@ private:
 
         T state;
     }
+
+    /// Reference to the current state of the undo/redo history
     CurrentState _currentState;
 
     Mutex _mutex;

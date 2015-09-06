@@ -1,7 +1,5 @@
 module util.sequence;
 
-public import util.statehistory;
-
 private import std.array;
 private import std.container.dlist;
 private import std.conv;
@@ -9,10 +7,20 @@ private import std.cstream : derr;
 
 private import core.sync.mutex;
 
+public import util.statehistory;
+
+/// Evaluates to `true` if and only if the template argument can be indexed with array-like semantics
 template isValidBuffer(Buffer) {
     enum isValidBuffer = is(typeof((Buffer.init)[size_t.init]));
 }
 
+/// Generic container for a "sequence" data structure.
+/// This implementation is based on the paper "Data Structures for Text Sequences" by Charles Crowley.
+/// The basic idea is that any changes made to the original data buffer are stored independently,
+/// and the sequence is constructed on the fly as a series of slices. Each slice points to either the
+/// original buffer or a modified buffer. This class also sits atop the `StateHistory` structure,
+/// and thus has native support for undo/redo operations. Each state in the history consists of
+/// a piece table representing the complete state of the sequence.
 final class Sequence(Buffer) if(isValidBuffer!(Buffer)) {
 public:
     static if(is(Buffer == U[], U)) {
@@ -24,9 +32,10 @@ public:
         alias BufferCache = Buffer*;
     }
 
+    /// The type of data contained by the `Buffer` type
     alias Element = typeof((Buffer.init)[size_t.init]);
 
-    // original buffer must not be empty
+    /// The original buffer should not be empty
     this(Buffer originalBuffer) {
         assert(originalBuffer.length > 0);
         _originalBuffer = originalBuffer;
@@ -38,37 +47,44 @@ public:
         _stateHistory = new StateHistory!PieceTable(PieceTable(table));
     }
 
+    /// Returns: `true` if and only if an undo operation is currently possible
     bool queryUndo() {
         return _stateHistory.queryUndo();
     }
+
+    /// Returns: `true` if and only if a redo operation is currently possible
     bool queryRedo() {
         return _stateHistory.queryRedo();
     }
 
+    /// Undo the last operation, if possible.
+    /// This function will clear the redo history if the user subsequently appends a new operation.
     void undo() {
         _stateHistory.undo();
     }
+
+    /// Redo the last operation, if possible.
     void redo() {
         _stateHistory.redo();
     }
 
-    // insert a new buffer at logicalOffset and append the result to the piece table history
+    /// Insert a new buffer at `logicalOffset` and append the result to the piece table history
     void insert(T)(T buffer, size_t logicalOffset) {
         synchronized(_mutex) {
             _appendToHistory(_currentPieceTable.insert(buffer, logicalOffset));
         }
     }
 
-    // delete all indices in the range [logicalStart, logicalEnd) and
-    // append the result to the piece table history
+    /// Delete all indices in the range [`logicalStart`, `logicalEnd`) and
+    /// append the result to the piece table history
     void remove(size_t logicalStart, size_t logicalEnd) {
         synchronized(_mutex) {
             _appendToHistory(_currentPieceTable.remove(logicalStart, logicalEnd));
         }
     }
 
-    // removes elements in the given range, then insert a new buffer at the start of that range
-    // append the result to the piece table history
+    /// Remove elements in the range [`logicalStart`, `logicalEnd`],
+    /// then insert a new buffer at `logicalStart` and append the result to the piece table history
     void replace(T)(T buffer, size_t logicalStart, size_t logicalEnd) {
         synchronized(_mutex) {
             _appendToHistory(_currentPieceTable.remove(logicalStart, logicalEnd).insert(buffer, logicalStart));
@@ -99,22 +115,28 @@ public:
         return _currentPieceTable.toString();
     }
 
+    /// Structure representing a single entry in a piece table.
+    /// This is implemented via slices of type `Buffer`
     static struct PieceEntry {
-        Buffer buffer;
-        size_t logicalOffset;
+        Buffer buffer; /// The slice of data for this piece table entry
+        size_t logicalOffset; /// The absolute offset of this piece in its corresponding piece table
 
+        /// Retrieve the length of the buffer for this piece table entry
         @property size_t length() {
             return buffer.length;
         }
     }
 
+    /// Structure containing a table of `PieceEntry` objects.
     static struct PieceTable {
     public:
+        /// Initialize the piece table with a simple array of `PieceEntry` objects
         this(PieceEntry[] table) {
             this.table = table;
         }
 
         debug {
+            /// Print all piece entries in a piece table, for debugging purposes
             void debugPrint() {
                 import std.stdio : write, writeln;
 
@@ -126,7 +148,7 @@ public:
             }
         }
 
-        // insert a new buffer at logicalOffset
+        /// Insert a new buffer at logicalOffset
         PieceTable insert(T)(T buffer, size_t logicalOffset)
             if(is(T == Buffer) || is(T == PieceTable)) {
                 if(logicalOffset > logicalLength) {
@@ -201,7 +223,7 @@ public:
                 return PieceTable(pieceTable.data);
             }
 
-        // delete all indices in the range [logicalStart, logicalEnd)
+        /// Delete all indices in the range [`logicalStart`, `logicalEnd`)
         PieceTable remove(size_t logicalStart, size_t logicalEnd) {
             // degenerate case
             if(logicalStart == logicalEnd) {
@@ -272,8 +294,8 @@ public:
             return PieceTable(pieceTable.data);
         }
 
-        // return the element at the given logical index; optimized for ascending sequential access
-        // asserts if the index is out of range
+        /// Returns: The element at the given logical index; optimized for ascending sequential access.
+        /// This function asserts if the index is out of range.
         auto ref opIndex(size_t index) @nogc nothrow {
             if(_cachedBuffer) {
                 // if the index is in the cached buffer
@@ -331,7 +353,7 @@ public:
             assert(0, "range error when indexing sequence of buffer type: " ~ Buffer.stringof);
         }
 
-        // returns a new piece table, with similar semantics to built-in array slicing
+        // Returns: A new piece table, with similar semantics to built-in array slicing
         PieceTable opSlice(size_t logicalStart, size_t logicalEnd) {
             // degenerate case
             if(logicalStart == logicalEnd) {
@@ -399,11 +421,13 @@ public:
             return PieceTable(pieceTable.data);
         }
 
-        // copy this piece table
+        /// Copy this piece table
         PieceTable opSlice() {
             return this;
         }
 
+        /// Returns the logical length of the piece table.
+        /// This is equivalent to the sum of all the lengths of all piece table entries.
         @property size_t logicalLength() {
             if(table.length > 0) {
                 return table[$ - 1].logicalOffset + table[$ - 1].length;
@@ -418,22 +442,31 @@ public:
             return length > 0;
         }
 
+        /// This function allows this class to be used as a Forward Range.
+        /// Returns: `true` if and only if all elements in the piece table have been popped from the range.
         @property bool empty() {
             return _pos >= length;
         }
 
+        /// This function allows this class to be used as a Forward Range.
+        /// Returns: the front element of the range.
         @property auto ref front() {
             return this[_pos];
         }
 
+        /// This function allows this class to be used as a Forward Range.
+        /// Removes the front element from the range.
         void popFront() {
             ++_pos;
         }
 
+        /// This function allows this class to be used as a Forward Range.
+        /// It simply copies the piece table object.
         @property auto save() {
             return this;
         }
 
+        /// Copies all elements in the piece table, in logical order, into a new array
         Element[] toArray() {
             auto result = appender!(Element[]);
             foreach(piece; table) {
@@ -444,13 +477,17 @@ public:
             return result.data;
         }
 
+        /// Formats all elements in the piece table, in logical order, into a string.
+        /// This is only practically useful as a debugging aid.
         string toString() {
             return to!string(toArray);
         }
 
+        /// The actual piece table is implemented as an array of `PieceEntry` objects
         PieceEntry[] table;
 
     private:
+        /// The current position in the piece table, when this structure is used as a Forward Range
         size_t _pos;
 
         BufferCache _cachedBuffer;
@@ -463,6 +500,7 @@ private:
     void _appendToHistory(PieceEntry[] pieceTable) {
         _stateHistory.appendState(PieceTable(pieceTable));
     }
+
     void _appendToHistory(PieceTable pieceTable) {
         _stateHistory.appendState(pieceTable);
     }
@@ -474,10 +512,11 @@ private:
     Mutex _mutex;
 
     Buffer _originalBuffer;
+
     StateHistory!(PieceTable) _stateHistory;
 }
 
-// test sequence indexing
+/// Test sequence indexing
 unittest {
     alias IntSeq = SequenceT!(int[]).Sequence;
 
@@ -501,7 +540,7 @@ unittest {
     assert(intSeq[3] == 5);
 }
 
-// test sequence slicing
+/// Test sequence slicing
 unittest {
     alias IntSeq = SequenceT!(int[]).Sequence;
 
@@ -553,7 +592,7 @@ unittest {
     }
 }
 
-// test sequence insertion
+/// Test sequence insertion
 unittest {
     alias IntSeq = SequenceT!(int[]).Sequence;
 
@@ -612,7 +651,7 @@ unittest {
     }
 }
 
-// test sequence removal
+/// Test sequence removal
 unittest {
     alias IntSeq = SequenceT!(int[]).Sequence;
 
@@ -663,7 +702,7 @@ unittest {
     }
 }
 
-// test sequence replacement
+/// Test sequence replacement
 unittest {
     alias IntSeq = SequenceT!(int[]).Sequence;
 
@@ -690,7 +729,7 @@ unittest {
     }
 }
 
-// test sequence iteration
+/// Test sequence iteration
 unittest {
     alias IntSeq = SequenceT!(int[]).Sequence;
 
