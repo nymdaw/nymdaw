@@ -32,11 +32,6 @@ public:
         _masterBus = new MasterBus(sampleRate);
     }
 
-    ~this() {
-        cleanupMixer();
-        super.destroy();
-    }
-
     void exportSessionToFile(string fileName,
                              AudioFileFormat audioFileFormat,
                              AudioBitDepth bitDepth,
@@ -313,7 +308,6 @@ public:
         }
     }
 
-protected:
     void initializeMixer();
     void cleanupMixer() nothrow;
 
@@ -392,7 +386,6 @@ version(HAVE_JACK) {
 
         @property override nframes_t sampleRate() { return jack_get_sample_rate(_client); }
 
-    protected:
         override void initializeMixer() {
             _client = jack_client_open(appName.toStringz, JackOptions.JackNoStartServer, null);
             if(!_client) {
@@ -488,7 +481,6 @@ version(HAVE_COREAUDIO) {
 
         @property override nframes_t sampleRate() { return _sampleRate; }
 
-    protected:
         override void initializeMixer() {
             if(!coreAudioInit(sampleRate, outputChannels, &_coreAudioProcessCallback)) {
                 throw new AudioError(to!string(coreAudioErrorString()));
@@ -532,7 +524,6 @@ version(HAVE_PORTAUDIO) {
 
         @property override nframes_t sampleRate() { return _sampleRate; }
 
-    protected:
         static struct Phase {
             sample_t left = 0;
             sample_t right = 0;

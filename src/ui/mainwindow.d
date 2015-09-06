@@ -42,7 +42,7 @@ protected:
 
 private:
     void _cleanupMixer() {
-        _mixer.destroy();
+        _mixer.cleanupMixer();
     }
 
     Mixer _mixer;
