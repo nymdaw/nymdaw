@@ -42,7 +42,7 @@ public:
     /// Params:
     /// stage = The current stage of the computation
     /// stageFraction = A fraction between `0.0` and `1.0` denoting the completion percentage of the current stage
-    /// \Returns `false` if the operation was cancelled; otherwise, `true`
+    /// Returns: `false` if the operation was cancelled; otherwise, `true`
     alias Callback = bool delegate(Stage stage, double stageFraction);
 
     /// Constructor specifying an initial stage and completion percentage for the entire computation
@@ -77,7 +77,7 @@ private:
     }
 }
 
-/// An abstraction on top of `std.parallelism.Task`
+/// An abstraction on top of `std.parallelism.Task`, stores a name and either a `Task` or `Task*`
 template ProgressTask(Task)
     if(is(Task == U delegate(), U) ||
        (isPointer!Task && __traits(isSame, TemplateOf!(PointerTarget!Task), std.parallelism.Task)) ||
@@ -104,27 +104,40 @@ template ProgressTask(Task)
     }
 }
 
+/// The default task type is a void function with no arguments
 alias DefaultProgressTask = ProgressTask!(void delegate());
 
+/// Convenience template function to construct a `ProgressTask`
 auto progressTask(Task)(string name, Task task) {
     return ProgressTask!Task(name, task);
 }
 
+/// Constructor object for a progress callback.
+/// This object stores a Tid and state information for the constructed callback delegate.
 struct ProgressTaskCallback(ProgressState) if(__traits(isSame, TemplateOf!ProgressState, .ProgressState)) {
+    /// This constructor requires a `Tid` from the calling thread (typically the UI thread)
     this(Tid callbackTid) {
         this.callbackTid = callbackTid;
     }
 
     @disable this();
 
+    /// Constructs a callback delegate.
+    /// This delegate will send a message to the calling thread (typically the UI thread)
+    /// consisting of the current progress state (the current stage and completion percentage of that stage).
+    /// The constructed callback delegate will return `true` if the computation should progress further,
+    /// or `false` if the computation was cancelled by the user.
+    /// Returns: A progress callback for the `ProgressState` specified by the template parameter.
     @property ProgressState.Callback callback() {
         return delegate(ProgressState.Stage stage, double stageFraction) {
             if(!registeredThread) {
                 register(ProgressState.mangleof, thisTid);
             }
 
+            // send a progress message to the UI thread
             send(callbackTid, ProgressState(stage, stageFraction));
 
+            // a message designating that the computation was cancelled may be sent by the UI thread
             if(!cancelled) {
                 receiveTimeout(0.msecs, (bool cancel) { cancelled = cancel; });
             }
@@ -133,7 +146,7 @@ struct ProgressTaskCallback(ProgressState) if(__traits(isSame, TemplateOf!Progre
     }
     alias callback this;
 
-    Tid callbackTid;
-    bool registeredThread;
-    bool cancelled;
+    Tid callbackTid; /// The calling thread (typically the UI thread)
+    bool registeredThread; /// Whether the thread executing the callback has been registered by the runtime
+    bool cancelled; /// Whether the computation was cancelled by the user
 }
