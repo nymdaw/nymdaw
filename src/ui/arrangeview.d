@@ -203,6 +203,12 @@ public:
             _pauseMenuItem = new MenuItem(&onPause, "_Pause", "mixer.pause", true,
                                           _accelGroup, ' ', cast(GdkModifierType)(0));
             mixerMenu.append(_pauseMenuItem);
+            _viewFollowTransportMenuItem = new CheckMenuItem("Follow Transport");
+            _viewFollowTransportMenuItem.addOnToggled(delegate void(CheckMenuItem checkMenuItem) {
+                    _viewFollowTransport = _viewFollowTransportMenuItem.getActive();
+                });
+            _viewFollowTransportMenuItem.setActive(false);
+            mixerMenu.append(_viewFollowTransportMenuItem);
             mixerMenu.addOnDraw(delegate bool(Scoped!Context context, Widget widget) {
                     _playMenuItem.setSensitive(!_mixer.playing);
                     _pauseMenuItem.setSensitive(_mixer.playing);
@@ -457,6 +463,7 @@ public:
     private:
         MenuItem _playMenuItem;
         MenuItem _pauseMenuItem;
+        CheckMenuItem _viewFollowTransportMenuItem;
 
         MenuItem _undoMenuItem;
         MenuItem _redoMenuItem;
@@ -4233,8 +4240,12 @@ public:
 
         bool onRefresh() {
             if(_mixer.playing) {
-                redraw();
+                if(_viewFollowTransport && _mixer.transportOffset >= viewOffset + viewWidthSamples) {
+                    _viewOffset = _mixer.transportOffset;
+                }
+
                 _mixerPlaying = true;
+                redraw();
             }
             else if(_mixerPlaying) {
                 _mixerPlaying = false;
@@ -5724,9 +5735,10 @@ public:
             }
 
             if(taskList.length > 0) {
+                // block on message crowding to ensure this thread receives the progress completion message
                 setMaxMailboxSize(thisTid,
                                   LoadState.nStages * LoadState.stepsPerStage,
-                                  OnCrowding.ignore);
+                                  OnCrowding.block);
 
                 size_t currentTaskIndex = 0;
                 ProgressTask currentTask = taskList[currentTaskIndex];
@@ -6724,6 +6736,7 @@ private:
 
     nframes_t _samplesPerPixel;
     nframes_t _viewOffset;
+    bool _viewFollowTransport;
 
     ArrangeChannelStrip _arrangeChannelStrip;
     Timeout _arrangeChannelStripRefresh;

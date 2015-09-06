@@ -21,7 +21,7 @@ public:
         _arrangeView = new ArrangeView(appName, this, mixer);
         add(_arrangeView);
 
-        setDefaultSize(960, 600);
+        setDefaultSize(1200, 700);
         showAll();
 
         if(!args.empty && !args[1 .. $].empty) {
