@@ -10,7 +10,7 @@
 from waflib import Options
 import sys, os
 
-APPNAME = "dseq"
+APPNAME = "dhippo"
 VERSION = "0.0.1"
 
 top = "."
