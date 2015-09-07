@@ -86,7 +86,7 @@ private import ui.errordialog;
 private import ui.types;
 
 /// This widget draws a canvas that allows the user to manipulate tracks/regions.
-/// It also renders channel strips for tracks/busses.
+/// It also renders track stubs for all visible tracks, and channel strips for tracks/busses.
 final class ArrangeView : Box {
 public:
     enum defaultSamplesPerPixel = 500; /// Default zoom level, in samples per pixel
@@ -1576,6 +1576,7 @@ public:
         /// recomputeOnsets = Whether the region view should recompute onsets for this state
         /// onsetsEdited = Whether an onset was edited
         /// onsetsChannelIndex = The channel index of the edited onset, if applicable
+        /// Returns: The current edit state
         EditState currentEditState(bool audioEdited,
                                    bool recomputeOnsets = false,
                                    bool onsetsEdited = false,
@@ -1661,7 +1662,7 @@ public:
             }
         }
 
-        /// Redo the last operation, if possible.
+        /// Redo the last edit operation, if possible.
         void redoEdit() {
             if(queryRedoEdit()) {
                 _editStateHistory.redo();
@@ -2748,33 +2749,36 @@ public:
         ChannelStrip _channelStrip;
     }
 
-    /// A channel view subclass for an audio track
+    /// A channel view subclass for audio tracks
     final class TrackView : ChannelView {
     public:
-        RegionView addRegion(RegionView regionView) {
-            synchronized {
-                _track.addRegion(regionView.region);
-
-                if(regionView.trackView !is this) {
-                    regionView.trackView = this;
-                }
-                _regionViews ~= regionView;
-                this.outer._regionViews ~= regionView;
-            }
-
-            _hScroll.reconfigure();
-            _vScroll.reconfigure();
-
-            return regionView;
-        }
+        /// Create a new `RegionView` and register it with this track
+        /// Params:
+        /// region = The region to associate with the new `RegionView`
+        /// addSoftLink = Whether to add a soft link to `region` to the source audio sequence
         RegionView addRegion(Region region, bool addSoftLink = true) {
             auto newRegionView = new RegionView(this, region);
             if(addSoftLink) {
                 newRegionView.addSoftLinkToSequence();
             }
-            return addRegion(newRegionView);
+
+            synchronized {
+                _track.addRegion(newRegionView.region);
+
+                if(newRegionView.trackView !is this) {
+                    newRegionView.trackView = this;
+                }
+                _regionViews ~= newRegionView;
+                this.outer._regionViews ~= newRegionView;
+            }
+
+            _hScroll.reconfigure();
+            _vScroll.reconfigure();
+
+            return newRegionView;
         }
 
+        /// Draw all regions registered with this track
         void drawRegions(ref Scoped!Context cr, pixels_t yOffset) {
             foreach(regionView; _regionViews) {
                 if(_action == Action.moveRegion && regionView.selected) {
@@ -2786,6 +2790,8 @@ public:
             }
         }
 
+        /// The the stub for this track.
+        /// A track stub renders the track name and buttons for track functions such as mute/solo.
         void drawStub(ref Scoped!Context cr,
                       pixels_t yOffset,
                       size_t trackIndex,
@@ -2900,6 +2906,7 @@ public:
             }
         }
 
+        /// A collection of track buttons containing mute/solo and left/right solo buttons
         final class TrackButtonStrip {
         public:
             this(Track track) {
@@ -2930,6 +2937,7 @@ public:
                 drawLeftRight(cr, xOffset, yOffset);
             }
 
+            /// Returns: A list of all buttons associated with the button strip
             @property TrackButton[] trackButtons() {
                 return [muteButton, soloButton, leftButton, rightButton];
             }
@@ -2941,17 +2949,23 @@ public:
             RightButton rightButton;
         }
 
+        /// Returns: A list of all buttons associated with this track's button strip
         @property TrackButton[] trackButtons() {
             return _trackButtonStrip.trackButtons;
         }
 
+        /// Returns: The button strip associated with this track
         @property TrackButtonStrip trackButtonStrip() {
             return _trackButtonStrip;
         }
 
+        /// Whether the track is muted
         @property bool mute() const { return _track.mute; }
+
+        /// Whether the track is currently in solo mode
         @property bool solo() const { return _track.solo; }
 
+        /// The channel strip object associated with this track
         @property ChannelStrip channelStrip() { return _channelStrip; }
 
         override void processSilence(nframes_t bufferLength) { _track.processSilence(bufferLength); }
@@ -2964,30 +2978,47 @@ public:
         @property override sample_t faderGainDB() const @nogc nothrow { return _track.faderGainDB; }
         @property override sample_t faderGainDB(sample_t db) { return (_track.faderGainDB = db); }
 
+        /// Returns: `true` if and only if the given vertical scale factor yields a valid zoom level
         bool validZoom(float verticalScaleFactor) {
             return cast(pixels_t)(max(_baseHeightPixels * verticalScaleFactor, RegionView.headerHeight)) >=
                 minHeightPixels;
         }
+
+        /// Returns: The height of the track stub, in pixels
         @property pixels_t heightPixels() const {
             return cast(pixels_t)(max(_baseHeightPixels * _verticalScaleFactor, RegionView.headerHeight));
         }
+
+        /// Returns: The minimum height for this track stub, in pixels
         @property pixels_t minHeightPixels() const { return _minHeightPixels; }
 
+        /// Array all region views registered with this track
         @property RegionView[] regionViews() { return _regionViews; }
+        /// ditto
         @property RegionView[] regionViews(RegionView[] newRegionViews) { return (_regionViews = newRegionViews); }
 
+        /// The name of this track, rendered in the track stub and channel strip
         @property override string name() const { return _name; }
+        /// ditto
         @property string name(string newName) { return (_name = newName); }
 
+        /// Returns: A bounding box for the track stub
         @property ref const(BoundingBox) stubBox() const { return _stubBox; }
 
+        /// The color of all regions in this track
         @property Color color() { return _trackColor; }
 
+        /// Returns: The name of this track
         override string toString() {
             return name;
         }
 
     private:
+        /// Params:
+        /// track = The track object to associate with this track view
+        /// heightPixels = the initial height in pixels for the track stub,
+        ///                and all regions with this track as a parent
+        /// name = The name of this track, rendered in the track stub and channel strip
         this(Track track, pixels_t heightPixels, string name) {
             _track = track;
             _channelStrip = new ChannelStrip(this);
@@ -2999,6 +3030,7 @@ public:
             _trackButtonStrip = new TrackButtonStrip(_track);
         }
 
+        /// Generate a random color for new tracks
         static Color _newTrackColor() {
             Color color;
             Random gen;
@@ -3033,11 +3065,12 @@ public:
         BoundingBox _stubBox;
     }
 
+    /// Class to facilitate rendering a fader and meter for a channel
     final class ChannelStrip {
     public:
-        immutable Duration peakHoldTime = 1500.msecs; // amount of time to maintain meter peak levels
+        immutable Duration peakHoldTime = 1500.msecs; /// Amount of time to maintain meter peak levels
 
-        enum channelStripWidth = defaultChannelStripWidth;
+        enum channelStripWidth = defaultChannelStripWidth; /// Use a static pixel width for all channel strips
         enum channelStripLabelFont = "Arial 8";
 
         enum meterHeightPixels = 300;
@@ -3050,11 +3083,15 @@ public:
         enum faderHeightPixels = 40;
         enum faderCornerRadiusPixels = 4;
 
+        /// Decibel marks to draw when 0 dB is the maximum level
         static immutable float[] meterMarks0Db =
             [0, -3, -6, -9, -12, -15, -18, -20, -25, -30, -35, -40, -50, -60];
+
+        /// Decibel marks to draw when +6 dB is the maximum level
         static immutable float[] meterMarks6Db =
             [6, 3, 0, -3, -6, -9, -12, -15, -18, -20, -25, -30, -35, -40, -50, -60];
 
+        /// Color stops for drawing a gradient background for a meter
         static immutable Color[] colorMap = [
             Color(1.0, 0.0, 0.0),
             Color(1.0, 0.5, 0.0),
@@ -3064,14 +3101,18 @@ public:
             Color(0.0, 0.4, 0.25),
             Color(0.0, 0.1, 0.5)
             ];
+
+        /// Decibel marks corresponding to each element in `colorMap`
         static immutable float[] colorMapDb = [0, -2, -6, -12, -25, -float.infinity];
 
+        /// Class to render a small text box containing a decibel reading
         abstract class DbReadout {
         public:
-            enum dbReadoutWidth = 30;
-            enum dbReadoutHeight = 20;
+            enum dbReadoutWidth = 30; /// Text box width, in pixels
+            enum dbReadoutHeight = 20; /// Text box height, in pixels
             enum dbReadoutFont = "Arial 8";
 
+            /// Draw the readout to a cairo context
             void draw(ref Scoped!Context cr, pixels_t readoutXOffset, pixels_t readoutYOffset) {
                 // compute the bounding box for the readout
                 _boundingBox.x0 = readoutXOffset;
@@ -3132,11 +3173,14 @@ public:
                 PgCairo.showLayout(cr, _dbReadoutLayout);
             }
 
+            /// Returns: A bounding box for the decibel readout
             @property ref const(BoundingBox) boundingBox() const { return _boundingBox; }
 
+            /// The current decibel value to be displayed by the readout
             float db;
 
         protected:
+            /// Returns: The color to render the text in the readout
             @property Color textColor();
 
         private:
@@ -3144,6 +3188,7 @@ public:
             PgLayout _dbReadoutLayout;
         }
 
+        /// A decibel readout for the track fader
         final class FaderReadout : DbReadout {
         public:
             this() {
@@ -3156,6 +3201,7 @@ public:
             }
         }
 
+        /// A decibel readout for the track meter
         final class MeterReadout : DbReadout {
         public:
             this() {
@@ -3164,6 +3210,7 @@ public:
 
         protected:
             @property override Color textColor() {
+                // Color the text to match the current meter levels
                 if(_meterGradient !is null && db > -float.infinity) {
                     size_t markIndex;
                     foreach(index, mark; colorMapDb) {
@@ -3182,6 +3229,8 @@ public:
             }
         }
 
+        /// Params:
+        /// channelView = The channel view to associate with this channel strip
         this(ChannelView channelView) {
             _channelView = channelView;
 
@@ -3190,6 +3239,7 @@ public:
             updateFaderFromChannel();
         }
 
+        /// Draw the entire channel strip to a cairo context
         void draw(ref Scoped!Context cr, pixels_t channelStripXOffset) {
             immutable pixels_t windowWidth = cast(pixels_t)(getWindow().getWidth());
             immutable pixels_t windowHeight = cast(pixels_t)(getWindow().getHeight());
@@ -3205,6 +3255,7 @@ public:
             drawLabel(cr, labelXOffset, _faderYOffset - 75);
         }
 
+        /// Subroutine to draw the track fader
         void drawFader(ref Scoped!Context cr, pixels_t faderXOffset, pixels_t faderYOffset) {
             if(_channelView !is null) {
                 enum degrees = PI / 180.0;
@@ -3271,6 +3322,7 @@ public:
             }
         }
 
+        /// Subroutine to draw the track meter
         void drawMeter(ref Scoped!Context cr, pixels_t meterXOffset, pixels_t meterYOffset) {
             if(_channelView !is null) {
                 cr.save();
@@ -3412,6 +3464,7 @@ public:
             }
         }
 
+        /// Subroutine to draw the track label
         void drawLabel(ref Scoped!Context cr, pixels_t labelXOffset, pixels_t labelYOffset) {
             cr.save();
             scope(exit) cr.restore();
@@ -3433,6 +3486,7 @@ public:
             PgCairo.showLayout(cr, _channelStripLabelLayout);
         }
 
+        /// Call this function when the size of the widget containing this channel strip has been changed
         void sizeChanged() {
             if(_meterGradient !is null) {
                 _meterGradient.destroy();
@@ -3445,6 +3499,10 @@ public:
             _backgroundGradient = null;
         }
 
+        /// This function will hold the current peak levels according to the peak hold time constant.
+        /// Once the maximum peak hold time has been reached, the peaks will begin falling, until a new
+        /// peak is detected and held. This gives the user a reasonable idea of the relative peaks
+        /// present in recently played audio.
         void updatePeaks() {
             // update peak hold times
             _peak1 = _channelView.peakMax[0];
@@ -3457,7 +3515,7 @@ public:
                 _readoutPeak2 = _peak2;
             }
 
-            if(!_peak1Falling.isNull) {
+            if(!_peak1Falling.isNull()) {
                 auto elapsed = MonoTime.currTime - _lastPeakTime;
                 _peak1Falling = max(_peak1Falling - sample_t(1) / elapsed.split!("msecs").msecs, 0);
                 _peak1 = _peak1Falling;
@@ -3485,7 +3543,7 @@ public:
                 }
             }
 
-            if(!_peak2Falling.isNull) {
+            if(!_peak2Falling.isNull()) {
                 auto elapsed = MonoTime.currTime - _lastPeakTime;
                 _peak2Falling = max(_peak2Falling - sample_t(1) / elapsed.split!("msecs").msecs, 0);
                 _peak2 = _peak2Falling;
@@ -3516,8 +3574,9 @@ public:
             _lastPeakTime = MonoTime.currTime;
         }
 
-        // continues to update the meter when the mixer stops playing
-        // returns true if the meter should be redrawn
+        /// Continues to update the meter when the mixer stops playing.
+        /// This allows the meters to smoothly return to -infinity.
+        /// Returns: `true` if and only if the meter should be redrawn
         bool refresh() {
             if(_mixer.playing) {
                 _mixerPlaying = true;
@@ -3551,6 +3610,7 @@ public:
             return _processSilence;
         }
 
+        /// Reset the meters for both the left and right channels to their initial states
         void resetMeters() {
             if(_channelView !is null) {
                 _channelView.resetMeters();
@@ -3561,6 +3621,7 @@ public:
             }
         }
 
+        /// Reset the fader to 0 dB, and reset the meters
         void zeroFader() {
             if(_channelView !is null) {
                 _channelView.faderGainDB = 0;
@@ -3569,6 +3630,7 @@ public:
             }
         }
 
+        /// Modify the fader gain when the user moves the fader via the mouse
         void updateFaderFromMouse(pixels_t mouseY) {
             _faderAdjustmentPixels = clamp(mouseY - _faderYOffset, 0, meterHeightPixels);
             if(_channelView !is null) {
@@ -3578,6 +3640,8 @@ public:
             }
         }
 
+        /// Modify the fader gain from the associated channel object.
+        /// This is useful when updating the channel strip state from the undo/redo history.
         void updateFaderFromChannel() {
             if(_channelView !is null) {
                 _faderAdjustmentPixels =
@@ -3590,19 +3654,32 @@ public:
             }
         }
 
+        /// Returns: The channel view object associated with this channel strip
         @property ChannelView channelView() { return _channelView; }
 
+        /// Returns: `true` if and only if the channel strip should be redrawn.
+        ///          This occurs if the mixer is currently playing, or if the meter has not yet
+        ///          fallen to -infinity.
         @property bool redrawRequested() {
             return _mixerPlaying || _processSilence;
         }
 
+        /// Returns: A bounding box containing the user-adjustable fader.
+        ///          This is the area that the user can click to adjust the fader.
         @property ref const(BoundingBox) faderBox() const { return _faderBox; }
+
+        /// Returns: A bounding box containing the decibel readout corresponding to the fader
         @property ref const(BoundingBox) faderReadoutBox() const { return _faderReadout.boundingBox; }
+
+        /// Returns: A bounding box containing the meter
         @property ref const(BoundingBox) meterBox() const { return _meterBox; }
+
+        /// Returns: A bounding box for containing the decibel readout corresponding to the meter
         @property ref const(BoundingBox) meterReadoutBox() const { return _meterReadout.boundingBox; }
 
     private:
-        // deflection between (-inf, 0] dB
+        /// Calculate a deflection between (-inf, 0] dB.
+        /// This is used to convert decibel values to pixel coordinates.
         static float _deflect0Db(float db) {
             float def = 0.0f;
 
@@ -3634,7 +3711,8 @@ public:
             return def / 100.0f;
         }
 
-        // deflection between (-inf, 6] dB
+        /// Calculate a deflection between (-inf, 6] dB.
+        /// This is used to convert decibel values to pixel coordinates.
         static float _deflect6Db(float db) {
             float def = 0.0f;
 
@@ -3666,8 +3744,11 @@ public:
             return def / 115.0f;
         }
 
-        // linearly scale between logarithmically spaced meter marks
-        // this seems to yield pleasant behavior when adjusting faders via the mouse
+        /// Linearly scale between logarithmically spaced meter marks.
+        /// This algorithm seems to yield pleasant behavior when adjusting faders via the mouse.
+        /// Params:
+        /// faderPosition = A fractional value between 0 and 1 representing the fader position
+        /// Returns: A value, in dBFS, corresponding to the fader position
         static float _deflectInverse6Db(float faderPosition) {
             static auto deflectionPoints = std.algorithm.map!(db => _deflect6Db(db))(meterMarks6Db);
 
@@ -3728,6 +3809,9 @@ public:
         Duration _totalPeakTime2;
     }
 
+    /// Renders two channel strips in the arrange view.
+    /// The first corresponds to the currently selected track.
+    /// The second corresponds to the master bus.
     final class ArrangeChannelStrip : DrawingArea {
     public:
         this() {
@@ -3743,6 +3827,8 @@ public:
             update();
         }
 
+        /// Updates the state of the selected track and master bus channel strips from their respective tracks.
+        /// This is useful when updating the current state after an undo/redo operation.
         void update() {
             if(_selectedTrack !is null) {
                 _selectedTrackChannelStrip = _selectedTrack.channelStrip;
@@ -3755,10 +3841,12 @@ public:
             }
         }
 
+        /// Redraw this widget
         void redraw() {
             queueDrawArea(0, 0, getWindow().getWidth(), getWindow().getHeight());
         }
 
+        /// Draw the selected track and master bus channel strips to a cairo context
         bool drawCallback(Scoped!Context cr, Widget widget) {
             if(_arrangeChannelStripRefresh is null) {
                 _arrangeChannelStripRefresh = new Timeout(cast(uint)(1.0 / refreshRate * 1000), &onRefresh, false);
@@ -3803,6 +3891,7 @@ public:
             return true;
         }
 
+        /// Callback to refresh the level and peak values for the selected track and master bus channel strips
         bool onRefresh() {
             foreach(trackView; _trackViews) {
                 if(trackView != _selectedTrack) {
@@ -3821,6 +3910,7 @@ public:
             return true;
         }
 
+        /// This function is called when Gtk issues a size allocation request for this widget
         void onSizeAllocate(GtkAllocation* allocation, Widget widget) {
             if(_selectedTrackChannelStrip !is null) {
                 _selectedTrackChannelStrip.sizeChanged();
@@ -3829,6 +3919,7 @@ public:
             _masterBusView.channelStrip.sizeChanged();
         }
 
+        /// Called when the user moves the mouse within this widget
         bool onMotionNotify(Event event, Widget widget) {
             if(event.type == EventType.MOTION_NOTIFY) {
                 _mouseX = cast(typeof(_mouseX))(event.motion.x);
@@ -3846,6 +3937,7 @@ public:
             return true;
         }
 
+        /// Called when the user presses a mouse button within this widget
         bool onButtonPress(Event event, Widget widget) {
             if(event.type == EventType.BUTTON_PRESS) {
                 bool doubleClick;
@@ -3935,6 +4027,7 @@ public:
         pixels_t _mouseY;
     }
 
+    /// Renders track stubs for all track views currently registered in this session.
     final class TrackStubs : DrawingArea {
     public:
         enum labelPadding = 5; // general padding for track labels, in pixels
@@ -3951,10 +4044,12 @@ public:
             addOnButtonRelease(&onButtonRelease);
         }
 
+        /// Redraw this widget
         void redraw() {
             queueDrawArea(0, 0, getWindow().getWidth(), getWindow().getHeight());
         }
 
+        /// Draw the track stubs
         bool drawCallback(Scoped!Context cr, Widget widget) {
             if(!_trackLabelLayout) {
                 PgFontDescription desc;
@@ -3991,6 +4086,7 @@ public:
             return true;
         }
 
+        /// Called when the user moves the mouse within this widget
         bool onMotionNotify(Event event, Widget widget) {
             if(event.type == EventType.MOTION_NOTIFY) {
                 _mouseX = cast(typeof(_mouseX))(event.motion.x);
@@ -3999,6 +4095,7 @@ public:
             return true;
         }
 
+        /// Called when the user presses a mouse button within this widget
         bool onButtonPress(Event event, Widget widget) {
             if(event.type == EventType.BUTTON_PRESS) {
                 TrackView trackView = _mouseOverTrack(_mouseY);
@@ -4041,6 +4138,7 @@ public:
             return false;
         }
 
+        /// Called when the user releases a mouse button within this widget
         bool onButtonRelease(Event event, Widget widget) {
             if(event.type == EventType.BUTTON_RELEASE && event.button.button == leftButton) {
                 if(_trackButtonPressed !is null) {
@@ -4064,6 +4162,7 @@ public:
         pixels_t _mouseY;
     }
 
+    /// Renders a canvas widget that allows the user to manipulate tracks/regions.
     final class Canvas : DrawingArea {
         enum timeStripHeightPixels = 40;
 
@@ -4086,29 +4185,37 @@ public:
             addOnKeyPress(&onKeyPress);
         }
 
+        /// The width of the currently visible section of canvas, in pixels
         @property pixels_t viewWidthPixels() const {
             return _viewWidthPixels;
         }
+
+        /// The height of the currently visible section of canvas, in pixels
         @property pixels_t viewHeightPixels() const {
             return _viewHeightPixels;
         }
 
+        /// The vertical offset, in pixels, at which to render markers
         @property pixels_t markerYOffset() {
             return timeStripHeightPixels;
         }
 
+        /// The vertical offset, in pixels, at which to begin rendering the first track
         @property pixels_t firstTrackYOffset() {
             return markerYOffset + markerHeightPixels;
         }
 
+        /// A reasonable number of frames for fine seek operations
         @property nframes_t smallSeekIncrement() {
             return viewWidthSamples / 10;
         }
 
+        /// A reasonable number of frames for coarse seek operations
         @property nframes_t largeSeekIncrement() {
             return viewWidthSamples / 5;
         }
 
+        /// Draw the canvas to a cairo context
         bool drawCallback(Scoped!Context cr, Widget widget) {
             if(_canvasRefresh is null) {
                 _canvasRefresh = new Timeout(cast(uint)(1.0 / refreshRate * 1000), &onRefresh, false);
@@ -4131,6 +4238,7 @@ public:
             return true;
         }
 
+        /// Subroutine to render the canvas background
         void drawBackground(ref Scoped!Context cr) {
             cr.save();
             scope(exit) cr.restore();
@@ -4164,6 +4272,7 @@ public:
             }
         }
 
+        /// Subroutine to render the timestrip
         void drawTimeStrip(ref Scoped!Context cr) {
             enum primaryTickHeightFactor = 0.5;
             enum secondaryTickHeightFactor = 0.35;
@@ -4302,6 +4411,7 @@ public:
             }
         }
 
+        /// Subroutine to draw the regions registered to each visible track
         void drawTracks(ref Scoped!Context cr) {
             pixels_t yOffset = firstTrackYOffset - _verticalPixelsOffset;
             foreach(trackView; _trackViews) {
@@ -4310,6 +4420,7 @@ public:
             }
         }
 
+        /// Subroutine to draw the mixer transport
         void drawTransport(ref Scoped!Context cr) {
             enum transportHeadWidth = 16;
             enum transportHeadHeight = 10;
@@ -4346,6 +4457,7 @@ public:
             cr.fill();
         }
 
+        /// Subroutine to draw a selection box, for selecting multiple regions
         void drawSelectBox(ref Scoped!Context cr) {
             if(_action == Action.selectBox) {
                 cr.save();
@@ -4363,6 +4475,7 @@ public:
             }
         }
 
+        /// Subroutine to draw markers
         void drawMarkers(ref Scoped!Context cr) {
             enum taperFactor = 0.75;
 
@@ -4427,10 +4540,12 @@ public:
             }
         }
 
+        /// Redraw this widget
         void redraw() {
             queueDrawArea(0, 0, getWindow().getWidth(), getWindow().getHeight());
         }
 
+        /// Callback to refresh the transport when the mixer is playing
         bool onRefresh() {
             if(_mixer.playing) {
                 if(_viewFollowTransport && _mixer.transportOffset >= viewOffset + viewWidthSamples) {
@@ -4447,6 +4562,7 @@ public:
             return true;
         }
 
+        /// This function is called when Gtk issues a size allocation request for this widget
         void onSizeAllocate(GtkAllocation* allocation, Widget widget) {
             GtkAllocation size;
             getAllocation(size);
@@ -4457,6 +4573,7 @@ public:
             _vScroll.reconfigure();
         }
 
+        /// Called in edit mode, when the user selects a subregion by clicking and dragging the mouse
         void onSelectSubregion() {
             if(_editRegion !is null) {
                 immutable nframes_t mouseFrame =
@@ -4492,6 +4609,9 @@ public:
             }
         }
 
+        /// Called in arrange mode, when the user clicks and drags the beginning of a region.
+        /// This alters the start frame of the region, without moving any frames temporally, i.e.,
+        /// "shrinking" or "growing" the region.
         void onShrinkSubregionStart() {
             if(_editRegion !is null) {
                 immutable nframes_t mouseFrame =
@@ -4515,6 +4635,9 @@ public:
             }
         }
 
+        /// Called in arrange mode, when the user clicks and drags the end of a region.
+        /// This alters the end frame of the region, without moving any frames temporally, i.e.,
+        /// "shrinking" or "growing" the region.
         void onShrinkSubregionEnd() {
             if(_editRegion !is null) {
                 immutable nframes_t mouseFrame =
@@ -4538,6 +4661,7 @@ public:
             }
         }
 
+        /// Called when the user moves the mouse within this widget
         bool onMotionNotify(Event event, Widget widget) {
             if(event.type == EventType.MOTION_NOTIFY) {
                 pixels_t prevMouseX = _mouseX;
@@ -4758,6 +4882,7 @@ public:
             return true;
         }
 
+        /// Called when the mouse leaves this widget
         bool onLeaveNotify(GdkEventCrossing* eventCrossing, Widget widget) {
             switch(_action) {
                 case Action.mouseOverRegionStart:
@@ -4774,6 +4899,7 @@ public:
             return false;
         }
 
+        /// Called when the user presses a mouse button within this widget
         bool onButtonPress(Event event, Widget widget) {
             GdkModifierType state;
             event.getState(state);
@@ -5030,6 +5156,7 @@ public:
             return false;
         }
 
+        /// Called when the user releases a mouse button within this widget
         bool onButtonRelease(Event event, Widget widget) {
             if(event.type == EventType.BUTTON_RELEASE && event.button.button == leftButton) {
                 switch(_action) {
@@ -5197,6 +5324,7 @@ public:
             return false;
         }
 
+        /// Called when the user scrolls inside this widget, i.e., with the mouse scroll wheel
         bool onScroll(Event event, Widget widget) {
             if(event.type == EventType.SCROLL) {
                 GdkModifierType state;
@@ -5277,6 +5405,7 @@ public:
             return false;
         }
 
+        /// Called when the user presses a key within this widget
         bool onKeyPress(Event event, Widget widget) {
             if(event.type == EventType.KEY_PRESS) {
                 switch(_action) {
@@ -5640,6 +5769,7 @@ public:
         }
 
     private:
+        /// Returns: A `Marker` object if the mouse is over a marker; otherwise, `null`
         Nullable!Marker _mouseOverMarker() {
             Nullable!Marker result;
             if(_mouseY >= markerYOffset && _mouseY < markerYOffset + markerHeightPixels) {
@@ -5657,6 +5787,9 @@ public:
             return result;
         }
 
+        /// This function checks if the mouse is hovering over the endpoints of any region.
+        /// If so, it modifies the current cursor to denote that a shrink operation
+        /// is possible if the user presses the mouse button.
         void _mouseOverRegionEndpoints() {
             if(_mode == Mode.arrange) {
                 _mouseOverRegionStart = null;
@@ -5690,6 +5823,9 @@ public:
             }
         }
 
+        /// This function checks if the mouse is hovering over the endpoints of the currently selected
+        /// subregion, if any. If so, it modifies the current cursor to denote that a subregion shrink
+        /// operation is possible if the user presses the mouse button.
         void _mouseOverSubregionEndpoints() {
             if(_mode == Mode.editRegion &&
                _editRegion !is null &&
@@ -5718,6 +5854,7 @@ public:
         pixels_t _selectMouseY;
     }
 
+    /// A marker object; effectively a positional hotkey within a session.
     static class Marker {
     public:
         this(nframes_t offset, string name) {
@@ -5729,17 +5866,22 @@ public:
         string name;
     }
 
+    /// Create and register a new track with the current session
     void createTrackView(string trackName) {
         _createTrackView(trackName);
         appendArrangeState(currentArrangeState!(ArrangeStateType.tracksEdit), true);
     }
 
+    /// Create and register a new track with the current session
+    /// Params:
+    /// region = A region to immediately add to the new track
     void createTrackView(string trackName, Region region) {
         auto newTrackView = _createTrackView(trackName);
         newTrackView.addRegion(region);
         appendArrangeState(currentArrangeState!(ArrangeStateType.tracksEdit), true);
     }
 
+    /// Unregisters the specified track with the current session
     void deleteTrackView(TrackView deleteTrack) {
         auto regionViewsApp = appender!(RegionView[]);
         foreach(regionView; _regionViews) {
@@ -5761,6 +5903,7 @@ public:
         appendArrangeState(currentArrangeState!(ArrangeStateType.tracksEdit), true);
     }
 
+    /// Loads a list of files from disk, storing each in a new region/track
     void loadRegionsFromFiles(const(string[]) fileNames) {
         auto progressCallback = ProgressTaskCallback!(LoadState)(thisTid);
         void loadRegionTask(string fileName) {
@@ -5800,6 +5943,7 @@ public:
         }
     }
 
+    /// Opens a file browser dialog, which allows the user to select one or more audio files to load
     void onImportFile() {
         if(_importFileChooser is null) {
             _importFileChooser = new FileChooserDialog("Import Audio File",
@@ -5831,6 +5975,7 @@ public:
         }
     }
 
+    /// Opens a file browser dialog for exporting the current session to an audio file
     void onExportSession() {
         if(_exportFileChooser is null) {
             _exportFileChooser = new FileChooserDialog("Export Session",
@@ -5917,19 +6062,27 @@ public:
         }
     }
 
+    /// Sets the current mode to `Mode.editRegion`, if not already set
     void onEditRegion(MenuItem menuItem) {
         if(_mode != Mode.editRegion) {
             _setMode(Mode.editRegion);
         }
     }
 
-    auto beginProgressTask(ProgressState,
+    /// Generic function to begin a progress task.
+    /// This function creates a progress dialog and updates a progress bar as
+    /// it receives messages from the progress callback.
+    /// Additionally, this function will send a cancellation messgae to the worker
+    /// thread if the user cancels the operation.
+    /// Params:
+    /// taskList = A list of `ProgressTask` objects to execute sequentially
+    void beginProgressTask(ProgressState,
                            bool cancelButton = false,
                            ProgressTask = DefaultProgressTask)
         (ProgressTask[] taskList)
         if(__traits(isSame, TemplateOf!ProgressState, .ProgressState) &&
            __traits(isSame, TemplateOf!ProgressTask, .ProgressTask)) {
-            enum progressRefreshRate = 10; // in Hz
+            enum progressRefreshRate = 10; /// Specified in Hz
             enum progressMessageTimeout = 10.msecs;
 
             auto progressDialog = new Dialog();
@@ -6024,6 +6177,7 @@ public:
             }
         }
 
+    /// Specialization for `beginProgressTask` for executing only a single `ProgressTask`
     void beginProgressTask(ProgressState,
                            bool cancelButton = false,
                            ProgressTask = DefaultProgressTask)
@@ -6173,6 +6327,9 @@ public:
         }
     }
 
+    /// Retrieve the current arrange state.
+    /// Params:
+    /// stateType = The type of the last edit in arrange mode
     @property ArrangeState currentArrangeState(ArrangeStateType stateType)() {
         static if(stateType == ArrangeStateType.masterBusEdit) {
             return ArrangeState(stateType, ChannelViewState(_masterBusView.faderGainDB));
@@ -6203,6 +6360,9 @@ public:
         }
     }
 
+    /// Update the session according to the current arrange state.
+    /// This function should be called after an undo/redo operation to
+    /// effect the changes of the new arrange state.
     void updateCurrentArrangeState() {
         void updateMasterBus(ArrangeState arrangeState) {
             _masterBusView.faderGainDB = arrangeState.masterBusState.faderGainDB;
@@ -6336,6 +6496,10 @@ public:
         _arrangeChannelStrip.redraw();
     }
 
+    /// Append an arragne state to the undo history
+    /// Params:
+    /// arrangeState = The state of the last arrange operation
+    /// updateSequenceBrowser = Whether the last arrange operation necessitates an update to the sequence browser
     void appendArrangeState(ArrangeState arrangeState, bool updateSequenceBrowser = false) {
         _arrangeStateHistory.appendState(arrangeState);
         if(updateSequenceBrowser && _sequenceBrowser !is null && _sequenceBrowser.isVisible()) {
@@ -6344,13 +6508,18 @@ public:
         _savedState = false;
     }
 
+    /// Returns: `true` if and only if an undo operation is possible
     bool queryUndoArrange() {
         return _arrangeStateHistory.queryUndo();
     }
+
+    /// Returns: `true` if and only if a redo operation is possible
     bool queryRedoArrange() {
         return _arrangeStateHistory.queryRedo();
     }
 
+    /// Undo the last arrange operation, if possible.
+    /// This function will clear the redo history if the user subsequently executes a new operation.
     void undoArrange() {
         if(queryUndoArrange()) {
             _arrangeStateHistory.undo();
@@ -6361,6 +6530,8 @@ public:
             }
         }
     }
+
+    /// Redo the last arrange operation, if possible.
     void redoArrange() {
         if(queryRedoArrange()) {
             _arrangeStateHistory.redo();
@@ -6372,19 +6543,26 @@ public:
         }
     }
 
+    /// State for an operation on a channel
     static struct ChannelViewState {
         sample_t faderGainDB;
     }
+
+    /// State for an operation on a single track
     static struct TrackViewState {
         TrackView trackView;
         RegionView[] regionViews;
         sample_t faderGainDB;
     }
+
+    /// State for an operation on multiple tracks
     static struct TrackViewStateList {
         TrackView selectedTrack;
         TrackViewState[] trackViewStates;
         alias trackViewStates this;
     }
+
+    /// State for an operation on a single region
     static struct RegionViewState {
         RegionView regionView;
         nframes_t offset;
@@ -6392,6 +6570,7 @@ public:
         nframes_t sliceEndFrame;
     }
 
+    /// Enumeration of states corresponding to every undo-able arrange operation
     enum ArrangeStateType {
         empty,
         masterBusEdit,
@@ -6400,8 +6579,11 @@ public:
         selectedRegionsEdit
     }
 
+    /// A structure containing a state type and the state data corresponding to that type.
+    /// The state data is implemented via a private union type.
     static struct ArrangeState {
     public:
+        /// A predicate indicating whether a given type is valid data for some state type
         static bool isValidStateData(T)() {
             foreach(member; __traits(allMembers, StateData)) {
                 static if(is(T : typeof(mixin("StateData." ~ member)))) {
@@ -6422,11 +6604,14 @@ public:
             }
         }
 
+        /// Returns: A special empty state that corresponds to a new, unedited session
         static ArrangeState emptyState() {
             return ArrangeState();
         }
 
+        /// Returns: The state type corresonding to this arrange state
         @property ArrangeStateType stateType() const { return _stateType; }
+
         mixin(_stateDataMembers());
 
     private:
@@ -6449,16 +6634,29 @@ public:
         StateData _stateData;
     }
 
+    /// The number of samples represented by one pixel of screen space in the canvas
     @property nframes_t samplesPerPixel() const { return _samplesPerPixel; }
+
+    /// The frame index corresponding to the leftmost visible pixel in the canvas
     @property nframes_t viewOffset() const { return _viewOffset; }
+
+    /// The number of samples spanned by the currently visible section of the canvas
     @property nframes_t viewWidthSamples() { return _canvas.viewWidthPixels * _samplesPerPixel; }
 
+    /// The minimum frame index viewable within the canvas
     @property nframes_t viewMinSamples() { return 0; }
+
+    /// The maximum frame index viewable within the canvas
     @property nframes_t viewMaxSamples() { return _mixer.lastFrame + viewWidthSamples; }
 
 private:
+    /// Factor to use in calculations of track/region heights when zooming vertically
     enum _verticalZoomFactor = 1.2f;
+
+    /// Set a limit on the maximum zoom level
     enum _verticalZoomFactorMax = _verticalZoomFactor * 3;
+
+    /// Set a limit on the minimum zoom level
     enum _verticalZoomFactorMin = _verticalZoomFactor / 10;
 
     void _createArrangeMenu() {
@@ -6609,6 +6807,8 @@ private:
         }
     }
 
+    /// Calculate bin sizes for various zoom levels.
+    /// Returns: A binning size corresponding to a cache bin size in `Region.cacheBinSizes`.
     nframes_t _zoomBinSize() {
         if(_samplesPerPixel >= 600) {
             return 100;
@@ -6624,6 +6824,7 @@ private:
         }
     }
 
+    /// Zoom the canvas view in along the horizontal (time) axis
     void _zoomIn() {
         if(_samplesPerPixel > 600) {
             _samplesPerPixel -= 100;
@@ -6640,6 +6841,8 @@ private:
         _canvas.redraw();
         _hScroll.reconfigure();
     }
+
+    /// Zoom the canvas view out along the horizontal (time) axis
     void _zoomOut() {
         if(_samplesPerPixel >= 600) {
             _samplesPerPixel += 100;
@@ -6657,6 +6860,7 @@ private:
         _hScroll.reconfigure();
     }
 
+    /// Zoom the canvas view in along the vertical (amplitude) axis
     void _zoomInVertical() {
         auto newVerticalScaleFactor = max(_verticalScaleFactor / _verticalZoomFactor, _verticalZoomFactorMin);
         bool validZoom = true;
@@ -6673,6 +6877,8 @@ private:
             _vScroll.reconfigure();
         }
     }
+
+    /// Zoom the canvas view out along the vertical (amplitude) axis
     void _zoomOutVertical() {
         _verticalScaleFactor = min(_verticalScaleFactor * _verticalZoomFactor, _verticalZoomFactorMax);
         _canvas.redraw();
@@ -6680,6 +6886,7 @@ private:
         _vScroll.reconfigure();
     }
 
+    /// Change the cursor according to the current action
     void _setCursor() {
         static Cursor cursorMove;
         static Cursor cursorMoveOnset;
@@ -6726,11 +6933,13 @@ private:
         }
     }
 
+    /// Set the current action
     void _setAction(Action action) {
         _action = action;
         _setCursor();
     }
 
+    /// Set the current mode, i.e., arrange mode or edit region mode
     void _setMode(Mode mode) {
         switch(mode) {
             case Mode.editRegion:
@@ -6760,6 +6969,7 @@ private:
         _canvas.redraw();
     }
 
+    /// Returns: The region that begins the earliest in the given `regionViews` list
     RegionView _getEarliestRegion(RegionView[] regionViews) {
         RegionView earliestRegion = null;
         nframes_t minOffset = nframes_t.max;
@@ -6772,6 +6982,8 @@ private:
         }
         return earliestRegion;
     }
+
+    /// Returns: The region that begins the earliest in the given `regionViewStates` list
     RegionView _getEarliestRegion(RegionViewState[] regionViewStates) {
         RegionView earliestRegion = null;
         nframes_t minOffset = nframes_t.max;
@@ -6786,10 +6998,13 @@ private:
         return earliestRegion;
     }
 
+    /// Set a private data member to the earliest currently selected region
     void _computeEarliestSelectedRegion() {
         _earliestSelectedRegion = _getEarliestRegion(_selectedRegions);
     }
 
+    /// Returns: A track view that the mouse is currently hovering over.
+    ///          If no such track exists, this function returns `null`.
     TrackView _mouseOverTrack(pixels_t mouseY) {
         foreach(trackView; _trackViews) {
             if(mouseY >= trackView.stubBox.y0 && mouseY < trackView.stubBox.y1) {
@@ -6800,6 +7015,9 @@ private:
         return null;
     }
 
+    /// Returns: The index of the track in the `_trackViews` data member of the track
+    ///          the mouse is currently hovering over.
+    ///          If no such track exists, this function returns `null`.
     Nullable!size_t _mouseOverTrackIndex(pixels_t mouseY) {
         Nullable!size_t result;
         foreach(trackIndex, trackView; _trackViews) {
@@ -6811,6 +7029,9 @@ private:
         return result;
     }
 
+    /// Returns: The index of the track in the `_trackView` data member that matches
+    ///          the identity of the `trackView` argument.
+    ///          If no such track is found, this function returns `null`.
     Nullable!size_t _trackIndex(TrackView trackView) {
         Nullable!size_t result;
         foreach(trackIndex, track; _trackViews) {
@@ -6822,6 +7043,9 @@ private:
         return result;
     }
 
+    /// Returns: The minimum index of the `previewTrackIndex` member of
+    ///          any region in the `regionViews` argument.
+    ///          If no region is found, returns `null`.
     Nullable!size_t _minPreviewTrackIndex(RegionView[] regionViews) {
         Nullable!size_t result;
         foreach(regionView; regionViews) {
@@ -6833,6 +7057,9 @@ private:
         return result;
     }
 
+    /// Returns: The maximum index of the `previewTrackIndex` member of
+    ///          any region in the `regionViews` argument.
+    ///          If no region is found, returns `null`.
     Nullable!size_t _maxPreviewTrackIndex(RegionView[] regionViews) {
         Nullable!size_t result;
         foreach(regionView; regionViews) {
@@ -6844,6 +7071,9 @@ private:
         return result;
     }
 
+    /// Recomputes the registered regions for all tracks in the current session.
+    /// This function should be called after one or more regions have been
+    /// moved from one track to another.
     void _recomputeTrackViewRegions() {
         foreach(trackView; _trackViews) {
             auto regionViewsApp = appender!(RegionView[]);
@@ -6862,6 +7092,9 @@ private:
         _arrangeChannelStrip.redraw();
     }
 
+    /// Remove the currently selected regions from the current session.
+    /// This will unregister each region from its parent track.
+    /// This function should be called when the user deletes or cuts all currently selected regions.
     void _removeSelectedRegions() {
         // remove the selected regions from their respective tracks
         foreach(trackView; _trackViews) {
@@ -6886,6 +7119,7 @@ private:
         appendArrangeState(currentArrangeState!(ArrangeStateType.tracksEdit), true);
     }
 
+    /// Redraw all widgets in the arrange view, and update the visible channel strips
     void _redrawAll() {
         _hScroll.reconfigure();
         _vScroll.reconfigure();
@@ -6896,6 +7130,8 @@ private:
         _arrangeChannelStrip.redraw();
     }
 
+    /// Reset the arrange view to a clean, empty state.
+    /// This function should be called when the user closes the current session and begins a new session.
     void _resetArrangeView() {
         _arrangeStateHistory = new StateHistory!ArrangeState(ArrangeState());
         _savedState = true;
@@ -7011,6 +7247,6 @@ private:
 
     size_t _moveOnsetIndex;
     channels_t _moveOnsetChannel;
-    nframes_t _moveOnsetFrameSrc; // locally indexed for region
-    nframes_t _moveOnsetFrameDest; // locally indexed for region
+    nframes_t _moveOnsetFrameSrc; /// Locally indexed for the region being edited
+    nframes_t _moveOnsetFrameDest; /// Locally indexed for the region being edited
 }

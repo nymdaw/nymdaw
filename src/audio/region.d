@@ -861,6 +861,9 @@ public:
         _sequenceChanged(prevNFrames, newNFrames);
     }
 
+    /// Static array of all cache binning sizes computed for all waveforms
+    alias cacheBinSizes = WaveformCache.cacheBinSizes;
+
     /// Get the cache index for a specific bin size. This allows any waveform rendering routines
     /// to compute the correct cache index for a given binning size only once,
     /// then subsequently access the correct cache via array indexing
