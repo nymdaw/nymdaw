@@ -96,13 +96,11 @@ abstract class Channel {
     /// Returns: The maximum sample values for detected peaks for the left and right channels.
     @property final ref const(sample_t[2]) peakMax() const { return _peakMax; }
 
-    /// Returns: The fader gain (analogous to an analog mixer) for this channel's stereo output, in dBFS
+    /// The fader gain (analogous to an analog mixer) for this channel's stereo output, in dBFS
     @property final sample_t faderGainDB() const @nogc nothrow {
         return 20 * log10(_faderGain);
     }
-
-    /// Params:
-    /// db = The fader gain (analogous to an analog mixer) for this channel's stereo output, in dBFS
+    /// ditto
     @property final sample_t faderGainDB(sample_t db) {
         return (_faderGain = pow(10, db / 20));
     }

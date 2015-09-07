@@ -1317,6 +1317,7 @@ public:
         enum headerHeight = 15; /// Height of the region's label, in pixels
         enum headerFont = "Arial 10"; /// Font family and size to use for the region's label
 
+        /// Subclass the audio sequence link class, adding a `RegionView` member to the link data members
         static class RegionViewLink : AudioSequence.Link {
             this(RegionView regionView) {
                 this.regionView = regionView;
@@ -1330,14 +1331,17 @@ public:
             RegionView regionView;
         }
 
+        /// Add this region view to its source sequence as a soft link
         void addSoftLinkToSequence() {
             region.audioSequence.addSoftLink(new RegionViewLink(this));
         }
 
+        /// Draw the region to the given cairo context
         void drawRegion(ref Scoped!Context cr, pixels_t yOffset) {
             _drawRegion(cr, _trackView, yOffset, _trackView.heightPixels, region.offset, 1.0);
         }
 
+        /// Draw the region in the case that the user is currently moving the region with the mouse
         void drawRegionMoving(ref Scoped!Context cr, pixels_t yOffset) {
             TrackView trackView;
             if(previewTrackIndex >= 0 && previewTrackIndex < _trackViews.length) {
@@ -1350,6 +1354,7 @@ public:
             _drawRegion(cr, trackView, yOffset, trackView.heightPixels, previewOffset, 0.5);
         }
 
+        /// Compute onsets independently for each channel in the region
         void computeOnsetsIndependentChannels() {
             auto progressCallback = ProgressTaskCallback!(ComputeOnsetsState)(thisTid);
             auto progressTask = progressTask(
@@ -1357,7 +1362,6 @@ public:
                 delegate void() {
                     progressCallback(ComputeOnsetsState.computeOnsets, 0);
 
-                    // compute onsets independently for each channel
                     if(_onsets !is null) {
                         _onsets.destroy();
                     }
@@ -1375,6 +1379,7 @@ public:
             _canvas.redraw();
         }
 
+        /// Compute onsets for all (summed) channels
         void computeOnsetsLinkedChannels() {
             auto progressCallback = ProgressTaskCallback!(ComputeOnsetsState)(thisTid);
             auto progressTask = progressTask(
@@ -1382,7 +1387,6 @@ public:
                 delegate void() {
                     progressCallback(ComputeOnsetsState.computeOnsets, 0);
             
-                    // compute onsets for summed channels
                     if(region.nChannels > 1) {
                         _onsetsLinked = new OnsetSequence(region.getOnsetsLinkedChannels(onsetParams,
                                                                                          progressCallback));
@@ -1394,6 +1398,7 @@ public:
             _canvas.redraw();
         }
 
+        /// Compute onsets according to the `linkChannels` flag
         void computeOnsets() {
             if(linkChannels) {
                 computeOnsetsLinkedChannels();
@@ -1403,8 +1408,8 @@ public:
             }
         }
 
-        // finds the index of any onset between (searchFrame - searchRadius) and (searchFrame + searchRadius)
-        // if successful, returns true and stores the index in the searchIndex output argument
+        /// Find the index of any onset between `(searchFrame - searchRadius)` and `(searchFrame + searchRadius)`
+        /// Returns: `true` if successful, and stores the index in the `searchIndex` output argument
         bool getOnset(nframes_t searchFrame,
                       nframes_t searchRadius,
                       out nframes_t foundFrame,
@@ -1420,7 +1425,9 @@ public:
                              size_t leftIndex,
                              size_t rightIndex) {
                 foundIndex = (leftIndex + rightIndex) / 2;
-                if(foundIndex >= onsets.length) return false;
+                if(foundIndex >= onsets.length) {
+                    return false;
+                }
 
                 foundFrame = onsets[foundIndex].onsetFrame;
                 if(foundFrame >= searchFrame - searchRadius && foundFrame <= searchFrame + searchRadius) {
@@ -1456,8 +1463,8 @@ public:
                                onsets.length - 1);
         }
 
-        // move a specific onset given by onsetIndex, with the current position at currentOnsetFrame
-        // returns the new onset value (locally indexed for this region)
+        /// Move a specific onset given by `onsetIndex`, with the current position at `currentOnsetFrame`
+        /// Returns: The new onset value (locally indexed for this region)
         nframes_t moveOnset(size_t onsetIndex,
                             nframes_t currentOnsetFrame,
                             nframes_t relativeSamples,
@@ -1491,22 +1498,29 @@ public:
             return 0;
         }
 
-        // these functions return onset frames, locally indexed for this region
+        /// Returns: The latest onset frame before the onset specified by `onsetIndex`,
+        ///          locally indexed for this region
         nframes_t getPrevOnset(size_t onsetIndex, channels_t channelIndex = 0) {
             auto onsets = linkChannels ? _onsetsLinked : _onsets[channelIndex];
             return (onsetIndex > 0) ? onsets[onsetIndex - 1].onsetFrame : 0;
         }
+
+        /// Returns: The earliest onset frame after the onset specified by `onsetIndex`,
+        ///          locally indexed for this region
         nframes_t getNextOnset(size_t onsetIndex, channels_t channelIndex = 0) {
             auto onsets = linkChannels ? _onsetsLinked : _onsets[channelIndex];
             return (onsetIndex < onsets.length - 1) ? onsets[onsetIndex + 1].onsetFrame : region.nframes - 1;
         }
 
+        /// This function assumes that the mouse is actually over region view.
+        /// Returns: The channel index corresponding to the channel the mouse is currently over
         channels_t mouseOverChannel(pixels_t mouseY) const {
             immutable pixels_t trackHeight = (boundingBox.y1 - boundingBox.y0) - headerHeight;
             immutable pixels_t channelHeight = trackHeight / region.nChannels;
             return clamp((mouseY - (boundingBox.y0 + headerHeight)) / channelHeight, 0, region.nChannels - 1);
         }
 
+        /// State structure of edit operations that the user can undo/redo
         static struct EditState {
             this(bool audioEdited,
                  bool recomputeOnsets,
@@ -1527,20 +1541,41 @@ public:
                 this.subregionStartFrame = subregionStartFrame;
                 this.subregionEndFrame = subregionEndFrame;
             }
+
+            /// Whether the sequence's audio data was edited
             const(bool) audioEdited;
 
+            /// Whether the region view should recompute the onsets for this state
             const(bool) recomputeOnsets;
+
+            /// Whether an onset was edited
             const(bool) onsetsEdited;
+
+            /// Whether the link channels flag was enabled
             const(bool) onsetsLinkChannels;
+
+            /// The channel index of the edited onset, if applicable
             const(channels_t) onsetsChannelIndex;
 
+            /// Whether a subregion was selected
             const(bool) subregionSelected;
+
+            /// The relative start frame of the selected subregion, if applicable
             const(nframes_t) subregionStartFrame;
+
+            /// The relative end frame of the selected subregion, if applicable
             const(nframes_t) subregionEndFrame;
 
+            /// A textual description of the edit operation
             string description;
         }
 
+        /// Retrieve the current edit state.
+        /// Params:
+        /// audioEdited = Whether the sequence's audio data was edited
+        /// recomputeOnsets = Whether the region view should recompute onsets for this state
+        /// onsetsEdited = Whether an onset was edited
+        /// onsetsChannelIndex = The channel index of the edited onset, if applicable
         EditState currentEditState(bool audioEdited,
                                    bool recomputeOnsets = false,
                                    bool onsetsEdited = false,
@@ -1555,6 +1590,9 @@ public:
                              _subregionEndFrame);
         }
 
+        /// Update the region view according to the current edit state.
+        /// This function should be called after an undo/redo operation to
+        /// effect the changes of the new edit state.
         void updateCurrentEditState() {
             subregionSelected = _editStateHistory.currentState.subregionSelected;
 
@@ -1570,6 +1608,10 @@ public:
             }
         }
 
+        /// Append an edit state to the undo history
+        /// Params:
+        /// editState = The state of the last edit operation
+        /// description = A textual description of the last edit operation
         void appendEditState(EditState editState, string description) {
             editState.description = description;
             _editStateHistory.appendState(editState);
@@ -1578,13 +1620,18 @@ public:
             }
         }
 
+        /// Returns: `true` if and only if an undo operation is possible
         bool queryUndoEdit() {
             return _editStateHistory.queryUndo();
         }
+
+        /// Returns: `true` if and only if a redo operation is possible
         bool queryRedoEdit() {
             return _editStateHistory.queryRedo();
         }
 
+        /// Undo the last edit operation, if possible.
+        /// This function will clear the redo history if the user subsequently executes a new operation.
         void undoEdit() {
             if(queryUndoEdit()) {
                 if(_editStateHistory.currentState.audioEdited) {
@@ -1613,6 +1660,8 @@ public:
                 }
             }
         }
+
+        /// Redo the last operation, if possible.
         void redoEdit() {
             if(queryRedoEdit()) {
                 _editStateHistory.redo();
@@ -1642,6 +1691,8 @@ public:
             }
         }
 
+        /// Modifies (within limits) the start of the region, in terms of global frames.
+        /// Returns: A `Region.ShrinkResult` object indicating whether the shrink operation was successful
         auto shrinkStart(nframes_t newStartFrameGlobal) {
             auto result = region.shrinkStart(newStartFrameGlobal);
             if(result.success) {
@@ -1649,6 +1700,9 @@ public:
             }
             return result;
         }
+
+        /// Modifies (within limits) the end of the region, in terms of global frames
+        /// Returns: A `Region.ShrinkResult` object indicating whether the shrink operation was successful
         auto shrinkEnd(nframes_t newEndFrameGlobal) {
             auto result = region.shrinkEnd(newEndFrameGlobal);
             if(result.success) {
@@ -1657,54 +1711,91 @@ public:
             return result;
         }
 
+        /// The `TrackView` object representing the parent track of this region
         @property TrackView trackView() { return _trackView; }
+        /// ditto
         @property TrackView trackView(TrackView newTrackView) {
             _recomputeRegionGradient = true;
             return (_trackView = newTrackView);
         }
 
-        // slice start and end frames are relative to start of sequence
+        /// Slice start frame, relative to start of sequence
         @property nframes_t sliceStartFrame() const { return region.sliceStartFrame; }
+        /// ditto
         @property nframes_t sliceStartFrame(nframes_t newSliceStartFrame) {
             return (region.sliceStartFrame = newSliceStartFrame);
         }
+
+        /// Slice end frame, relative to the start of the sequence
         @property nframes_t sliceEndFrame() const { return region.sliceEndFrame; }
+        /// ditto
         @property nframes_t sliceEndFrame(nframes_t newSliceEndFrame) {
             return (region.sliceEndFrame = newSliceEndFrame);
         }
 
-        @property channels_t nChannels() const @nogc nothrow { return region.nChannels; }
+        /// Number of frames in the audio data, where 1 frame contains 1 sample for each channel
         @property nframes_t nframes() const @nogc nothrow { return region.nframes; }
+
+        /// Number of channels of the region, typically either one or two (mono or stereo)
+        @property channels_t nChannels() const @nogc nothrow { return region.nChannels; }
+
+        /// The offset, in global frames, of this region from the beginning of the session
         @property nframes_t offset() const @nogc nothrow { return region.offset; }
+        /// ditto
         @property nframes_t offset(nframes_t newOffset) { return (region.offset = newOffset); }
 
+        /// The name of this region. This will be rendered at the top of the region view.
         @property string name() const { return region.name; }
 
+        /// Returns: A range of state objects comprising the undo history.
+        ///          The back element is the most recently appended operation.
         @property auto undoHistory() { return _editStateHistory.undoHistory; }
+
+        /// Returns: A range of state objects comprising the redo history.
+        ///          The front element is the next operation to redo.
         @property auto redoHistory() { return _editStateHistory.redoHistory; }
 
+        /// Whether this region view is currently selected by the user
         bool selected;
+
+        /// A temporary offset value, utilized when the user is dragging the region with the mouse
         nframes_t previewOffset;
+
+        /// An index to a temporary track, utilized when the user is dragging the region with the mouse
         size_t previewTrackIndex;
+
+        /// Parameters for detecting the onsets in an audio sequence, specific to this region view
         OnsetParams onsetParams;
 
-        nframes_t editPointOffset; // locally indexed for this region
+        // The edit point frame, locally indexed for this region
+        nframes_t editPointOffset;
 
+        /// Flag indiciating whether a subregion is currently selected within this region
         bool subregionSelected;
+
+        /// The relative start frame of the selected subregion, if applicable
         @property nframes_t subregionStartFrame() const {
             return _subregionStartFrame - sliceStartFrame;
         }
+        /// ditto
         @property nframes_t subregionStartFrame(nframes_t newSubregionStartFrame) {
             return (_subregionStartFrame = newSubregionStartFrame + sliceStartFrame);
         }
+
+        /// The relative end frame of the selected subregion, if applicable
         @property nframes_t subregionEndFrame() const {
             return _subregionEndFrame - sliceStartFrame;
         }
+        /// ditto
         @property nframes_t subregionEndFrame(nframes_t newSubregionEndFrame) {
             return (_subregionEndFrame = newSubregionEndFrame + sliceStartFrame);
         }
 
+        /// Flag indicating whether this region is currently being edited by the user.
+        /// This should be true if and only if this class is referenced by the
+        /// `_editRegion` member of the outer class.
         @property bool editMode() const { return _editMode; }
+        /// ditto
         @property bool editMode(bool enable) {
             if(!enable) {
                 _sliceChanged = false;
@@ -1718,7 +1809,9 @@ public:
             return (_editMode = enable);
         }
 
+        /// Flag indicating whether the onsets should be drawn in the region view
         @property bool showOnsets() const { return _showOnsets; }
+        /// ditto
         @property bool showOnsets(bool enable) {
             if(enable) {
                 if(linkChannels && _onsetsLinked is null) {
@@ -1731,7 +1824,9 @@ public:
             return (_showOnsets = enable);
         }
 
+        /// Flag indicating whether to display the onsets for the linked channels, or the individual channels
         @property bool linkChannels() const { return _linkChannels; }
+        /// ditto
         @property bool linkChannels(bool enable) {
             if(enable) {
                 computeOnsetsLinkedChannels();
@@ -1742,9 +1837,13 @@ public:
             return (_linkChannels = enable);
         }
 
+        /// Returns: The bounding box for the entire region view
         @property ref const(BoundingBox) boundingBox() const { return _boundingBox; }
+
+        /// Returns: The bounding box for the currently selected subregion, if applicable
         @property ref const(BoundingBox) subregionBox() const { return _subregionBox; }
 
+        /// Returns: The region name
         override string toString() {
             return name;
         }
@@ -1753,6 +1852,7 @@ public:
         Region region;
 
     private:
+        /// This constructor should only be called by a parent track when registering a new region
         this(TrackView trackView, Region region) {
             this.trackView = trackView;
             this.region = region;
@@ -1761,6 +1861,7 @@ public:
             _editStateHistory = new StateHistory!EditState(EditState());
         }
 
+        /// Region rendering implementation
         void _drawRegion(ref Scoped!Context cr,
                          TrackView trackView,
                          pixels_t yOffset,
@@ -1981,6 +2082,7 @@ public:
                 // height of each channel in pixels
                 pixels_t channelHeight = height / region.nChannels;
 
+                // prepare to render audio that the user is currently stretching (by moving an onset)
                 bool moveOnset;                
                 pixels_t onsetPixelsStart,
                     onsetPixelsCenterSrc,
@@ -2271,11 +2373,11 @@ public:
         bool _showOnsets;
         bool _linkChannels;
 
-        nframes_t _subregionStartFrame; // start frame when sliceStart == 0
-        nframes_t _subregionEndFrame; // end frame when sliceStart == 0
+        nframes_t _subregionStartFrame; /// Start frame when sliceStart == 0
+        nframes_t _subregionEndFrame; /// End frame when sliceStart == 0
 
-        OnsetSequence[] _onsets; // indexed as [channel][onset]
-        OnsetSequence _onsetsLinked; // indexed as [onset]
+        OnsetSequence[] _onsets; /// Indexed as [channel][onset]
+        OnsetSequence _onsetsLinked; /// Indexed as [onset]
 
         Pattern _regionGradient;
         pixels_t _prevYOffset;
@@ -2285,6 +2387,8 @@ public:
         BoundingBox _subregionBox;
     }
 
+    /// Generic button that can be drawn on a track stub.
+    /// This is useful for functions such as mute/solo.
     abstract class TrackButton {
     public:
         enum buttonWidth = 20;
@@ -2408,40 +2512,60 @@ public:
             }
         }
 
+        /// The track object associated with this button
         @property Track track() { return _track; }
+        /// ditto
         @property Track track(Track newTrack) { return (_track = newTrack); }
 
+        /// Whether this button is accepting input from the user
         @property bool active() const { return _active; }
+        /// ditto
         @property bool active(bool setActive) { return (_active = setActive); }
 
+        /// Whether the user has the mouse button pressed while hovering over this button.
         @property bool pressed() const { return _pressed; }
+        /// ditto
         @property bool pressed(bool setPressed) { return (_pressed = setPressed); }
 
+        /// Whether this button should enable its function
         @property bool enabled() const { return _enabled; }
+        /// ditto
         @property bool enabled(bool setEnabled) {
             _enabled = setEnabled;
             onEnabled(setEnabled);
             return _enabled;
         }
 
+        /// Call this function when the user enables a button contrary to this button.
+        /// An example of this would be left/right solo buttons.
+        /// This function avoids starting a circular call chain.
         final void otherEnabled() {
             _enabled = false;
             onOtherEnabled();
         }
 
+        /// Returns: A bounding box for this button
         @property ref const(BoundingBox) boundingBox() const { return _boundingBox; }
 
     protected:
+        /// Called when the `enabled` property is modified
         void onEnabled(bool enabled) {
         }
 
+        /// Called when the `otherEnabled` member function is invoked
         void onOtherEnabled() {
         }
 
+        /// Returns: The text to draw inside this button
         @property string buttonText() const;
+
+        /// Returns: The color to shade this button when it is enabled
         @property Color enabledColor() const { return Color(1.0, 1.0, 1.0); }
 
+        /// Whether the left edges of this button should be rounded
         immutable bool roundedLeftEdges;
+
+        /// Whether the right edges of this button should be rounded
         immutable bool roundedRightEdges;
 
     private:
@@ -2456,6 +2580,7 @@ public:
         BoundingBox _boundingBox;
     }
 
+    /// A button class for muting a track
     final class MuteButton : TrackButton {
     public:
         this(Track track) {
@@ -2473,6 +2598,7 @@ public:
         @property override Color enabledColor() const { return Color(0.0, 1.0, 1.0); }
     }
 
+    /// A button class for soloing a track
     final class SoloButton : TrackButton {
     public:
         this(Track track) {
@@ -2501,12 +2627,14 @@ public:
         @property override Color enabledColor() const { return Color(1.0, 1.0, 0.0); }
     }
 
+    /// A button class for soloing the left channel of a track
     final class LeftButton : TrackButton {
     public:
         this(Track track) {
             super(track, true, false);
         }
 
+        /// Should be set to the right button instance
         TrackButton other;
 
     protected:
@@ -2529,12 +2657,14 @@ public:
         @property override Color enabledColor() const { return Color(1.0, 0.65, 0.0); }
     }
 
+    /// A button class for soloing the right channel of a track
     final class RightButton : TrackButton {
     public:
         this(Track track) {
             super(track, false, true);
         }
 
+        /// Should be set to the left button instance
         TrackButton other;
 
     protected:
@@ -2557,20 +2687,41 @@ public:
         @property override Color enabledColor() const { return Color(1.0, 0.65, 0.0); }
     }
 
+    /// Interface for drawing a channel with a fader and meter
     interface ChannelView {
+        /// This function is useful to allow the meters to smoothly return to -infinity
+        /// after the mixer has stopped playing, since the `processMeter` member function
+        /// will no longer be called when the mixer stops playing.
         void processSilence(nframes_t bufferLength);
+
+        /// Reset the meter for the left channel to its initial state
+        void resetMeterLeft() @nogc nothrow;
+
+        /// Reset the meter for the right channel to its initial state
+        void resetMeterRight() @nogc nothrow;
+
+        /// Reset the meters for both the left and right channels to their initial states
+        void resetMeters() @nogc nothrow;
+
+        /// Returns: The maximum sample values for the left and right channels
+        ///          since the last call to this function.
+        ///          This ensures that level peaks are properly rendered, since the UI most likely refreshes
+        ///          at a slower rate than the meter processes incoming audio buffers.
         @property const(sample_t[2]) level();
+
+        /// Returns: The maximum sample values for detected peaks for the left and right channels.
         @property ref const(sample_t[2]) peakMax();
 
-        void resetMeterLeft() @nogc nothrow;
-        void resetMeterRight() @nogc nothrow;
-        void resetMeters() @nogc nothrow;
+        /// The fader gain (analogous to an analog mixer) for this channel's stereo output, in dBFS
         @property sample_t faderGainDB() const @nogc nothrow;
+        /// ditto
         @property sample_t faderGainDB(sample_t db);
 
+        /// The name of the channel. This will be rendered at the top of the channel strip.
         @property string name() const;
     }
 
+    /// A channel view subclass for the master bus
     final class MasterBusView : ChannelView {
     public:
         enum masterBusName = "Master";
@@ -2597,6 +2748,7 @@ public:
         ChannelStrip _channelStrip;
     }
 
+    /// A channel view subclass for an audio track
     final class TrackView : ChannelView {
     public:
         RegionView addRegion(RegionView regionView) {
