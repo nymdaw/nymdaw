@@ -17,6 +17,11 @@ When the user imports an audio file, dhippo first creates a new sequence from an
 
 Three audio backends are currently supported: JACK, PortAudio, and CoreAudio (OSX only).
 
+Most of the UI rendering code makes heavy use of cairo. To render the waveforms, a multi-level cache is constructed, where each level bins a successively larger quantity of audio samples. This minimizes the amount of binning the rendering code has to do on-the-fly, and seems to provide acceptable levels of performance overall.
+
+The application code is located in the "src" directory, and the D wrappers around the necessary 3rd-party libraries are located in the "deps" directory.
+The application code is separated into "ui" and "audio" modules. The UI module depends on the audio module, but there is no UI dependency within the audio module itself. Various generic types are located in the "util" module, such as the generic sequence and state history classes.
+
 # Compiling on Linux (Ubuntu)
 
 Install the D apt repository (as described at http://d-apt.sourceforge.net/):
