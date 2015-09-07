@@ -88,6 +88,10 @@ void main(string[] args) {
         }
         assert(mixer !is null);
 
+        // destroy any audio threads when exiting this scope
+        // this helps prevent segmentation faults when the application exits
+        scope(exit) mixer.cleanup();
+
         // initialize gtk
         Main.init(args);
 

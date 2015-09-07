@@ -44,17 +44,24 @@ public:
         _appName = appName;
 
         // abstract method to initialize the audio driver
-        initializeMixer();
+        onInitialize();
 
         // initialize the master bus
         _masterBus = new MasterBus(sampleRate);
     }
 
+    /// The user is responsible for calling cleanup() before the application exits
+    /// or the mixer destructor is called.
+    /// This ensures that the application won't crash when exiting.
+    final void cleanup() {
+        onCleanup();
+    }
+
     /// Bounce the entire session to an audio file
-    void exportSessionToFile(string fileName,
-                             AudioFileFormat audioFileFormat,
-                             AudioBitDepth bitDepth,
-                             SaveState.Callback progressCallback = null) {
+    final void exportSessionToFile(string fileName,
+                                   AudioFileFormat audioFileFormat,
+                                   AudioBitDepth bitDepth,
+                                   SaveState.Callback progressCallback = null) {
         // default to stereo for exporting
         enum exportChannels = 2;
 
@@ -375,13 +382,14 @@ public:
     }
 
     /// Abstract method to get the sample rate, in samples per second, of the session
-    public @property nframes_t sampleRate();
+    @property nframes_t sampleRate();
 
+protected:
     /// Abstract method to initialize the audio driver, audio thread and its associated callback function
-    protected void initializeMixer();
+    void onInitialize();
 
     /// Abstract method to uninitialize the audio driver and destroy the audio thread
-    public void cleanupMixer() nothrow;
+    void onCleanup() nothrow;
 
 private:
     /// Template function to mix down all registered tracks to a single buffer,
@@ -493,7 +501,7 @@ version(HAVE_JACK) {
             super(appName);
         }
 
-        /// The user is responsible for calling cleanupMixer() before the application exits
+        /// The user is responsible for calling cleanup() before the application exits
         /// or the mixer destructor is called.
         /// This ensures that the application won't crash when exiting.
         ~this() {
@@ -503,8 +511,9 @@ version(HAVE_JACK) {
         /// The sample rate is determined by the current JACK session
         @property override nframes_t sampleRate() { return jack_get_sample_rate(_client); }
 
+    protected:
         /// Initialize the JACK driver and create the audio thread
-        protected override void initializeMixer() {
+        override void onInitialize() {
             _client = jack_client_open(appName.toStringz, JackOptions.JackNoStartServer, null);
             if(!_client) {
                 throw new AudioError("jack_client_open failed");
@@ -555,7 +564,7 @@ version(HAVE_JACK) {
         }
 
         /// Clean up the JACK driver and destroy the audio thread
-        public override void cleanupMixer() nothrow {
+        override void onCleanup() nothrow {
             jack_client_close(_client);
         }
 
@@ -603,7 +612,7 @@ version(HAVE_COREAUDIO) {
             super(appName);
         }
 
-        /// The user is responsible for calling cleanupMixer() before the application exits
+        /// The user is responsible for calling cleanup() before the application exits
         /// or the mixer destructor is called.
         /// This ensures that the application won't crash when exiting.
         ~this() {
@@ -613,15 +622,16 @@ version(HAVE_COREAUDIO) {
         /// CoreAudio allows the application set its own sample rate
         @property override nframes_t sampleRate() { return _sampleRate; }
 
+    protected:
         /// Initialize the CoreAudio driver and create the audio thread
-        protected override void initializeMixer() {
+        override void onInitialize() {
             if(!coreAudioInit(sampleRate, outputChannels, &_coreAudioProcessCallback)) {
                 throw new AudioError(to!string(coreAudioErrorString()));
             }
         }
 
         /// Clean up the CoreAudio driver and destroy the audio thread
-        public override void cleanupMixer() nothrow {
+        override void onCleanup() nothrow {
             coreAudioCleanup();
         }
 
@@ -657,7 +667,7 @@ version(HAVE_PORTAUDIO) {
             super(appName);
         }
 
-        /// The user is responsible for calling cleanupMixer() before the application exits
+        /// The user is responsible for calling cleanup() before the application exits
         /// or the mixer destructor is called.
         /// This ensures that the application won't crash when exiting.
         ~this() {
@@ -667,13 +677,14 @@ version(HAVE_PORTAUDIO) {
         /// PortAudio allows the application set its own sample rate
         @property override nframes_t sampleRate() { return _sampleRate; }
 
-        protected static struct Phase {
+    protected:
+        static struct Phase {
             sample_t left = 0;
             sample_t right = 0;
         }
 
         /// Initialize the PortAudio driver and create the audio thread
-        protected override void initializeMixer() {
+        override void onInitialize() {
             PaError err;
             Phase phaseData;
 
@@ -702,7 +713,7 @@ version(HAVE_PORTAUDIO) {
         }
 
         /// Clean up the PortAudio driver and destroy the audio thread
-        public override void cleanupMixer() nothrow {
+        override void onCleanup() nothrow {
             Pa_StopStream(_stream);
             Pa_CloseStream(_stream);
             Pa_Terminate();

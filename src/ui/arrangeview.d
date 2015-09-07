@@ -5931,10 +5931,10 @@ public:
                 createTrackView(newRegion.name, newRegion);
             }
         }
-        alias RegionTask = ProgressTask!(typeof(task(&loadRegionTask, string.init)));
+        alias RegionTask = ProgressTask!(typeof(scopedTask(&loadRegionTask, string.init)));
         auto regionTaskList = appender!(RegionTask[]);
         foreach(fileName; fileNames) {
-            regionTaskList.put(progressTask(baseName(fileName), task(&loadRegionTask, fileName)));
+            regionTaskList.put(progressTask(baseName(fileName), scopedTask(&loadRegionTask, fileName)));
         }
 
         if(regionTaskList.data.length > 0) {

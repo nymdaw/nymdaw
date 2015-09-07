@@ -149,14 +149,9 @@ def configure( ctx ):
         ctx.env.append_value( "LIB_gtkd", [ "gtk-3", "gdk-3", "atk-1.0", "gio-2.0",
                                             "pangocairo-1.0", "gdk_pixbuf-2.0", "cairo-gobject",
                                             "pango-1.0", "cairo", "gobject-2.0", "glib-2.0" ] )
-    # Configure GtkD on Linux
-    elif sys.platform == "linux2":
-        ctx.check_cfg( package = "gtk+-x11-3.0",
-                       args = [ "--cflags", "--libs" ],
-                       uselib_store = "gtkd",
-                       mandatory = False )
-        if "-pthread" in ctx.env.LINKFLAGS_gtkd:
-            ctx.env.LINKFLAGS_gtkd.remove( "-pthread" )
+    # DMD does not understand the -pthread flag
+    if "-pthread" in ctx.env.LINKFLAGS_gtkd:
+        ctx.env.LINKFLAGS_gtkd.remove( "-pthread" )
 
 def build( ctx ):
     use_libs = [ "gtkd" ]
