@@ -1,5 +1,5 @@
-# dseq
-experimental audio sequencer implemented in D
+# dhippo
+An audio editor/workstation hybrid implemented in the D programming language.
 
 # Compiling on Linux (Ubuntu)
 
@@ -11,8 +11,8 @@ Install the D apt repository (as described at http://d-apt.sourceforge.net/):
 Install the dependencies, then build via waf:
 
     sudo apt-get install dmd-bin libphobos2-dev libgtkd3-dev portaudio19-dev libjack-jackd2-dev libmpg123-dev libncurses-dev libsndfile-dev libsamplerate-dev librubberband-dev libaubio-dev
-    git clone https://github.com/irrelevelephant/dseq
+    git clone https://github.com/dhippo/dhippo
     cd dseq
     ./waf configure
     ./waf build
-    ./build/dseq
+    ./build/dhippo
