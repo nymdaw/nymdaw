@@ -220,11 +220,7 @@ public:
                 });
             _viewFollowTransportMenuItem.setActive(false);
             mixerMenu.append(_viewFollowTransportMenuItem);
-            mixerMenu.addOnDraw(delegate bool(Scoped!Context context, Widget widget) {
-                    _playMenuItem.setSensitive(!_mixer.playing);
-                    _pauseMenuItem.setSensitive(_mixer.playing);
-                    return false;
-                });
+            updateMixerMenu();
 
             Menu editMenu = append("_Edit");
             _undoMenuItem = new MenuItem(&onUndo, "_Undo", "edit.undo", true,
@@ -266,28 +262,17 @@ public:
                         _hardCopyMenuItem.setActive(true);
                     }
                 });
-            editMenu.addOnDraw(delegate bool(Scoped!Context context, Widget widget) {
-                    if(_mode == Mode.arrange) {
-                        _undoMenuItem.setSensitive(queryUndoArrange());
-                        _redoMenuItem.setSensitive(queryRedoArrange());
-                    }
-                    else if(_mode == Mode.editRegion && _editRegion !is null) {
-                        _undoMenuItem.setSensitive(_editRegion.queryUndoEdit());
-                        _redoMenuItem.setSensitive(_editRegion.queryRedoEdit());
-                    }
-                    return false;
-                });
+            updateEditMenu();
 
             Menu trackMenu = append("_Track");
             trackMenu.append(new MenuItem(&onNewTrack, "_New Track", "track.new", true));
-            trackMenu.append(new MenuItem(&onDeleteTrack, "_Delete Track", "track.delete", true));
-            auto renameTrackMenuItem = new MenuItem(delegate void(MenuItem) { new RenameTrackDialog(); },
-                                                    "Rename Track...");
-            trackMenu.append(renameTrackMenuItem);
-            trackMenu.addOnDraw(delegate bool(Scoped!Context context, Widget widget) {
-                    renameTrackMenuItem.setSensitive(_selectedTrack !is null);
-                    return false;
-                });
+            _deleteTrackMenuItem = new MenuItem(&onDeleteTrack,
+                                                "_Delete Track", "track.delete", true);
+            trackMenu.append(_deleteTrackMenuItem);
+            _renameTrackMenuItem = new MenuItem(delegate void(MenuItem) { new RenameTrackDialog(); },
+                                                    "_Rename Track...", "track.rename", true);
+            trackMenu.append(_renameTrackMenuItem);
+            updateTrackMenu();
 
             Menu regionMenu = append("_Region");
             _createEditRegionMenu(regionMenu,
@@ -300,21 +285,13 @@ public:
                                   _showOnsetsMenuItem,
                                   _onsetDetectionMenuItem,
                                   _linkChannelsMenuItem);
-            regionMenu.addOnDraw(delegate bool(Scoped!Context context, Widget widget) {
-                    updateRegionMenu();
-                    return false;
-                });
+            updateRegionMenu();
 
             Menu windowMenu = append("_Window");
-            auto sequenceBrowserMenuItem = new CheckMenuItem("_Sequence Browser", true);
-            sequenceBrowserMenuItem.addOnToggled(&onSequenceBrowser);
-            windowMenu.append(sequenceBrowserMenuItem);
-            windowMenu.addOnDraw(delegate bool(Scoped!Context context, Widget widget) {
-                    if(sequenceBrowserMenuItem.getActive() && !_sequenceBrowser.isVisible()) {
-                        sequenceBrowserMenuItem.setActive(false);
-                    }
-                    return false;
-                });
+            _sequenceBrowserMenuItem = new CheckMenuItem("_Sequence Browser", true);
+            _sequenceBrowserMenuItem.addOnToggled(&onSequenceBrowser);
+            windowMenu.append(_sequenceBrowserMenuItem);
+            updateSequenceBrowserMenu();
         }
 
         void onNew() {
@@ -354,10 +331,12 @@ public:
 
         void onPlay(MenuItem menuItem) {
             _mixer.play();
+            updateMixerMenu();
         }
 
         void onPause(MenuItem menuItem) {
             _mixer.pause();
+            updateMixerMenu();
         }
 
         void onUndo(MenuItem menuItem) {
@@ -446,8 +425,39 @@ public:
             else {
                 _sequenceBrowser.hide();
             }
+
+            _menuBar.updateSequenceBrowserMenu();
         }
 
+        /// Updates the mixer menu in the main menu bar.
+        /// This should be called whenever the mixer state changes between play/pause
+        void updateMixerMenu() {
+            _playMenuItem.setSensitive(!_mixer.playing);
+            _pauseMenuItem.setSensitive(_mixer.playing);
+        }
+
+        /// Updates the region menu in the main menu bar.
+        /// This should be called whenever the mode changes.
+        void updateEditMenu() {
+            if(_mode == Mode.arrange) {
+                _undoMenuItem.setSensitive(queryUndoArrange());
+                _redoMenuItem.setSensitive(queryRedoArrange());
+            }
+            else if(_mode == Mode.editRegion && _editRegion !is null) {
+                _undoMenuItem.setSensitive(_editRegion.queryUndoEdit());
+                _redoMenuItem.setSensitive(_editRegion.queryRedoEdit());
+            }
+        }
+
+        /// Updates the track menu in the main menu bar.
+        /// This should be called whenver the track selection changes.
+        void updateTrackMenu() {
+            _deleteTrackMenuItem.setSensitive(_selectedTrack !is null);
+            _renameTrackMenuItem.setSensitive(_selectedTrack !is null);
+        }
+
+        /// Updates the region menu in the main menu bar.
+        /// This should be called whenever the mode changes.
         void updateRegionMenu() {
             _updateEditRegionMenu(_gainMenuItem,
                                   _normalizeMenuItem,
@@ -471,6 +481,14 @@ public:
             _linkChannelsMenuItem.setSensitive(editMode && _linkChannelsMenuItem.getSensitive());
         }
 
+        /// Updates the sequence browser menu in the main menu bar.
+        /// This should be called whenever the sequence browser is opened or closed.
+        void updateSequenceBrowserMenu() {
+            if(_sequenceBrowserMenuItem.getActive() && !_sequenceBrowser.isVisible()) {
+                _sequenceBrowserMenuItem.setActive(false);
+            }
+        }
+
     private:
         MenuItem _playMenuItem;
         MenuItem _pauseMenuItem;
@@ -481,6 +499,9 @@ public:
         CheckMenuItem _softCopyMenuItem;
         CheckMenuItem _hardCopyMenuItem;
 
+        MenuItem _deleteTrackMenuItem;
+        MenuItem _renameTrackMenuItem;
+
         MenuItem _gainMenuItem;
         MenuItem _normalizeMenuItem;
         MenuItem _reverseMenuItem;
@@ -490,6 +511,8 @@ public:
         CheckMenuItem _showOnsetsMenuItem;
         MenuItem _onsetDetectionMenuItem;
         CheckMenuItem _linkChannelsMenuItem;
+
+        CheckMenuItem _sequenceBrowserMenuItem;
     }
 
     /// Horizontal scrollbar for the arrange view.
@@ -622,6 +645,7 @@ public:
         void onDialogResponse(int response, Dialog dialog) {
             _dialog.destroy();
             _dialog = null;
+            _menuBar.updateSequenceBrowserMenu();
         }
 
         /// A tree view, where the outer level is comprised of every audio sequence in the session.
@@ -4559,6 +4583,7 @@ public:
                 _mixerPlaying = false;
                 redraw();
             }
+            _menuBar.updateMixerMenu();
             return true;
         }
 
@@ -5114,6 +5139,7 @@ public:
                                 _createArrangeMenu();
                             }
                             _arrangeMenu.popup(buttonEvent.button, buttonEvent.time);
+                            _editRegionMenuItem.setSensitive(!_selectedRegions.empty);
                             _arrangeMenu.showAll();
                         }
                         break;
@@ -5462,6 +5488,7 @@ public:
                                 _mixer.play();
                             }
                         }
+                        _menuBar.updateMixerMenu();
                         redraw();
                         break;
 
@@ -5883,6 +5910,10 @@ public:
 
     /// Unregisters the specified track with the current session
     void deleteTrackView(TrackView deleteTrack) {
+        if(_mode != Mode.arrange) {
+            _setMode(Mode.arrange);
+        }
+
         auto regionViewsApp = appender!(RegionView[]);
         foreach(regionView; _regionViews) {
             if(regionView.trackView !is deleteTrack) {
@@ -5900,6 +5931,7 @@ public:
         _trackViews = trackViewsApp.data;
 
         _redrawAll();
+        _menuBar.updateTrackMenu();
         appendArrangeState(currentArrangeState!(ArrangeStateType.tracksEdit), true);
     }
 
@@ -6664,8 +6696,9 @@ private:
 
         _arrangeMenu.append(new MenuItem(delegate void(MenuItem menuItem) { onImportFile(); },
                                          "_Import file...", true));
-        _arrangeMenu.append(new MenuItem(&onEditRegion, "_Edit Region", "arrange.editRegion", true,
-                                         _accelGroup, 'e', cast(GdkModifierType)(0)));
+        _editRegionMenuItem = new MenuItem(&onEditRegion, "_Edit Region", "arrange.editRegion", true,
+                                           _accelGroup, 'e', cast(GdkModifierType)(0));
+        _arrangeMenu.append(_editRegionMenuItem);
 
         _arrangeMenu.attachToWidget(this, null);
     }
@@ -6967,6 +7000,10 @@ private:
         _mode = mode;
         _setAction(Action.none);
         _canvas.redraw();
+        if(_menuBar !is null) {
+            _menuBar.updateEditMenu();
+            _menuBar.updateRegionMenu();
+        }
     }
 
     /// Returns: The region that begins the earliest in the given `regionViews` list
@@ -7090,6 +7127,7 @@ private:
         _selectedTrack = trackView;
         _arrangeChannelStrip.update();
         _arrangeChannelStrip.redraw();
+        _menuBar.updateTrackMenu();
     }
 
     /// Remove the currently selected regions from the current session.
@@ -7218,6 +7256,7 @@ private:
     Timeout _canvasRefresh;
 
     Menu _arrangeMenu;
+    MenuItem _editRegionMenuItem;
     FileChooserDialog _importFileChooser;
     FileChooserDialog _exportFileChooser;
 
