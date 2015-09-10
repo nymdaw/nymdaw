@@ -35,7 +35,7 @@ def options( ctx ):
     ctx.add_option( "--release",
                     action = "store_true",
                     help = ( "enable optimizations and compile without debug symbols" ),
-                    default = False,
+                    default = True,
                     dest = "release" )
 
     ctx.add_option( "--doc",

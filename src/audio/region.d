@@ -282,11 +282,11 @@ public:
     /// Call this function when a region is edited.
     /// This will reflect the edits to that region to all other regions linked to the
     /// sequence corresponding to the edited region.
-    void updateSoftLinks() {
+    void updateSoftLinks(nframes_t prevNFrames, nframes_t newNFrames) {
         synchronized(_mutex) {
             auto softLinkRange = _softLinks[];
             for(; !softLinkRange.empty; softLinkRange.popFront()) {
-                softLinkRange.front.region.updateSlice();
+                softLinkRange.front.region.updateSliceEnd(prevNFrames, newNFrames);
             }
         }
     }
@@ -365,7 +365,7 @@ public:
 
         _sliceStartFrame = 0;
         _sliceEndFrame = audioSeq.nframes;
-        updateSlice();
+        _updateSlice();
     }
 
     /// Construct a region from an audio sequence with a default name.
@@ -380,7 +380,7 @@ public:
         Region newRegion = new Region(_audioSeq);
         newRegion._sliceStartFrame = _sliceStartFrame;
         newRegion._sliceEndFrame = _sliceEndFrame;
-        newRegion.updateSlice();
+        newRegion._updateSlice();
         return newRegion;
     }
 
@@ -389,7 +389,7 @@ public:
         Region newRegion = new Region(new AudioSequence(_audioSeq));
         newRegion._sliceStartFrame = _sliceStartFrame;
         newRegion._sliceEndFrame = _sliceEndFrame;
-        newRegion.updateSlice();
+        newRegion._updateSlice();
         return newRegion;
     }
 
@@ -526,7 +526,7 @@ public:
                           (_sliceStartFrame + localStartFrame) * nChannels,
                           (_sliceStartFrame + localEndFrame) * nChannels);
         auto immutable newNFrames = _audioSeq.nframes;
-        _sequenceChanged(prevNFrames, newNFrames);
+        _audioSeq.updateSoftLinks(prevNFrames, newNFrames);
 
         return localStartFrame + subregionOutputLength;
     }
@@ -726,7 +726,7 @@ public:
         auto immutable prevNFrames = _audioSeq.nframes;
         _audioSeq.replace(AudioSegment(outputBuffer, nChannels), removeStartIndex, removeEndIndex);
         auto immutable newNFrames = _audioSeq.nframes;
-        _sequenceChanged(prevNFrames, newNFrames);
+        _audioSeq.updateSoftLinks(prevNFrames, newNFrames);
     }
 
     /// Adjust the gain, in dBFS, of the subregion from `localStartFrame` to `localEndFrame`
@@ -747,7 +747,7 @@ public:
                           (_sliceStartFrame + localStartFrame) * nChannels,
                           (_sliceStartFrame + localEndFrame) * nChannels);
         auto immutable newNFrames = _audioSeq.nframes;
-        _sequenceChanged(prevNFrames, newNFrames);
+        _audioSeq.updateSoftLinks(prevNFrames, newNFrames);
 
         if(progressCallback !is null) {
             progressCallback(GainState.complete, 1);
@@ -767,7 +767,7 @@ public:
         auto immutable prevNFrames = _audioSeq.nframes;
         _audioSeq.replace(AudioSegment(audioBuffer, nChannels), 0, _audioSeq.length);
         auto immutable newNFrames = _audioSeq.nframes;
-        _sequenceChanged(prevNFrames, newNFrames);
+        _audioSeq.updateSoftLinks(prevNFrames, newNFrames);
 
         if(progressCallback !is null) {
             progressCallback(GainState.complete, 1);
@@ -792,7 +792,7 @@ public:
                           (_sliceStartFrame + localStartFrame) * nChannels,
                           (_sliceStartFrame + localEndFrame) * nChannels);
         auto immutable newNFrames = _audioSeq.nframes;
-        _sequenceChanged(prevNFrames, newNFrames);
+        _audioSeq.updateSoftLinks(prevNFrames, newNFrames);
 
         if(progressCallback !is null) {
             progressCallback(NormalizeState.complete, 1);
@@ -812,7 +812,7 @@ public:
         auto immutable prevNFrames = _audioSeq.nframes;
         _audioSeq.replace(AudioSegment(audioBuffer, nChannels), 0, _audioSeq.length);
         auto immutable newNFrames = _audioSeq.nframes;
-        _sequenceChanged(prevNFrames, newNFrames);
+        _audioSeq.updateSoftLinks(prevNFrames, newNFrames);
 
         if(progressCallback !is null) {
             progressCallback(NormalizeState.complete, 1);
@@ -830,7 +830,7 @@ public:
                           (_sliceStartFrame + localStartFrame) * nChannels,
                           (_sliceStartFrame + localEndFrame) * nChannels);
         auto immutable newNFrames = _audioSeq.nframes;
-        _sequenceChanged(prevNFrames, newNFrames);
+        _audioSeq.updateSoftLinks(prevNFrames, newNFrames);
     }
 
     /// Linearly fade in a subregion from `localStartFrame` to `localEndFrame`
@@ -844,7 +844,7 @@ public:
                           (_sliceStartFrame + localStartFrame) * nChannels,
                           (_sliceStartFrame + localEndFrame) * nChannels);
         auto immutable newNFrames = _audioSeq.nframes;
-        _sequenceChanged(prevNFrames, newNFrames);
+        _audioSeq.updateSoftLinks(prevNFrames, newNFrames);
     }
 
     /// Linearly fade out a subregion from `localStartFrame` to `localEndFrame`
@@ -858,7 +858,7 @@ public:
                           (_sliceStartFrame + localStartFrame) * nChannels,
                           (_sliceStartFrame + localEndFrame) * nChannels);
         auto immutable newNFrames = _audioSeq.nframes;
-        _sequenceChanged(prevNFrames, newNFrames);
+        _audioSeq.updateSoftLinks(prevNFrames, newNFrames);
     }
 
     /// Static array of all cache binning sizes computed for all waveforms
@@ -929,7 +929,7 @@ public:
             auto immutable prevNFrames = _audioSeq.nframes;
             _audioSeq.insert(insertSlice, (_sliceStartFrame + localFrameOffset) * nChannels);
             auto immutable newNFrames = _audioSeq.nframes;
-            _sequenceChanged(prevNFrames, newNFrames);
+            _audioSeq.updateSoftLinks(prevNFrames, newNFrames);
         }
     }
 
@@ -943,7 +943,7 @@ public:
             _audioSeq.remove((_sliceStartFrame + localFrameStart) * nChannels,
                              (_sliceStartFrame + localFrameEnd) * nChannels);
             auto immutable newNFrames = _audioSeq.nframes;
-            _sequenceChanged(prevNFrames, newNFrames);
+            _audioSeq.updateSoftLinks(prevNFrames, newNFrames);
         }
     }
 
@@ -952,7 +952,7 @@ public:
         auto immutable prevNFrames = _audioSeq.nframes;
         _audioSeq.undo();
         auto immutable newNFrames = _audioSeq.nframes;
-        _sequenceChanged(prevNFrames, newNFrames);
+        _audioSeq.updateSoftLinks(prevNFrames, newNFrames);
     }
 
     /// Redo the last edit operation
@@ -960,7 +960,7 @@ public:
         auto immutable prevNFrames = _audioSeq.nframes;
         _audioSeq.redo();
         auto immutable newNFrames = _audioSeq.nframes;
-        _sequenceChanged(prevNFrames, newNFrames);
+        _audioSeq.updateSoftLinks(prevNFrames, newNFrames);
     }
 
     /// Structure for indicating the status of a shrink operation on a region
@@ -1014,7 +1014,7 @@ public:
             return result;
         }
 
-        updateSlice();
+        _updateSlice();
         return result;
     }
 
@@ -1060,7 +1060,7 @@ public:
             return result;
         }
 
-        updateSlice();
+        _updateSlice();
         return result;
     }
 
@@ -1069,7 +1069,7 @@ public:
     /// ditto
     @property nframes_t sliceStartFrame(nframes_t newSliceStartFrame) {
         _sliceStartFrame = min(newSliceStartFrame, _sliceEndFrame);
-        updateSlice();
+        _updateSlice();
         return _sliceStartFrame;
     }
 
@@ -1078,7 +1078,7 @@ public:
     /// ditto
     @property nframes_t sliceEndFrame(nframes_t newSliceEndFrame) {
         _sliceEndFrame = min(newSliceEndFrame, _audioSeq.nframes);
-        updateSlice();
+        _updateSlice();
         if(resizeDelegate !is null) {
             resizeDelegate(offset + nframes);
         }        
@@ -1114,9 +1114,25 @@ public:
     @property string name(string newName) { return (_name = newName); }
 
 package:
-    /// Recompute the current audio slice from the source audio sequence of this region
-    void updateSlice() {
-        _audioSlice = _audioSeq[_sliceStartFrame * nChannels .. _sliceEndFrame * nChannels];
+    /// The arguments are the total number of frames in the audio sequence before/after a modification.
+    /// This function adjusts the ending frame of this region's slice accordingly.
+    /// It also updates the internal audio slice cache for this region.
+    void updateSliceEnd(nframes_t prevNFrames, nframes_t newNFrames) {
+        // if more frames were added to the sequence, increase the slice length
+        if(newNFrames > prevNFrames) {
+            _sliceEndFrame += (newNFrames - prevNFrames);
+            if(resizeDelegate !is null) {
+                resizeDelegate(offset + nframes);
+            }
+        }
+        // if frames were deleted from the sequence, decrease the slice length
+        else if(newNFrames < prevNFrames) {
+            _sliceEndFrame = (_sliceEndFrame > prevNFrames - newNFrames) ?
+                _sliceEndFrame - (prevNFrames - newNFrames) : _sliceStartFrame;
+        }
+
+        // update the audio slice cache for this region
+        _updateSlice();
     }
 
     /// Delegate for resizing the session, if necessary
@@ -1281,23 +1297,9 @@ private:
         return onsetsApp.data;
     }
 
-    /// The arguments are the total number of frames in the audio sequence before/after a modification.
-    /// This function adjusts the ending frame of the current slice accordingly.
-    /// It also updates all other regions linked to this region's source audio sequence.
-    void _sequenceChanged(nframes_t prevNFrames, nframes_t newNFrames) {
-        if(newNFrames > prevNFrames) {
-            _sliceEndFrame += (newNFrames - prevNFrames);
-            if(resizeDelegate !is null) {
-                resizeDelegate(offset + nframes);
-            }
-        }
-        else if(newNFrames < prevNFrames) {
-            _sliceEndFrame = (_sliceEndFrame > prevNFrames - newNFrames) ?
-                _sliceEndFrame - (prevNFrames - newNFrames) : _sliceStartFrame;
-        }
-
-        // update all regions that are linked to the audio sequence for this region
-        _audioSeq.updateSoftLinks();
+    /// Recompute the current audio slice from the source audio sequence of this region
+    void _updateSlice() {
+        _audioSlice = _audioSeq[_sliceStartFrame * nChannels .. _sliceEndFrame * nChannels];
     }
 
     /// Wrap the piece table into a reference type.
@@ -1338,7 +1340,7 @@ private:
     /// Start frame for this region, relative to the start of the sequence
     nframes_t _sliceStartFrame;
 
-    /// End frame for this region, relative to the end of the sequence
+    /// End frame for this region, relative to the start of the sequence
     nframes_t _sliceEndFrame;
 
     /// The offset, in terms of global frames, for the start of this region
