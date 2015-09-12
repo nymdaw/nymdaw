@@ -6,6 +6,9 @@ private import std.algorithm;
 private import std.traits;
 private import std.uni;
 
+/// Unique identifier for the single UI thread
+enum uiThreadName = "UIThread";
+
 /// Type for manipulating screen-space pixel offsets.
 /// This type should support negative values.
 alias pixels_t = int;

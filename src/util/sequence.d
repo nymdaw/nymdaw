@@ -5,8 +5,6 @@ private import std.container.dlist;
 private import std.conv;
 private import std.cstream : derr;
 
-private import core.sync.mutex;
-
 public import util.statehistory;
 
 /// Evaluates to `true` if and only if the template argument can be indexed with array-like semantics
@@ -23,24 +21,21 @@ template isValidBuffer(Buffer) {
 /// a piece table representing the complete state of the sequence.
 final class Sequence(Buffer) if(isValidBuffer!(Buffer)) {
 public:
-    static if(is(Buffer == U[], U)) {
-        enum BufferCacheIsPointer = false;
-        alias BufferCache = Buffer;
+    /// The type of data contained by the `Buffer` type
+    static if(is(Buffer == immutable(T), T)) {
+        alias Element = typeof((T.init)[size_t.init]);
     }
     else {
-        enum BufferCacheIsPointer = true;
-        alias BufferCache = Buffer*;
+        alias Element = typeof((Buffer.init)[size_t.init]);
     }
 
-    /// The type of data contained by the `Buffer` type
-    alias Element = typeof((Buffer.init)[size_t.init]);
+    /// Pointer to a buffer, used for caching a piece entry for fast access
+    alias BufferCache = immutable(Buffer)*;
 
     /// The original buffer should not be empty
-    this(Buffer originalBuffer) {
+    this(immutable Buffer originalBuffer) {
         assert(originalBuffer.length > 0);
         _originalBuffer = originalBuffer;
-
-        _mutex = new Mutex;
 
         PieceEntry[] table;
         table ~= PieceEntry(_originalBuffer, 0);
@@ -70,25 +65,19 @@ public:
 
     /// Insert a new buffer at `logicalOffset` and append the result to the piece table history
     void insert(T)(T buffer, size_t logicalOffset) {
-        synchronized(_mutex) {
-            _appendToHistory(_currentPieceTable.insert(buffer, logicalOffset));
-        }
+        _appendToHistory(_currentPieceTable.insert(buffer, logicalOffset));
     }
 
     /// Delete all indices in the range [`logicalStart`, `logicalEnd`) and
     /// append the result to the piece table history
     void remove(size_t logicalStart, size_t logicalEnd) {
-        synchronized(_mutex) {
-            _appendToHistory(_currentPieceTable.remove(logicalStart, logicalEnd));
-        }
+        _appendToHistory(_currentPieceTable.remove(logicalStart, logicalEnd));
     }
 
     /// Remove elements in the range [`logicalStart`, `logicalEnd`],
     /// then insert a new buffer at `logicalStart` and append the result to the piece table history
     void replace(T)(T buffer, size_t logicalStart, size_t logicalEnd) {
-        synchronized(_mutex) {
-            _appendToHistory(_currentPieceTable.remove(logicalStart, logicalEnd).insert(buffer, logicalStart));
-        }
+        _appendToHistory(_currentPieceTable.remove(logicalStart, logicalEnd).insert(buffer, logicalStart));
     }
 
     auto opSlice(size_t logicalStart, size_t logicalEnd) {
@@ -102,7 +91,7 @@ public:
         return _currentPieceTable[index];
     }
 
-    @property size_t length() {
+    @property size_t length() const {
         return _currentPieceTable.length;
     }
     alias opDollar = length;
@@ -118,11 +107,11 @@ public:
     /// Structure representing a single entry in a piece table.
     /// This is implemented via slices of type `Buffer`
     static struct PieceEntry {
-        Buffer buffer; /// The slice of data for this piece table entry
+        immutable Buffer buffer; /// The slice of data for this piece table entry
         size_t logicalOffset; /// The absolute offset of this piece in its corresponding piece table
 
         /// Retrieve the length of the buffer for this piece table entry
-        @property size_t length() {
+        @property size_t length() const {
             return buffer.length;
         }
     }
@@ -133,6 +122,11 @@ public:
         /// Initialize the piece table with a simple array of `PieceEntry` objects
         this(PieceEntry[] table) {
             this.table = table;
+        }
+
+        /// Copy constructor
+        this(immutable(PieceTable) pieceTable) {
+            this.table = pieceTable.table.dup;
         }
 
         debug {
@@ -150,7 +144,7 @@ public:
 
         /// Insert a new buffer at logicalOffset
         PieceTable insert(T)(T buffer, size_t logicalOffset)
-            if(is(T == Buffer) || is(T == PieceTable)) {
+            if(is(T == Buffer) || is(T == immutable(Buffer)) || is(T == PieceTable)) {
                 if(logicalOffset > logicalLength) {
                     derr.writefln("Warning: requested insertion to a piece table with length ", logicalLength,
                                   " at logical offset ", logicalOffset);
@@ -163,8 +157,8 @@ public:
                 // check if the existing table is empty
                 if(table.empty) {
                     // insert the new piece provided by the given argument
-                    static if(is(T == Buffer)) {
-                        pieceTable.put(PieceEntry(buffer, 0));
+                    static if(is(T == Buffer) || is(T == immutable(Buffer))) {
+                        pieceTable.put(PieceEntry(cast(immutable)(buffer), 0));
                     }
                     else if(is(T == PieceTable)) {
                         foreach(piece; buffer.table) {
@@ -196,8 +190,8 @@ public:
                     }
 
                     // insert the new piece provided by the given argument
-                    static if(is(T == Buffer)) {
-                        pieceTable.put(PieceEntry(buffer, logicalOffset));
+                    static if(is(T == Buffer) || is(T == immutable(Buffer))) {
+                        pieceTable.put(PieceEntry(cast(immutable)(buffer), logicalOffset));
                     }
                     else if(is(T == PieceTable)) {
                         foreach(piece; buffer.table) {
@@ -255,8 +249,8 @@ public:
 
             // if logicalStart is contained within another piece, split that piece
             {
-                auto splitIndex = logicalStart - table[nStartSkipped].logicalOffset;
-                auto splitBuffer = table[nStartSkipped].buffer[0 .. splitIndex];
+                auto immutable splitIndex = logicalStart - table[nStartSkipped].logicalOffset;
+                auto immutable splitBuffer = table[nStartSkipped].buffer[0 .. splitIndex];
                 if(splitBuffer.length > 0) {
                     pieceTable.put(PieceEntry(splitBuffer, table[nStartSkipped].logicalOffset));
                 }
@@ -301,30 +295,15 @@ public:
             if(_cachedBuffer) {
                 // if the index is in the cached buffer
                 if(index >= _cachedBufferStart && index < _cachedBufferEnd) {
-                    static if(BufferCacheIsPointer) {
-                        return (*_cachedBuffer)[index - _cachedBufferStart];
-                    }
-                    else {
-                        return _cachedBuffer[index - _cachedBufferStart];
-                    }
+                    return (*_cachedBuffer)[index - _cachedBufferStart];
                 }
                 // try the next cache buffer, since most accesses should be sequential
                 else if(++_cachedBufferIndex < table.length) {
-                    static if(BufferCacheIsPointer) {
-                        _cachedBuffer = &(table[_cachedBufferIndex].buffer);
-                    }
-                    else {
-                        _cachedBuffer = table[_cachedBufferIndex].buffer;
-                    }
+                    _cachedBuffer = &(table[_cachedBufferIndex].buffer);
                     _cachedBufferStart = table[_cachedBufferIndex].logicalOffset;
                     _cachedBufferEnd = _cachedBufferStart + table[_cachedBufferIndex].length;
                     if(index >= _cachedBufferStart && index < _cachedBufferEnd) {
-                        static if(BufferCacheIsPointer) {
-                            return (*_cachedBuffer)[index - _cachedBufferStart];
-                        }
-                        else {
-                            return _cachedBuffer[index - _cachedBufferStart];
-                        }
+                        return (*_cachedBuffer)[index - _cachedBufferStart];
                     }
                 }
             }
@@ -332,21 +311,11 @@ public:
             // in case of random access, search the entire piece table for the index
             foreach(i, ref piece; table) {
                 if(index >= piece.logicalOffset && index < piece.logicalOffset + piece.length) {
-                    static if(BufferCacheIsPointer) {
-                        _cachedBuffer = &piece.buffer;
-                    }
-                    else {
-                        _cachedBuffer = piece.buffer;
-                    }
+                    _cachedBuffer = &piece.buffer;
                     _cachedBufferIndex = i;
                     _cachedBufferStart = piece.logicalOffset;
                     _cachedBufferEnd = piece.logicalOffset + piece.length;
-                    static if(BufferCacheIsPointer) {
-                        return (*_cachedBuffer)[index - _cachedBufferStart];
-                    }
-                    else {
-                        return _cachedBuffer[index - _cachedBufferStart];
-                    }
+                    return (*_cachedBuffer)[index - _cachedBufferStart];
                 }
             }
 
@@ -429,7 +398,7 @@ public:
 
         /// Returns the logical length of the piece table.
         /// This is equivalent to the sum of all the lengths of all piece table entries.
-        @property size_t logicalLength() {
+        @property size_t logicalLength() const {
             if(table.length > 0) {
                 return table[$ - 1].logicalOffset + table[$ - 1].length;
             }
@@ -439,13 +408,13 @@ public:
         alias length = logicalLength;
         alias opDollar = length;
 
-        T opCast(T : bool)() {
+        T opCast(T : bool)() const {
             return length > 0;
         }
 
         /// This function allows this class to be used as a Forward Range.
         /// Returns: `true` if and only if all elements in the piece table have been popped from the range.
-        @property bool empty() {
+        @property bool empty() const {
             return _pos >= length;
         }
 
@@ -472,7 +441,7 @@ public:
             auto result = appender!(Element[]);
             foreach(piece; table) {
                 for(auto i = 0; i < piece.length; ++i) {
-                    result.put(piece.buffer[i]);
+                    result.put(cast(Element)(piece.buffer[i]));
                 }
             }
             return result.data;
@@ -509,10 +478,11 @@ private:
     @property ref PieceTable _currentPieceTable() @nogc nothrow {
         return _stateHistory.currentState;
     }
+    @property ref const(PieceTable) _currentPieceTable() const @nogc nothrow {
+        return _stateHistory.currentState;
+    }
 
-    Mutex _mutex;
-
-    Buffer _originalBuffer;
+    immutable Buffer _originalBuffer;
 
     StateHistory!(PieceTable) _stateHistory;
 }

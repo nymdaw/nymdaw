@@ -1,6 +1,7 @@
 module ui.mainwindow;
 
 private import std.array;
+private import std.concurrency;
 
 private import gdk.Event;
 
@@ -10,6 +11,7 @@ private import gtk.Widget;
 private import audio.mixer;
 
 private import ui.arrangeview;
+private import ui.types;
 
 /// A `MainWindow` subclass that properly handles destruction of the mixer.
 /// This class will construct a single window containing the arrange view.
@@ -19,6 +21,8 @@ public:
     /// This constructor will parse the command line arguments and load any specified audio files.
     this(string appName, Mixer mixer, string[] args) {
         super(appName);
+
+        register(uiThreadName, thisTid);
 
         _arrangeView = new ArrangeView(this, mixer);
         add(_arrangeView);

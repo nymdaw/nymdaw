@@ -4,10 +4,12 @@ module ui.arrangeview;
 
 private import std.algorithm;
 private import std.array;
+private import std.concurrency;
 private import std.conv;
 private import std.cstream;
 private import std.format;
 private import std.math;
+private import std.parallelism;
 private import std.path;
 private import std.random;
 private import std.range;
@@ -1231,29 +1233,28 @@ public:
             bool entireRegion = _gainEntireRegion.getActive();
 
             if(_region !is null) {
-                auto progressCallback = ProgressTaskCallback!(GainState)(thisTid);
-                auto progressTask = progressTask(
-                    _region.name,
-                    delegate void() {
-                        if(_region.subregionSelected && selectionOnly) {
-                            _region.region.gain(_region.subregionStartFrame,
-                                                _region.subregionEndFrame,
-                                                cast(sample_t)(_gainAdjustment.getValue()),
-                                                progressCallback);
-                            if(_editRegion.showOnsets) {
-                                _editRegion.computeOnsets();
-                            }
-                            _region.appendEditState(_region.currentEditState(true), "Adjust subregion gain");
-                        }
-                        else if(entireRegion) {
-                            _region.region.gain(cast(sample_t)(_gainAdjustment.getValue()), progressCallback);
-                            if(_editRegion.showOnsets) {
-                                _editRegion.computeOnsets();
-                            }
-                            _region.appendEditState(_region.currentEditState(true), "Adjust region gain");
-                        }
-                    });
-                beginProgressTask!(GainState)(progressTask);
+                auto newProgressTask =
+                    progressTask(_region.name,
+                                 delegate void(GainState.Callback progressCallback) {
+                                     if(_region.subregionSelected && selectionOnly) {
+                                         _region.region.gain(_region.subregionStartFrame,
+                                                             _region.subregionEndFrame,
+                                                             cast(sample_t)(_gainAdjustment.getValue()),
+                                                             progressCallback);
+                                         if(_editRegion.showOnsets) {
+                                             _editRegion.computeOnsets();
+                                         }
+                                         _region.appendEditState(_region.currentEditState(true), "Adjust subregion gain");
+                                     }
+                                     else if(entireRegion) {
+                                         _region.region.gain(cast(sample_t)(_gainAdjustment.getValue()), progressCallback);
+                                         if(_editRegion.showOnsets) {
+                                             _editRegion.computeOnsets();
+                                         }
+                                         _region.appendEditState(_region.currentEditState(true), "Adjust region gain");
+                                     }
+                                 });
+                beginProgressTask!(GainState)(newProgressTask);
                 _canvas.redraw();
             }
         }
@@ -1298,29 +1299,28 @@ public:
             bool entireRegion = _normalizeEntireRegion.getActive();
 
             if(_region !is null) {
-                auto progressCallback = ProgressTaskCallback!(NormalizeState)(thisTid);
-                auto progressTask = progressTask(
-                    _region.name,
-                    delegate void() {
-                        if(_region.subregionSelected && selectionOnly) {
-                            _region.region.normalize(_region.subregionStartFrame,
-                                                     _region.subregionEndFrame,
-                                                     cast(sample_t)(_normalizeGainAdjustment.getValue()),
-                                                     progressCallback);
-                            if(_editRegion.showOnsets) {
-                                _editRegion.computeOnsets();
-                            }
-                            _region.appendEditState(_region.currentEditState(true), "Normalize subregion");
-                        }
-                        else if(entireRegion) {
-                            _region.region.normalize(cast(sample_t)(_normalizeGainAdjustment.getValue()),
-                                                     progressCallback);
-                            if(_editRegion.showOnsets) {
-                                _editRegion.computeOnsets();
-                            }
-                            _region.appendEditState(_region.currentEditState(true), "Normalize region");
-                        }
-                    });
+                auto progressTask =
+                    progressTask(_region.name,
+                                 delegate void(NormalizeState.Callback progressCallback) {
+                                     if(_region.subregionSelected && selectionOnly) {
+                                         _region.region.normalize(_region.subregionStartFrame,
+                                                                  _region.subregionEndFrame,
+                                                                  cast(sample_t)(_normalizeGainAdjustment.getValue()),
+                                                                  progressCallback);
+                                         if(_editRegion.showOnsets) {
+                                             _editRegion.computeOnsets();
+                                         }
+                                         _region.appendEditState(_region.currentEditState(true), "Normalize subregion");
+                                     }
+                                     else if(entireRegion) {
+                                         _region.region.normalize(cast(sample_t)(_normalizeGainAdjustment.getValue()),
+                                                                  progressCallback);
+                                         if(_editRegion.showOnsets) {
+                                             _editRegion.computeOnsets();
+                                         }
+                                         _region.appendEditState(_region.currentEditState(true), "Normalize region");
+                                     }
+                                 });
                 beginProgressTask!(NormalizeState)(progressTask);
                 _canvas.redraw();
             }
@@ -1380,44 +1380,42 @@ public:
 
         /// Compute onsets independently for each channel in the region
         void computeOnsetsIndependentChannels() {
-            auto progressCallback = ProgressTaskCallback!(ComputeOnsetsState)(thisTid);
-            auto progressTask = progressTask(
-                region.name,
-                delegate void() {
-                    progressCallback(ComputeOnsetsState.computeOnsets, 0);
+            auto progressTask =
+                progressTask(region.name,
+                             delegate void(ComputeOnsetsState.Callback progressCallback) {
+                                 progressCallback(ComputeOnsetsState.computeOnsets, 0);
 
-                    if(_onsets !is null) {
-                        _onsets.destroy();
-                    }
-                    _onsets = [];
-                    _onsets.reserve(region.nChannels);
-                    for(channels_t channelIndex = 0; channelIndex < region.nChannels; ++channelIndex) {
-                        _onsets ~= new OnsetSequence(region.getOnsetsSingleChannel(onsetParams,
-                                                                                   channelIndex,
-                                                                                   progressCallback));
-                    }
+                                 if(_onsets !is null) {
+                                     _onsets.destroy();
+                                 }
+                                 _onsets = [];
+                                 _onsets.reserve(region.nChannels);
+                                 for(channels_t channelIndex = 0; channelIndex < region.nChannels; ++channelIndex) {
+                                     _onsets ~= new OnsetSequence(cast(immutable)(region.getOnsetsSingleChannel(onsetParams,
+                                                                                                                channelIndex,
+                                                                                                                progressCallback)));
+                                 }
 
-                    progressCallback(ComputeOnsetsState.complete, 1);
-                });
+                                 progressCallback(ComputeOnsetsState.complete, 1);
+                             });
             beginProgressTask!(ComputeOnsetsState)(progressTask);
             _canvas.redraw();
         }
 
         /// Compute onsets for all (summed) channels
         void computeOnsetsLinkedChannels() {
-            auto progressCallback = ProgressTaskCallback!(ComputeOnsetsState)(thisTid);
-            auto progressTask = progressTask(
-                region.name,
-                delegate void() {
-                    progressCallback(ComputeOnsetsState.computeOnsets, 0);
-            
-                    if(region.nChannels > 1) {
-                        _onsetsLinked = new OnsetSequence(region.getOnsetsLinkedChannels(onsetParams,
-                                                                                         progressCallback));
-                    }
+            auto progressTask =
+                progressTask(region.name,
+                             delegate void(ComputeOnsetsState.Callback progressCallback) {
+                                 progressCallback(ComputeOnsetsState.computeOnsets, 0);
 
-                    progressCallback(ComputeOnsetsState.complete, 1);
-                });
+                                 if(region.nChannels > 1) {
+                                     _onsetsLinked = new OnsetSequence(cast(immutable)(region.getOnsetsLinkedChannels(onsetParams,
+                                                                                                                      progressCallback)));
+                                 }
+
+                                 progressCallback(ComputeOnsetsState.complete, 1);
+                             });
             beginProgressTask!(ComputeOnsetsState)(progressTask);
             _canvas.redraw();
         }
@@ -2786,15 +2784,13 @@ public:
                 newRegionView.addSoftLinkToSequence();
             }
 
-            synchronized {
-                _track.addRegion(newRegionView.region);
+            _track.addRegion(newRegionView.region);
 
-                if(newRegionView.trackView !is this) {
-                    newRegionView.trackView = this;
-                }
-                _regionViews ~= newRegionView;
-                this.outer._regionViews ~= newRegionView;
+            if(newRegionView.trackView !is this) {
+                newRegionView.trackView = this;
             }
+            _regionViews ~= newRegionView;
+            this.outer._regionViews ~= newRegionView;
 
             _hScroll.reconfigure();
             _vScroll.reconfigure();
@@ -5297,8 +5293,8 @@ public:
                                                                  onsetFrameEnd,
                                                                  _editRegion.linkChannels,
                                                                  _moveOnsetChannel,
-                                                                 onsets[_moveOnsetIndex].leftSource,
-                                                                 onsets[_moveOnsetIndex].rightSource);
+                                                                 AudioSequence.AudioPieceTable(onsets[_moveOnsetIndex].leftSource),
+                                                                 AudioSequence.AudioPieceTable(onsets[_moveOnsetIndex].rightSource));
                         }
                         else {
                             _editRegion.region.stretchThreePoint(onsetFrameStart,
@@ -5311,20 +5307,30 @@ public:
 
                         if(_moveOnsetFrameDest == onsetFrameStart) {
                             if(_moveOnsetIndex > 0) {
-                                onsets[_moveOnsetIndex - 1].rightSource = onsets[_moveOnsetIndex].rightSource;
+                                onsets.replace([Onset(onsets[_moveOnsetIndex - 1].onsetFrame,
+                                                      AudioSequence.AudioPieceTable(onsets[_moveOnsetIndex - 1].leftSource),
+                                                      AudioSequence.AudioPieceTable(onsets[_moveOnsetIndex].rightSource))],
+                                               _moveOnsetIndex - 1, _moveOnsetIndex + 1);
                             }
-                            onsets.remove(_moveOnsetIndex, _moveOnsetIndex + 1);
+                            else {
+                                onsets.remove(_moveOnsetIndex, _moveOnsetIndex + 1);
+                            }
                         }
                         else if(_moveOnsetFrameDest == onsetFrameEnd) {
                             if(_moveOnsetIndex + 1 < onsets.length) {
-                                onsets[_moveOnsetIndex + 1].leftSource = onsets[_moveOnsetIndex].leftSource;
+                                onsets.replace([Onset(onsets[_moveOnsetIndex + 1].onsetFrame,
+                                                      AudioSequence.AudioPieceTable(onsets[_moveOnsetIndex].leftSource),
+                                                      AudioSequence.AudioPieceTable(onsets[_moveOnsetIndex + 1].rightSource))],
+                                               _moveOnsetIndex, _moveOnsetIndex + 2);
                             }
-                            onsets.remove(_moveOnsetIndex, _moveOnsetIndex + 1);
+                            else {
+                                onsets.remove(_moveOnsetIndex, _moveOnsetIndex + 1);
+                            }
                         }
                         else {
                             onsets.replace([Onset(_moveOnsetFrameDest,
-                                                  onsets[_moveOnsetIndex].leftSource,
-                                                  onsets[_moveOnsetIndex].rightSource)],
+                                                  AudioSequence.AudioPieceTable(onsets[_moveOnsetIndex].leftSource),
+                                                  AudioSequence.AudioPieceTable(onsets[_moveOnsetIndex].rightSource))],
                                            _moveOnsetIndex, _moveOnsetIndex + 1);
                         }
 
@@ -5937,40 +5943,75 @@ public:
 
     /// Loads a list of files from disk, storing each in a new region/track
     void loadRegionsFromFiles(const(string[]) fileNames) {
-        auto progressCallback = ProgressTaskCallback!(LoadState)(thisTid);
-        void loadRegionTask(string fileName) {
+        Nullable!SampleRateConverter resampleDialog(nframes_t originalSampleRate, nframes_t newSampleRate) {
+            Nullable!SampleRateConverter result;
+
+            auto sampleRateDialog = new SampleRateDialog(originalSampleRate, newSampleRate);
+            auto sampleRateResponse = sampleRateDialog.run();
+            if(sampleRateResponse == ResponseType.OK) {
+                result = sampleRateDialog.selectedSampleRateConverter;
+            }
+
+            return result;
+        }
+
+        static struct ResampleRequest {
+            nframes_t originalSampleRate;
+            nframes_t newSampleRate;
+        }
+
+        static struct ResampleResponse {
+            Nullable!SampleRateConverter sampleRateConverter;
+        }
+
+        static struct ErrorMessage {
+            string msg;
+        }
+
+        void dispatchRequests() {
+            receiveTimeout(0.msecs,
+                           (ResampleRequest resampleRequest) {
+                               auto sampleRateConverter = resampleDialog(resampleRequest.originalSampleRate,
+                                                                         resampleRequest.newSampleRate);
+                               send(locate(LoadState.mangleof), ResampleResponse(sampleRateConverter));
+                           },
+                           (ErrorMessage errorMessage) {
+                               ErrorDialog.display(_parentWindow, errorMessage.msg);
+                           });
+        }
+
+        void loadRegionTask(string fileName, LoadState.Callback progressCallback) {
             Nullable!SampleRateConverter resampleCallback(nframes_t originalSampleRate, nframes_t newSampleRate) {
                 Nullable!SampleRateConverter result;
-
-                auto sampleRateDialog = new SampleRateDialog(originalSampleRate, newSampleRate);
-                auto sampleRateResponse = sampleRateDialog.run();
-                if(sampleRateResponse == ResponseType.OK) {
-                    result = sampleRateDialog.selectedSampleRateConverter;
-                }
-
+                send(locate(uiThreadName), ResampleRequest(originalSampleRate, newSampleRate));
+                receive((ResampleResponse resampleResponse) { result = resampleResponse.sampleRateConverter; });
                 return result;
             }
+
             auto newSequence = AudioSequence.fromFile(fileName,
                                                       _mixer.sampleRate,
                                                       &resampleCallback,
                                                       progressCallback);
-            if(newSequence is null && !progressCallback.cancelled) {
-                ErrorDialog.display(_parentWindow, "Could not load file " ~ baseName(fileName));
+            if(newSequence is null && progressCallback(LoadState.complete, 0)) {
+                send(locate(uiThreadName), ErrorMessage("Could not load file " ~ baseName(fileName)));
             }
             else {
                 _audioSequencesApp.put(newSequence);
-                Region newRegion = new Region(newSequence);
+                auto newRegion = new Region(newSequence);
                 createTrackView(newRegion.name, newRegion);
             }
         }
-        alias RegionTask = ProgressTask!(typeof(scopedTask(&loadRegionTask, string.init)));
-        auto regionTaskList = appender!(RegionTask[]);
+        alias RegionTaskDelegate = void delegate(LoadState.Callback);
+        auto regionTaskList = appender!(ProgressTask!(RegionTaskDelegate)[]);
         foreach(fileName; fileNames) {
-            regionTaskList.put(progressTask(baseName(fileName), scopedTask(&loadRegionTask, fileName)));
+            regionTaskList.put(progressTask(baseName(fileName),
+                                            delegate void(LoadState.Callback progressCallback) {
+                                                loadRegionTask(fileName, progressCallback);
+                                            }));
         }
 
         if(regionTaskList.data.length > 0) {
-            beginProgressTask!(LoadState, true, RegionTask)(regionTaskList.data);
+            beginProgressTask!(LoadState, true)(regionTaskList.data, &dispatchRequests);
             _canvas.redraw();
         }
     }
@@ -6068,21 +6109,20 @@ public:
                 }
             }
 
-            auto progressCallback = ProgressTaskCallback!(SaveState)(thisTid);
-            auto progressTask = progressTask(
-                fileName,
-                delegate void() {
-                    try {
-                        _mixer.exportSessionToFile(fileName,
-                                                   cast(AudioFileFormat)
-                                                   audioFileFormat,
-                                                   audioBitDepth,
-                                                   progressCallback);
-                    }
-                    catch(AudioError e) {
-                        ErrorDialog.display(_parentWindow, e.msg);
-                    }
-                });
+            auto progressTask =
+                progressTask(fileName,
+                             delegate void(SaveState.Callback progressCallback) {
+                                 try {
+                                     _mixer.exportSessionToFile(fileName,
+                                                                cast(AudioFileFormat)
+                                                                audioFileFormat,
+                                                                audioBitDepth,
+                                                                progressCallback);
+                                 }
+                                 catch(AudioError e) {
+                                     ErrorDialog.display(_parentWindow, e.msg);
+                                 }
+                             });
             beginProgressTask!(SaveState, true)(progressTask);
         }
         else if(response == ResponseType.CANCEL) {
@@ -6101,17 +6141,17 @@ public:
         }
     }
 
-    /// Generic function to begin a progress task.
-    /// This function creates a progress dialog and updates a progress bar as
-    /// it receives messages from the progress callback.
-    /// Additionally, this function will send a cancellation messgae to the worker
-    /// thread if the user cancels the operation.
+    /// This function creates a progress dialog and updates a progress bar
+    /// via the progress callback associated with the progress task.
+    /// Additionally, this function will inform the progress task
+    /// if the user cancels the operation.
     /// Params:
     /// taskList = A list of `ProgressTask` objects to execute sequentially
+    /// dispatchMessages = A non-blocking delegate to handle custom messages during the dialog's lifetime
     void beginProgressTask(ProgressState,
                            bool cancelButton = false,
-                           ProgressTask = DefaultProgressTask)
-        (ProgressTask[] taskList)
+                           ProgressTask = .ProgressTask!(void delegate(ProgressState.Callback)))
+        (ProgressTask[] progressTaskList, void delegate() dispatchMessages = null)
         if(__traits(isSame, TemplateOf!ProgressState, .ProgressState) &&
            __traits(isSame, TemplateOf!ProgressTask, .ProgressTask)) {
             enum progressRefreshRate = 10; /// Specified in Hz
@@ -6120,6 +6160,7 @@ public:
             auto progressDialog = new Dialog();
             progressDialog.setDefaultSize(400, 75);
             progressDialog.setTransientFor(_parentWindow);
+            progressDialog.setModal(true);
 
             auto dialogBox = progressDialog.getContentArea();
             auto progressBar = new ProgressBar();
@@ -6135,35 +6176,50 @@ public:
                 dialogBox.packEnd(ArrangeDialog.createCancelButton(&onProgressCancel), false, false, 10);
             }
 
-            if(taskList.length > 0) {
+            if(progressTaskList.length > 0) {
                 // block on message crowding to ensure this thread receives the progress completion message
                 setMaxMailboxSize(thisTid,
                                   LoadState.nStages * LoadState.stepsPerStage,
                                   OnCrowding.block);
 
-                size_t currentTaskIndex = 0;
-                ProgressTask currentTask = taskList[currentTaskIndex];
+                static bool progressTaskCancelled;
+                static bool progressThreadRegistered;
 
-                void beginTask(ProgressTask currentTask) {
-                    progressDialog.setTitle(currentTask.name);
-                    currentTask.task.executeInNewThread();
-                }
-                beginTask(currentTask);
-
-                static string stageCases() {
-                    string result;
-                    foreach(stage; __traits(allMembers, ProgressState.Stage)[0 .. $ - 1]) {
-                        result ~=
-                            "case ProgressState.Stage." ~ cast(string)(stage) ~ ": " ~
-                            "progressLabel.setText(ProgressState.stageDescriptions[ProgressState.Stage." ~
-                            cast(string)(stage) ~ "] ~ \": \" ~ " ~ "currentTask.name); break;\n";
+                static bool progressCallback(ProgressState.Stage stage, double stageFraction) {
+                    if(!progressThreadRegistered) {
+                        register(ProgressState.mangleof, thisTid);
                     }
-                    return result;
+
+                    // send a progress message to the UI thread
+                    send(locate(uiThreadName), ProgressState(stage, stageFraction));
+
+                    // catch messages from the UI thread indicating that the computation was cancelled
+                    if(!progressTaskCancelled) {
+                        receiveTimeout(0.msecs, (bool cancel) { progressTaskCancelled = cancel; });
+                    }
+
+                    return !progressTaskCancelled;
                 }
 
                 Timeout progressTimeout;
+                typeof(task(progressTaskList[size_t.init].taskFunc, &progressCallback)) currentTask;
+                size_t currentTaskIndex;
+                bool currentTaskComplete;
+
                 bool onProgressRefresh() {
-                    bool currentTaskComplete;
+                    static string stageCases() {
+                        string result;
+                        foreach(stage; __traits(allMembers, ProgressState.Stage)[0 .. $ - 1]) {
+                            result ~=
+                                "case ProgressState.Stage." ~ cast(string)(stage) ~ ": " ~
+                                "progressLabel.setText(" ~ 
+                                "ProgressState.stageDescriptions[ProgressState.Stage." ~
+                                cast(string)(stage) ~ "] ~ \": \" ~ " ~
+                                "progressTaskList[currentTaskIndex].name); break;\n";
+                        }
+                        return result;
+                    }
+
                     while(receiveTimeout(progressMessageTimeout,
                                          (ProgressState progressState) {
                                              progressBar.setFraction(progressState.completionFraction);
@@ -6171,16 +6227,23 @@ public:
                                              final switch(progressState.stage) {
                                                  mixin(stageCases());
 
-                                                 case ProgressState.complete:
-                                                     currentTaskComplete = true;
-                                                     break;
+                                             case ProgressState.complete:
+                                                 currentTaskComplete = true;
+                                                 break;
                                              }
-                                         })) {}
+                                         })) {
+                        if(dispatchMessages !is null) {
+                            dispatchMessages();
+                        }
+                    }
                     if(currentTaskComplete) {
+                        currentTask.workForce();
                         ++currentTaskIndex;
-                        if(currentTaskIndex < taskList.length) {
-                            currentTask = taskList[currentTaskIndex];
-                            beginTask(currentTask);
+                        if(currentTaskIndex < progressTaskList.length) {
+                            progressThreadRegistered = false;
+                            progressDialog.setTitle(progressTaskList[currentTaskIndex].name);
+                            currentTask = task(progressTaskList[currentTaskIndex].taskFunc, &progressCallback);
+                            currentTask.executeInNewThread();
                         }
                         else {
                             if(progressDialog.getWidgetStruct() !is null) {
@@ -6192,6 +6255,13 @@ public:
 
                     return true;
                 }
+
+                progressTaskCancelled = false;
+                progressThreadRegistered = false;
+                progressDialog.setTitle(progressTaskList[currentTaskIndex].name);
+                currentTask = task(progressTaskList[currentTaskIndex].taskFunc, &progressCallback);
+                currentTask.executeInNewThread();
+
                 progressTimeout = new Timeout(cast(uint)(1.0 / progressRefreshRate * 1000),
                                               &onProgressRefresh,
                                               false);
@@ -6212,12 +6282,15 @@ public:
     /// Specialization for `beginProgressTask` for executing only a single `ProgressTask`
     void beginProgressTask(ProgressState,
                            bool cancelButton = false,
-                           ProgressTask = DefaultProgressTask)
-        (ProgressTask task) {
-        ProgressTask[] taskList = new ProgressTask[](1);
-        taskList[0] = task;
-        beginProgressTask!(ProgressState, cancelButton, ProgressTask)(taskList);
-    }
+                           ProgressTask = .ProgressTask!(void delegate(ProgressState.Callback)))
+        (ProgressTask task, void delegate() dispatchMessages = null)
+        if(!is(ProgressTask == T[], T) &&
+           __traits(isSame, TemplateOf!ProgressState, .ProgressState) &&
+           __traits(isSame, TemplateOf!ProgressTask, .ProgressTask)) {
+            ProgressTask[] taskList = new ProgressTask[](1);
+            taskList[0] = task;
+            beginProgressTask!(ProgressState, cancelButton, ProgressTask)(taskList, dispatchMessages);
+        }
 
     void onShowOnsets(CheckMenuItem showOnsets) {
         _editRegion.showOnsets = showOnsets.getActive();
@@ -6717,18 +6790,16 @@ private:
     }
 
     TrackView _createTrackView(string trackName) {
-        synchronized {
-            TrackView trackView;
-            trackView = new TrackView(_mixer.createTrack(), defaultTrackHeightPixels, trackName);
+        TrackView trackView;
+        trackView = new TrackView(_mixer.createTrack(), defaultTrackHeightPixels, trackName);
 
-            // select the new track
-            _selectTrack(trackView);
-            _trackViews ~= trackView;
+        // select the new track
+        _selectTrack(trackView);
+        _trackViews ~= trackView;
 
-            _redrawAll();
+        _redrawAll();
 
-            return trackView;
-        }
+        return trackView;
     }
 
     void _createTrackMenu() {

@@ -47,7 +47,7 @@ alias SaveState = ProgressState!(StageDesc("write", "Writing file"));
 /// Stores the audio data, the number of channels, and its corresponding waveform cache.
 struct AudioSegment {
     /// Initialize this segment and compute the waveform cache
-    this(sample_t[] audioBuffer, channels_t nChannels) {
+    this(immutable(sample_t[]) audioBuffer, channels_t nChannels) {
         this.audioBuffer = audioBuffer;
         this.nChannels = nChannels;
         waveformCache = new WaveformCache(audioBuffer, nChannels);
@@ -71,14 +71,14 @@ struct AudioSegment {
     }
 
     /// Returns: A new AudioSegment corresponding to the specified slice.
-    AudioSegment opSlice(size_t startIndex, size_t endIndex) {
-        return AudioSegment(audioBuffer[startIndex .. endIndex],
-                            nChannels,
-                            waveformCache[startIndex / nChannels .. endIndex / nChannels]);
+    immutable(AudioSegment) opSlice(size_t startIndex, size_t endIndex) const {
+        return cast(immutable)(AudioSegment(audioBuffer[startIndex .. endIndex],
+                                            nChannels,
+                                            waveformCache[startIndex / nChannels .. endIndex / nChannels]));
     }
 
     /// Raw, interleaved audio data
-    sample_t[] audioBuffer;
+    immutable(sample_t[]) audioBuffer;
 
     /// The number of channels in the audio buffer
     channels_t nChannels;
@@ -88,7 +88,7 @@ struct AudioSegment {
 
 private:
     /// This copy constructor should only be used by this structure's implementation.
-    this(sample_t[] audioBuffer, channels_t nChannels, WaveformCache waveformCache) {
+    this(immutable(sample_t[]) audioBuffer, channels_t nChannels, WaveformCache waveformCache) {
         this.audioBuffer = audioBuffer;
         this.nChannels = nChannels;
         this.waveformCache = waveformCache;
@@ -119,7 +119,7 @@ public:
     /// sampleRate = The sampling rate, in samples per second, of the audio data
     /// nChannels = The number of channels in the audio data
     /// name = The name of sequence. This is ypically the name of the file from which the audio data was read.
-    this(AudioSegment originalBuffer, nframes_t sampleRate, channels_t nChannels, string name) {
+    this(immutable(AudioSegment) originalBuffer, nframes_t sampleRate, channels_t nChannels, string name) {
         sequence = new Sequence!(AudioSegment)(originalBuffer);
 
         _mutex = new Mutex;
@@ -131,7 +131,7 @@ public:
 
     /// Copy constructor for creating a hard copy based on the current state of this sequence
     this(AudioSequence other) {
-        this(AudioSegment(other.sequence[].toArray(), other.nChannels),
+        this(cast(immutable)(AudioSegment(cast(immutable)(other.sequence[].toArray()), other.nChannels)),
              other.sampleRate, other.nChannels, other.name ~ " (copy)");
     }
 
@@ -230,9 +230,10 @@ public:
         if(progressCallback !is null) {
             if(!progressCallback(LoadState.computeOverview, 0)) {
                 return null;
+
             }
         }
-        auto newSequence = new AudioSequence(AudioSegment(audioBuffer, nChannels),
+        auto newSequence = new AudioSequence(cast(immutable)(AudioSegment(cast(immutable)(audioBuffer), nChannels)),
                                              sampleRate,
                                              nChannels,
                                              baseName(fileName));
@@ -522,7 +523,7 @@ public:
         }
 
         auto immutable prevNFrames = _audioSeq.nframes;
-        _audioSeq.replace(AudioSegment(subregionOutput, nChannels),
+        _audioSeq.replace(cast(immutable)(AudioSegment(cast(immutable)(subregionOutput), nChannels)),
                           (_sliceStartFrame + localStartFrame) * nChannels,
                           (_sliceStartFrame + localEndFrame) * nChannels);
         auto immutable newNFrames = _audioSeq.nframes;
@@ -724,7 +725,8 @@ public:
         }
 
         auto immutable prevNFrames = _audioSeq.nframes;
-        _audioSeq.replace(AudioSegment(outputBuffer, nChannels), removeStartIndex, removeEndIndex);
+        _audioSeq.replace(cast(immutable)(AudioSegment(cast(immutable)(outputBuffer), nChannels)),
+                          removeStartIndex, removeEndIndex);
         auto immutable newNFrames = _audioSeq.nframes;
         _audioSeq.updateSoftLinks(prevNFrames, newNFrames);
     }
@@ -743,7 +745,7 @@ public:
 
         // write the gain-adjusted buffer to the audio sequence
         auto immutable prevNFrames = _audioSeq.nframes;
-        _audioSeq.replace(AudioSegment(audioBuffer, nChannels),
+        _audioSeq.replace(cast(immutable)(AudioSegment(cast(immutable)(audioBuffer), nChannels)),
                           (_sliceStartFrame + localStartFrame) * nChannels,
                           (_sliceStartFrame + localEndFrame) * nChannels);
         auto immutable newNFrames = _audioSeq.nframes;
@@ -765,7 +767,8 @@ public:
 
         // write the gain-adjusted region to the audio sequence
         auto immutable prevNFrames = _audioSeq.nframes;
-        _audioSeq.replace(AudioSegment(audioBuffer, nChannels), 0, _audioSeq.length);
+        _audioSeq.replace(cast(immutable)(AudioSegment(cast(immutable)(audioBuffer), nChannels)),
+                          0, _audioSeq.length);
         auto immutable newNFrames = _audioSeq.nframes;
         _audioSeq.updateSoftLinks(prevNFrames, newNFrames);
 
@@ -788,7 +791,7 @@ public:
 
         // write the normalized buffer to the audio sequence
         auto immutable prevNFrames = _audioSeq.nframes;
-        _audioSeq.replace(AudioSegment(audioBuffer, nChannels),
+        _audioSeq.replace(cast(immutable)(AudioSegment(cast(immutable)(audioBuffer), nChannels)),
                           (_sliceStartFrame + localStartFrame) * nChannels,
                           (_sliceStartFrame + localEndFrame) * nChannels);
         auto immutable newNFrames = _audioSeq.nframes;
@@ -810,7 +813,7 @@ public:
 
         // write the normalized region to the audio sequence
         auto immutable prevNFrames = _audioSeq.nframes;
-        _audioSeq.replace(AudioSegment(audioBuffer, nChannels), 0, _audioSeq.length);
+        _audioSeq.replace(cast(immutable)(AudioSegment(cast(immutable)(audioBuffer), nChannels)), 0, _audioSeq.length);
         auto immutable newNFrames = _audioSeq.nframes;
         _audioSeq.updateSoftLinks(prevNFrames, newNFrames);
 
@@ -826,7 +829,7 @@ public:
 
         // write the reversed buffer to the audio sequence
         auto immutable prevNFrames = _audioSeq.nframes;
-        _audioSeq.replace(AudioSegment(audioBuffer, nChannels),
+        _audioSeq.replace(cast(immutable)(AudioSegment(cast(immutable)(audioBuffer), nChannels)),
                           (_sliceStartFrame + localStartFrame) * nChannels,
                           (_sliceStartFrame + localEndFrame) * nChannels);
         auto immutable newNFrames = _audioSeq.nframes;
@@ -840,7 +843,7 @@ public:
 
         // write the faded buffer to the audio sequence
         auto immutable prevNFrames = _audioSeq.nframes;
-        _audioSeq.replace(AudioSegment(audioBuffer, nChannels),
+        _audioSeq.replace(cast(immutable)(AudioSegment(cast(immutable)(audioBuffer), nChannels)),
                           (_sliceStartFrame + localStartFrame) * nChannels,
                           (_sliceStartFrame + localEndFrame) * nChannels);
         auto immutable newNFrames = _audioSeq.nframes;
@@ -854,7 +857,7 @@ public:
 
         // write the faded buffer to the audio sequence
         auto immutable prevNFrames = _audioSeq.nframes;
-        _audioSeq.replace(AudioSegment(audioBuffer, nChannels),
+        _audioSeq.replace(cast(immutable)(AudioSegment(cast(immutable)(audioBuffer), nChannels)),
                           (_sliceStartFrame + localStartFrame) * nChannels,
                           (_sliceStartFrame + localEndFrame) * nChannels);
         auto immutable newNFrames = _audioSeq.nframes;
@@ -1460,24 +1463,28 @@ public:
     /// audioBuffer = The buffer of audio data to bin
     /// nChannels = The number of interleaved channels in the audio buffer
     /// channelIndex = The channel index to use for this cache
-    this(nframes_t binSize, sample_t[] audioBuffer, channels_t nChannels, channels_t channelIndex) {
+    this(nframes_t binSize, immutable(sample_t[]) audioBuffer, channels_t nChannels, channels_t channelIndex) {
         assert(binSize > 0);
 
         _binSize = binSize;
         auto immutable cacheLength = (audioBuffer.length / nChannels) / binSize;
-        _minValues = new sample_t[](cacheLength);
-        _maxValues = new sample_t[](cacheLength);
+
+        sample_t[] minValues = new sample_t[](cacheLength);
+        sample_t[] maxValues = new sample_t[](cacheLength);
 
         for(auto i = 0, j = 0; i < audioBuffer.length && j < cacheLength; i += binSize * nChannels, ++j) {
             auto audioSlice = audioBuffer[i .. i + binSize * nChannels];
-            _minValues[j] = 1;
-            _maxValues[j] = -1;
+            minValues[j] = 1;
+            maxValues[j] = -1;
 
             for(auto k = channelIndex; k < audioSlice.length; k += nChannels) {
-                if(audioSlice[k] > _maxValues[j]) _maxValues[j] = audioSlice[k];
-                if(audioSlice[k] < _minValues[j]) _minValues[j] = audioSlice[k];
+                if(audioSlice[k] > maxValues[j]) maxValues[j] = audioSlice[k];
+                if(audioSlice[k] < minValues[j]) minValues[j] = audioSlice[k];
             }
         }
+
+        _minValues = cast(immutable)(minValues);
+        _maxValues = cast(immutable)(maxValues);
     }
 
     /// Compute this cache via another cache. The cache is for a single channel only.
@@ -1493,26 +1500,30 @@ public:
 
         immutable size_t srcCount = min(other.minValues.length, other.maxValues.length);
         immutable size_t destCount = srcCount / binScale;
-        _minValues = new sample_t[](destCount);
-        _maxValues = new sample_t[](destCount);
+        
+        sample_t[] minValues = new sample_t[](destCount);
+        sample_t[] maxValues = new sample_t[](destCount);
 
         for(auto i = 0, j = 0; i < srcCount && j < destCount; i += binScale, ++j) {
             for(auto k = 0; k < binScale; ++k) {
-                _minValues[j] = 1;
-                _maxValues[j] = -1;
-                if(other.minValues[i + k] < _minValues[j]) {
-                    _minValues[j] = other.minValues[i + k];
+                minValues[j] = 1;
+                maxValues[j] = -1;
+                if(other.minValues[i + k] < minValues[j]) {
+                    minValues[j] = other.minValues[i + k];
                 }
-                if(other.maxValues[i + k] > _maxValues[j]) {
-                    _maxValues[j] = other.maxValues[i + k];
+                if(other.maxValues[i + k] > maxValues[j]) {
+                    maxValues[j] = other.maxValues[i + k];
                 }
             }
         }
+
+        _minValues = cast(immutable)(minValues);
+        _maxValues = cast(immutable)(maxValues);
     }
 
     /// This constructor is for initializing this cache from a slice of a previously computed cache.
     /// No binning occurs; the newly constructed cache will be identical to the source cache.
-    this(nframes_t binSize, sample_t[] minValues, sample_t[] maxValues) {
+    this(nframes_t binSize, immutable(sample_t[]) minValues, immutable(sample_t[]) maxValues) {
         _binSize = binSize;
         _minValues = minValues;
         _maxValues = maxValues;
@@ -1530,14 +1541,14 @@ public:
     @property const(sample_t[]) maxValues() const { return _maxValues; }
 
     /// Returns: A new binned waveform for the specified slice.
-    WaveformBinned opSlice(size_t startIndex, size_t endIndex) {
+    WaveformBinned opSlice(size_t startIndex, size_t endIndex) const {
         return new WaveformBinned(_binSize, _minValues[startIndex .. endIndex], _maxValues[startIndex .. endIndex]);
     }
 
 private:
     nframes_t _binSize;
-    sample_t[] _minValues;
-    sample_t[] _maxValues;
+    immutable(sample_t[]) _minValues;
+    immutable(sample_t[]) _maxValues;
 }
 
 /// Waveform cache object for a region.
@@ -1565,7 +1576,7 @@ public:
     /// Params:
     /// audioBuffer = The raw, interleaved audio data
     /// nChannels = The number of interleaved channels in the audio data
-    this(sample_t[] audioBuffer, channels_t nChannels) {
+    this(immutable(sample_t[]) audioBuffer, channels_t nChannels) {
         // initialize the cache
         _waveformBinnedChannels = null;
         _waveformBinnedChannels.reserve(nChannels);
@@ -1599,7 +1610,7 @@ public:
     }
 
     /// Returns: A new waveform cache for the specified slice
-    WaveformCache opSlice(size_t startIndex, size_t endIndex) {
+    WaveformCache opSlice(size_t startIndex, size_t endIndex) const {
         WaveformBinned[][] result;
         result.reserve(_waveformBinnedChannels.length);
         foreach(channelsBinned; _waveformBinnedChannels) {
