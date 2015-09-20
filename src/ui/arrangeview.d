@@ -5943,7 +5943,8 @@ public:
 
     /// Loads a list of files from disk, storing each in a new region/track
     void loadRegionsFromFiles(const(string[]) fileNames) {
-        Nullable!SampleRateConverter resampleDialog(nframes_t originalSampleRate, nframes_t newSampleRate) {
+        Nullable!SampleRateConverter resampleDialog(nframes_t originalSampleRate,
+                                                    nframes_t newSampleRate) {
             Nullable!SampleRateConverter result;
 
             auto sampleRateDialog = new SampleRateDialog(originalSampleRate, newSampleRate);
@@ -5971,9 +5972,11 @@ public:
         void dispatchRequests() {
             receiveTimeout(0.msecs,
                            (ResampleRequest resampleRequest) {
-                               auto sampleRateConverter = resampleDialog(resampleRequest.originalSampleRate,
-                                                                         resampleRequest.newSampleRate);
-                               send(locate(LoadState.mangleof), ResampleResponse(sampleRateConverter));
+                               auto sampleRateConverter =
+                                       resampleDialog(resampleRequest.originalSampleRate,
+                                                      resampleRequest.newSampleRate);
+                               send(locate(LoadState.mangleof),
+                                    ResampleResponse(sampleRateConverter));
                            },
                            (ErrorMessage errorMessage) {
                                ErrorDialog.display(_parentWindow, errorMessage.msg);
@@ -5981,10 +5984,14 @@ public:
         }
 
         void loadRegionTask(string fileName, LoadState.Callback progressCallback) {
-            Nullable!SampleRateConverter resampleCallback(nframes_t originalSampleRate, nframes_t newSampleRate) {
+            Nullable!SampleRateConverter resampleCallback(nframes_t originalSampleRate,
+                                                          nframes_t newSampleRate) {
                 Nullable!SampleRateConverter result;
-                send(locate(uiThreadName), ResampleRequest(originalSampleRate, newSampleRate));
-                receive((ResampleResponse resampleResponse) { result = resampleResponse.sampleRateConverter; });
+                send(locate(uiThreadName),
+                     ResampleRequest(originalSampleRate, newSampleRate));
+                receive((ResampleResponse resampleResponse) {
+                        result = resampleResponse.sampleRateConverter;
+                    });
                 return result;
             }
 
@@ -5993,7 +6000,8 @@ public:
                                                       &resampleCallback,
                                                       progressCallback);
             if(newSequence is null && progressCallback(LoadState.complete, 0)) {
-                send(locate(uiThreadName), ErrorMessage("Could not load file " ~ baseName(fileName)));
+                send(locate(uiThreadName),
+                     ErrorMessage("Could not load file " ~ baseName(fileName)));
             }
             else {
                 _audioSequencesApp.put(newSequence);
@@ -6231,11 +6239,12 @@ public:
                                                  currentTaskComplete = true;
                                                  break;
                                              }
-                                         })) {
-                        if(dispatchMessages !is null) {
-                            dispatchMessages();
-                        }
+                                         })) {}
+
+                    if(dispatchMessages !is null) {
+                        dispatchMessages();
                     }
+
                     if(currentTaskComplete) {
                         currentTask.workForce();
                         ++currentTaskIndex;
