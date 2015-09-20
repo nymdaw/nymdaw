@@ -5999,9 +5999,11 @@ public:
                                                       _mixer.sampleRate,
                                                       &resampleCallback,
                                                       progressCallback);
-            if(newSequence is null && progressCallback(LoadState.complete, 0)) {
-                send(locate(uiThreadName),
-                     ErrorMessage("Could not load file " ~ baseName(fileName)));
+            if(newSequence is null) {
+                if(progressCallback(LoadState.complete, 0)) {
+                    send(locate(uiThreadName),
+                         ErrorMessage("Could not load file " ~ baseName(fileName)));
+                }
             }
             else {
                 _audioSequencesApp.put(newSequence);
@@ -6278,8 +6280,13 @@ public:
                 progressDialog.showAll();
                 auto response = progressDialog.run();
                 if(response != ResponseType.ACCEPT) {
-                    progressTimeout.destroy();
                     send(locate(ProgressState.mangleof), true);
+                }
+
+                progressTimeout.destroy();
+
+                while(!currentTaskComplete) {
+                    onProgressRefresh();
                 }
             }
 
