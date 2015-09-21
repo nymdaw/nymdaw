@@ -5218,6 +5218,7 @@ public:
 
                     // select all regions within the selection box drawn with the mouse
                     case Action.selectBox:
+                        _setAction(Action.none);
                         if(_mode == Mode.arrange) {
                             BoundingBox selectBox = BoundingBox(_selectMouseX, _selectMouseY, _mouseX, _mouseY);
                             bool regionFound;
@@ -5234,7 +5235,6 @@ public:
                                 appendArrangeState(currentArrangeState!(ArrangeStateType.selectedRegionsEdit));
                             }
                         }
-                        _setAction(Action.none);
                         redraw();
                         break;
 
@@ -5264,11 +5264,10 @@ public:
                         if(tracksModified) {
                             appendArrangeState(currentArrangeState!(ArrangeStateType.tracksEdit));
                         }
-                        if(!regionModified && !tracksModified) {
-                            break;
+                        if(regionModified || tracksModified) {
+                            _recomputeTrackViewRegions();
                         }
 
-                        _recomputeTrackViewRegions();
                         redraw();
                         break;
 
