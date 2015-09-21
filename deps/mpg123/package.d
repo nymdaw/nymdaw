@@ -1,6 +1,6 @@
 module mpg123;
 
-import core.sys.posix.sys.types; // for off_t
+public import core.sys.posix.sys.types; // for off_t
 
 extern(C) @nogc nothrow
 {

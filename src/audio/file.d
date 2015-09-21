@@ -10,14 +10,15 @@ private import std.typecons;
 
 private import samplerate;
 private import sndfile;
-version(HAVE_MPG123) {
-    private import mpg123;
-}
 
 private import util.scopedarray;
 
 public import audio.region;
 public import audio.types;
+
+/// Delegate type, useful for displaying a GUI that prompts the user to select resampling options
+alias ResampleCallback = Nullable!SampleRateConverter delegate(nframes_t originalSampleRate,
+                                                               nframes_t newSampleRate);
 
 /// Load an audio file and create a new sequence from its data
 /// Params:
@@ -27,10 +28,29 @@ public import audio.types;
 ///                    audio file's sampling rate is not the same as that of the current session
 AudioSequence loadAudioFile(string fileName,
                             nframes_t sampleRate,
-                            Nullable!SampleRateConverter
-                            delegate(nframes_t originalSampleRate, nframes_t newSampleRate)
-                            resampleCallback = null,
+                            ResampleCallback resampleCallback = null,
                             LoadState.Callback progressCallback = null) {
+    if(extension(fileName) == ".mp3") {
+        version(HAVE_MPG123) {
+            return loadMp3(fileName, sampleRate, resampleCallback, progressCallback);
+        }
+        else {
+            if(progressCallback !is null) {
+                progressCallback(LoadState.complete, 0);
+            }
+            return null;
+        }
+    }
+    else {
+        return loadSndFile(fileName, sampleRate, resampleCallback, progressCallback);
+    }
+}
+
+/// Load an audio file via libsndfile
+private AudioSequence loadSndFile(string fileName,
+                                  nframes_t sampleRate,
+                                  ResampleCallback resampleCallback = null,
+                                  LoadState.Callback progressCallback = null) {
     SNDFILE* infile;
     SF_INFO sfinfo;
 
@@ -195,4 +215,80 @@ private sample_t[] convertSampleRate(sample_t[] audioBuffer,
     }
 
     return audioBuffer;
+}
+
+version(HAVE_MPG123) {
+    private import mpg123;
+
+    /// Load an audio file via libmpg123
+    private AudioSequence loadMp3(string fileName,
+                                  nframes_t sampleRate,
+                                  ResampleCallback resampleCallback = null,
+                                  LoadState.Callback progressCallback = null) {
+        mpg123_handle* mh;
+	ScopedArray!(ubyte[]) buffer;
+	size_t bufferSize;
+	size_t done;
+	int channels;
+	int encoding;
+	int frameSize = 1;
+	long rate;
+	int err = mpg123_errors.MPG123_OK;
+	off_t samples;
+
+        void cleanup() {
+            mpg123_close(mh);
+            mpg123_delete(mh);
+            mpg123_exit();
+        }
+
+        err = mpg123_init();
+        if(err != mpg123_errors.MPG123_OK || (mh = mpg123_new(null, &err)) is null) {
+            cleanup();
+            return null;
+        }
+
+        const(long*) rates;
+        size_t rateCount;
+        size_t i;
+        int enc;
+
+        mpg123_format_none(mh);
+        mpg123_rates(&rates, &rateCount);
+        for(i = 0; i < rateCount; ++i) {
+            mpg123_format(mh,
+                          rates[i],
+                          mpg123_channelcount.MPG123_MONO |
+                          mpg123_channelcount.MPG123_STEREO,
+                          enc);
+        }
+
+        if(mpg123_open(mh, fileName.toStringz()) != mpg123_errors.MPG123_OK ||
+           mpg123_getformat(mh, &rate, &channels, &encoding) != mpg123_errors.MPG123_OK) {
+            cleanup();
+            return null;
+        }
+
+        mpg123_format_none(mh);
+        mpg123_format(mh, rate, channels, encoding);
+
+        bufferSize = mpg123_outblock(mh);
+        buffer = new ubyte[](bufferSize);
+
+        do {
+            size_t played;
+            err = mpg123_read(mh, buffer.ptr, bufferSize, &done);
+            // put buffer into sequence here
+            samples += played / frameSize;
+        }
+        while(done && err == mpg123_errors.MPG123_OK);
+
+        cleanup();
+
+        if(err != mpg123_errors.MPG123_DONE) {
+            return null;
+        }
+
+        return null;
+    }
 }
