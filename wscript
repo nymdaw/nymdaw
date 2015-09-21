@@ -47,9 +47,14 @@ def options( ctx ):
 def configure( ctx ):
     opts = Options.options
 
+    # Currently only support dmd
+    from waflib.Tools.compiler_d import d_compiler
+    d_compiler[ "default" ] = [ "dmd" ]
+
+    # Configure the D compiler
     ctx.load( "compiler_d" )
-    ctx.load( "compiler_c" )
     ctx.env.append_value( "DFLAGS", "-w" )
+
     if opts.debug:
         ctx.env.append_value( "DFLAGS", [ "-gc", "-debug" ] )
     else:
@@ -58,6 +63,10 @@ def configure( ctx ):
     if opts.unittest:
         ctx.env.append_value( "DFLAGS", "-unittest" )
 
+    # Configure the C compiler
+    ctx.load( "compiler_c" )
+
+    # Flag indicating whether at least one audio driver can be built
     found_audio_driver = False
 
     # Check for jack
@@ -93,13 +102,21 @@ def configure( ctx ):
 
     # Check for libsndfile
     ctx.check_cfg( package = "sndfile",
-                   args = [ "sndfile >= 1.0.18", "--cflags", "--libs" ],
+                   args = [ "sndfile >= 1.0.25", "--cflags", "--libs" ],
                    uselib_store = "sndfile",
                    mandatory = True )
 
+    # Check for libmpg123
+    if ctx.check_cfg( package = "libmpg123",
+                      args = [ "libmpg123 >= 1.20.1", "--cflags", "--libs" ],
+                      uselib_store = "mpg123",
+                      mandatory = False ):
+        ctx.define( "HAVE_MPG123", 1 )
+        ctx.env.DFLAGS.append( "-version=HAVE_MPG123" )
+
     # Check for libsamplerate
     ctx.check_cfg( package = "samplerate",
-                   args = [ "samplerate >= 0.1.0", "--cflags", "--libs" ],
+                   args = [ "samplerate >= 0.1.8", "--cflags", "--libs" ],
                    uselib_store = "samplerate",
                    mandatory = True )
 
@@ -128,11 +145,11 @@ def configure( ctx ):
 
     # Check for GtkD
     if not ctx.check_cfg( package = "gtkd-3",
-                          args = [ "gtkd-3 >= 3.1.3", "--cflags", "--libs" ],
+                          args = [ "gtkd-3 >= 3.1.4", "--cflags", "--libs" ],
                           uselib_store = "gtkd",
                           mandatory = False ):
         ctx.check_cfg( package = "gtkd3",
-                       args = [ "gtkd3 >= 3.1.3", "--cflags", "--libs" ],
+                       args = [ "gtkd3 >= 3.1.4", "--cflags", "--libs" ],
                        uselib_store = "gtkd",
                        mandatory = True )
 
@@ -186,6 +203,14 @@ def build( ctx ):
                includes = deps_dir,
                target = "dlang_sndfile" )
     use_libs.extend( [ "sndfile", "dlang_sndfile" ] )
+
+    # Build libmpg123 wrapper
+    if "HAVE_MPG123" in ctx.env.define_key:
+        dlang_mpg123_dir = os.path.join( deps_dir, "mpg123" )
+        ctx.stlib( source = ctx.path.ant_glob( os.path.join( dlang_mpg123_dir, "**", "*.d" ) ),
+                   includes = deps_dir,
+                   target = "dlang_mpg123" )
+        use_libs.extend( [ "mpg123", "dlang_mpg123" ] )
 
     # Build libsamplerate wrapper
     dlang_samplerate_dir = os.path.join( deps_dir, "samplerate" )

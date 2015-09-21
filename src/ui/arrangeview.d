@@ -5994,10 +5994,10 @@ public:
                 return result;
             }
 
-            auto newSequence = AudioSequence.fromFile(fileName,
-                                                      _mixer.sampleRate,
-                                                      &resampleCallback,
-                                                      progressCallback);
+            auto newSequence = loadAudioFile(fileName,
+                                             _mixer.sampleRate,
+                                             &resampleCallback,
+                                             progressCallback);
             if(newSequence is null) {
                 if(progressCallback(LoadState.complete, 0)) {
                     send(locate(uiThreadName),
