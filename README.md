@@ -65,6 +65,7 @@ Apply the macports patches from https://trac.macports.org/browser/trunk/dports/a
       sudo make install
 
 Build dhippo:
+
     git clone https://github.com/dhippo/dhippo
     cd dhippo
     ./waf configure
