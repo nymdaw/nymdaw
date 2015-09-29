@@ -40,29 +40,25 @@ Install the dependencies, then build via waf:
 
 # Compiling on OSX
 
-Build and install Gtk-OSX following the guide here: https://wiki.gnome.org/Projects/GTK+/OSX/Building
+Install brew from https://brew.sh.
 
-Build and install DMD from http://dlang.org/download.html#dmd
+Install GTK (without X11, sourced from http://balintreczey.hu/blog/beautiful-wireshark-on-os-x-using-homebrew-and-gtk3quartz/):
 
-Build and install libsndfile from http://www.mega-nerd.com/libsndfile/
+    # install Homebrew, you will also need XCode with Command Line Tools installed
+    ruby -e "$(curl -fsSL https://raw.github.com/Homebrew/homebrew/go/install)"
+    # install packages we don't have to recompile to use Quartz
+    brew install ccache d-bus fontconfig freetype gettext glib gmp icu4c libffi libpng libtasn1 libtiff pkg-config xz hicolor-icon-theme gsettings-desktop-schemas c-ares lua portaudio geoip gnutls libgcrypt atk pixman
+    # install XQuartz from http://xquartz.macosforge.org
+    # Well, some builds will need the header files/libs, but you don't have to re-login
+    # and actually use XQuartz
+    # this may be needed by gtk+3 install (at least on my system with a previous installation) brew link --overwrite gsettings-desktop-schemas
+    # compile the rest of GTK+ 3 related libraries
+    brew install --build-from-source at-spi2-core at-spi2-atk cairo harfbuzz pango gtk+3 gtk+ librsvg gnome-icon-theme --without-x --without-x11 --with-gtk+3
 
-Build and install libsamplerate from http://www.mega-nerd.com/libsndfile/
+Install the dhippo dependencies:
 
-Build and install aubio from http://aubio.org/
-
-Download rubberband from http://breakfastquay.com/rubberband/
-
-Apply the macports patches from https://trac.macports.org/browser/trunk/dports/audio/rubberband/files/
-
-      tar -jxf rubberband-1.8.1.tar.bz2
-      cd rubberband-1.8.1
-      curl https://trac.macports.org/export/139798/trunk/dports/audio/rubberband/files/patch-Accelerate.diff > patch-Accelerate.diff
-      curl https://trac.macports.org/export/139798/trunk/dports/audio/rubberband/files/patch-Makefile.osx.diff > patch-Makefile.osx.diff
-      cat patch-Accelerate.diff | patch -p0
-      cat patch-Makefile.osx.diff | patch -p0
-      ./configure
-      make
-      sudo make install
+    brew install dmd libsndfile libsamplerate aubio mpg123
+    brew install http://tuohela.net/irc/vamp-plugin-sdk.rb http://tuohela.net/irc/rubberband.rb
 
 Build dhippo:
 
