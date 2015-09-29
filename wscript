@@ -125,12 +125,15 @@ def configure( ctx ):
         # rubberband doesn't use pkg-config on OSX, so manual detection is required
         ctx.check_cc( lib = "rubberband", use = "rubberband" )
         ctx.env.append_value( "LIB_rubberband", "rubberband" )
-        # assume that rubberband was built against fftw3
-        ctx.check_cc( lib = "fftw3" )
-        ctx.check_cc( lib = "fftw3f" )
+
+        # link to fftw3, if available
+        if ctx.check_cc( lib = "fftw3", mandatory = False ) and \
+           ctx.check_cc( lib = "fftw3f", mandatory = False ):
+            ctx.env.append_value( "LIB_rubberband", [ "fftw3", "fftw3f" ] )
+
         # rubberband is written in C++
         ctx.check_cc( lib = "stdc++" )
-        ctx.env.append_value( "LIB_rubberband", [ "fftw3", "fftw3f", "stdc++" ] )
+        ctx.env.append_value( "LIB_rubberband", [ "stdc++" ] )
     else:
         ctx.check_cfg( package = "rubberband",
                        args = [ "rubberband >= 1.8.1", "--cflags", "--libs" ],
@@ -145,11 +148,11 @@ def configure( ctx ):
 
     # Check for GtkD
     if not ctx.check_cfg( package = "gtkd-3",
-                          args = [ "gtkd-3 >= 3.1.4", "--cflags", "--libs" ],
+                          args = [ "gtkd-3 >= 3.1.3", "--cflags", "--libs" ],
                           uselib_store = "gtkd",
                           mandatory = False ):
         ctx.check_cfg( package = "gtkd3",
-                       args = [ "gtkd3 >= 3.1.4", "--cflags", "--libs" ],
+                       args = [ "gtkd3 >= 3.1.3", "--cflags", "--libs" ],
                        uselib_store = "gtkd",
                        mandatory = True )
 
