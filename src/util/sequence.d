@@ -3,7 +3,6 @@ module util.sequence;
 private import std.array;
 private import std.container.dlist;
 private import std.conv;
-private import std.cstream : derr;
 
 public import util.statehistory;
 
@@ -146,8 +145,9 @@ public:
         PieceTable insert(T)(T buffer, size_t logicalOffset)
             if(is(T == Buffer) || is(T == immutable(Buffer)) || is(T == PieceTable)) {
                 if(logicalOffset > logicalLength) {
-                    derr.writefln("Warning: requested insertion to a piece table with length ", logicalLength,
-                                  " at logical offset ", logicalOffset);
+                    // TODO implement logger
+                    //derr.writefln("Warning: requested insertion to a piece table with length ", logicalLength,
+                    //              " at logical offset ", logicalOffset);
                     return PieceTable();
                 }
 
@@ -228,7 +228,8 @@ public:
             if(logicalStart > logicalEnd ||
                logicalStart >= logicalLength ||
                logicalEnd > logicalLength) {
-                derr.writefln("Warning: invalid piece table removal slice [", logicalStart, " ", logicalEnd, "]");
+                // TODO implement logger
+                //derr.writefln("Warning: invalid piece table removal slice [", logicalStart, " ", logicalEnd, "]");
                 return PieceTable();
             }
 
@@ -334,7 +335,8 @@ public:
             if(logicalStart > logicalEnd ||
                logicalStart >= logicalLength ||
                logicalEnd > logicalLength) {
-                derr.writefln("Warning: invalid piece table slice [", logicalStart, " ", logicalEnd, "]");
+                // TODO implement logger
+                //derr.writefln("Warning: invalid piece table slice [", logicalStart, " ", logicalEnd, "]");
                 return PieceTable();
             }
 

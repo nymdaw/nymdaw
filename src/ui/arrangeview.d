@@ -6,7 +6,6 @@ private import std.algorithm;
 private import std.array;
 private import std.concurrency;
 private import std.conv;
-private import std.cstream;
 private import std.format;
 private import std.math;
 private import std.parallelism;
@@ -2144,7 +2143,8 @@ public:
                 // precompute the cache index for the current zoom level
                 auto cacheIndex = Region.getCacheIndex(_zoomBinSize());
                 if(cacheIndex.isNull()) {
-                    derr.writefln("Warning: invalid cache index for bin size " ~ to!string(_zoomBinSize()));
+                    // TODO implement a logger
+                    //derr.writefln("Warning: invalid cache index for bin size " ~ to!string(_zoomBinSize()));
                     return;
                 }
 
@@ -6710,7 +6710,6 @@ public:
                     return true;
                 }
             }
-            return false;
         }
 
         this(T)(ArrangeStateType stateType, T stateData) if(isValidStateData!T) {
