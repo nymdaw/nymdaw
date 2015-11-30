@@ -34,11 +34,17 @@ public:
     /// The original buffer should not be empty
     this(immutable Buffer originalBuffer) {
         assert(originalBuffer.length > 0);
-        _originalBuffer = originalBuffer;
 
         PieceEntry[] table;
-        table ~= PieceEntry(_originalBuffer, 0);
+        table ~= PieceEntry(originalBuffer, 0);
         _stateHistory = new StateHistory!PieceTable(PieceTable(table));
+    }
+
+    /// Construct a sequence from a piece table; it should not be empty
+    this(PieceTable initialPieceTable) {
+        assert(initialPieceTable.length > 0);
+
+        _stateHistory = new StateHistory!PieceTable(initialPieceTable);
     }
 
     /// Returns: `true` if and only if an undo operation is currently possible
@@ -65,6 +71,11 @@ public:
     /// Insert a new buffer at `logicalOffset` and append the result to the piece table history
     void insert(T)(T buffer, size_t logicalOffset) {
         _appendToHistory(_currentPieceTable.insert(buffer, logicalOffset));
+    }
+
+    /// Append a new buffer at the end offset and append the result to the piece table history
+    void append(T)(T buffer) {
+        _appendToHistory(_currentPieceTable.append(buffer));
     }
 
     /// Delete all indices in the range [`logicalStart`, `logicalEnd`) and
@@ -216,6 +227,11 @@ public:
 
                 return PieceTable(pieceTable.data);
             }
+
+        /// Insert a new buffer at the ending offset
+        PieceTable append(T)(T buffer) {
+            return insert(buffer, length);
+        }
 
         /// Delete all indices in the range [`logicalStart`, `logicalEnd`)
         PieceTable remove(size_t logicalStart, size_t logicalEnd) {
@@ -484,17 +500,15 @@ private:
         return _stateHistory.currentState;
     }
 
-    immutable Buffer _originalBuffer;
-
     StateHistory!(PieceTable) _stateHistory;
 }
 
 /// Test sequence indexing
 unittest {
-    alias IntSeq = SequenceT!(int[]).Sequence;
+    alias IntSeq = Sequence!(int[]);
 
     int[] intArray = [1, 2, 3];
-    IntSeq intSeq = new IntSeq(intArray);
+    IntSeq intSeq = new IntSeq(cast(immutable)(intArray));
 
     intSeq.insert([4, 5], 0);
     intSeq.insert([6, 7], 1);
@@ -515,11 +529,11 @@ unittest {
 
 /// Test sequence slicing
 unittest {
-    alias IntSeq = SequenceT!(int[]).Sequence;
+    alias IntSeq = Sequence!(int[]);
 
     {
         int[] intArray = [1, 2, 3, 4];
-        IntSeq intSeq = new IntSeq(intArray);
+        IntSeq intSeq = new IntSeq(cast(immutable)(intArray));
  
         assert(intSeq.toArray() == [1, 2, 3, 4]);
         assert(intSeq.length == intArray.length);
@@ -543,7 +557,7 @@ unittest {
 
     {
         int[] intArray = [1, 2, 3, 4];
-        IntSeq intSeq = new IntSeq(intArray);
+        IntSeq intSeq = new IntSeq(cast(immutable)(intArray));
 
         intSeq.insert([5, 6], 2);
         intSeq.insert([7, 8, 9], 5);
@@ -567,11 +581,11 @@ unittest {
 
 /// Test sequence insertion
 unittest {
-    alias IntSeq = SequenceT!(int[]).Sequence;
+    alias IntSeq = Sequence!(int[]);
 
     {
         int[] intArray = [1];
-        IntSeq intSeq = new IntSeq(intArray);
+        IntSeq intSeq = new IntSeq(cast(immutable)(intArray));
 
         intSeq.insert([2], 0);
         assert(intSeq.toArray() == [2, 1]);
@@ -585,7 +599,7 @@ unittest {
 
     {
         int[] intArray = [1, 2];
-        IntSeq intSeq = new IntSeq(intArray);
+        IntSeq intSeq = new IntSeq(cast(immutable)(intArray));
 
         intSeq.insert([3, 4], 2);
         assert(intSeq.toArray() == [1, 2, 3, 4]);
@@ -599,7 +613,7 @@ unittest {
 
     {
         int[] intArray = [1, 2, 3, 4];
-        IntSeq intSeq = new IntSeq(intArray);
+        IntSeq intSeq = new IntSeq(cast(immutable)(intArray));
 
         intSeq.insert([5, 6], 2);
         assert(intSeq.toArray() == [1, 2, 5, 6, 3, 4]);
@@ -624,13 +638,32 @@ unittest {
     }
 }
 
+/// Test sequence appending
+unittest {
+    alias IntSeq = Sequence!(int[]);
+
+    {
+        int[] intArray = [1, 2, 3];
+        IntSeq intSeq = new IntSeq(cast(immutable)(intArray));
+
+        intSeq.append([4]);
+        assert(intSeq.toArray() == [1, 2, 3, 4]);
+
+        intSeq.append([5, 6]);
+        assert(intSeq.toArray() == [1, 2, 3, 4, 5, 6]);
+
+        intSeq.append([7, 8, 9]);
+        assert(intSeq.toArray() == [1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    }
+}
+
 /// Test sequence removal
 unittest {
-    alias IntSeq = SequenceT!(int[]).Sequence;
+    alias IntSeq = Sequence!(int[]);
 
     {
         int[] intArray = [1, 2, 3, 4];
-        IntSeq intSeq = new IntSeq(intArray);
+        IntSeq intSeq = new IntSeq(cast(immutable)(intArray));
 
         intSeq.remove(0, 1);
         assert(intSeq.toArray() == [2, 3, 4]);
@@ -647,7 +680,7 @@ unittest {
 
     {
         int[] intArray = [1, 2, 3, 4];
-        IntSeq intSeq = new IntSeq(intArray);
+        IntSeq intSeq = new IntSeq(cast(immutable)(intArray));
 
         intSeq.insert([5, 6], 2);
         intSeq.insert([7, 8, 9], 5);
@@ -677,11 +710,11 @@ unittest {
 
 /// Test sequence replacement
 unittest {
-    alias IntSeq = SequenceT!(int[]).Sequence;
+    alias IntSeq = Sequence!(int[]);
 
     {
         int[] intArray = [1, 2, 3, 4];
-        IntSeq intSeq = new IntSeq(intArray);
+        IntSeq intSeq = new IntSeq(cast(immutable)(intArray));
 
         intSeq.replace([5], 3, 4);
         assert(intSeq.toArray() == [1, 2, 3, 5]);
@@ -695,7 +728,7 @@ unittest {
 
     {
         int[] intArray = [1, 2];
-        IntSeq intSeq = new IntSeq(intArray);
+        IntSeq intSeq = new IntSeq(cast(immutable)(intArray));
 
         intSeq.replace([3, 4], 0, 2);
         assert(intSeq.toArray() == [3, 4]);
@@ -704,11 +737,11 @@ unittest {
 
 /// Test sequence iteration
 unittest {
-    alias IntSeq = SequenceT!(int[]).Sequence;
+    alias IntSeq = Sequence!(int[]);
 
     {
         int[] intArray = [1, 2];
-        IntSeq intSeq = new IntSeq(intArray);
+        IntSeq intSeq = new IntSeq(cast(immutable)(intArray));
 
         intSeq.insert([3, 4], 0);
         intSeq.insert([5, 6], 3);

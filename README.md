@@ -31,7 +31,7 @@ Install the D apt repository (as described at http://d-apt.sourceforge.net/):
 
 Install the dependencies, then build via waf:
 
-    sudo apt-get install dmd-bin libphobos2-dev libgtkd3-dev portaudio19-dev libsndfile-dev libsamplerate-dev librubberband-dev libaubio-dev
+    sudo apt-get install dmd-bin libphobos2-dev libgtkd3-dev portaudio19-dev libsndfile-dev libsamplerate-dev librubberband-dev libaubio-dev libmpg123-dev
     git clone https://github.com/dhippo/dhippo
     cd dhippo
     ./waf configure

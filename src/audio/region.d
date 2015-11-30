@@ -126,6 +126,21 @@ public:
         _name = name;
     }
 
+    /// Params:
+    /// originalPieceTable = A precomputed piece table with which to initialize this sequence
+    /// sampleRate = The sampling rate, in samples per second, of the audio data
+    /// nChannels = The number of channels in the audio data
+    /// name = The name of sequence. This is ypically the name of the file from which the audio data was read.
+    this(AudioPieceTable originalPieceTable, nframes_t sampleRate, channels_t nChannels, string name) {
+        sequence = new Sequence!(AudioSegment)(originalPieceTable);
+
+        _mutex = new Mutex;
+
+        _sampleRate = sampleRate;
+        _nChannels = nChannels;
+        _name = name;
+    }
+
     /// Copy constructor for creating a hard copy based on the current state of this sequence
     this(AudioSequence other) {
         this(cast(immutable)(AudioSegment(cast(immutable)(other.sequence[].toArray()), other.nChannels)),
@@ -138,6 +153,9 @@ public:
 
     /// The piece table type for the sequence implementation
     alias AudioPieceTable = Sequence!(AudioSegment).PieceTable;
+
+    /// The piece entry type for hte sequence implementation
+    alias AudioPieceEntry = Sequence!(AudioSegment).PieceEntry;
 
     /// Registers a soft link with this sequence
     void addSoftLink(Link link) {
