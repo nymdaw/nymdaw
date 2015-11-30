@@ -173,7 +173,7 @@ version(HAVE_MPG123) {
 	int err = mpg123_errors.MPG123_OK;
 	off_t samples;
 
-        void cleanup() {
+        scope(exit) {
             mpg123_close(mh);
             mpg123_delete(mh);
             mpg123_exit();
@@ -181,7 +181,6 @@ version(HAVE_MPG123) {
 
         err = mpg123_init();
         if(err != mpg123_errors.MPG123_OK || (mh = mpg123_new(null, &err)) is null) {
-            cleanup();
             return null;
         }
 
@@ -190,7 +189,6 @@ version(HAVE_MPG123) {
 
         if(mpg123_open(mh, fileName.toStringz()) != mpg123_errors.MPG123_OK ||
            mpg123_getformat(mh, &rate, &channels, &encoding) != mpg123_errors.MPG123_OK) {
-            cleanup();
             return null;
         }
 
@@ -231,8 +229,6 @@ version(HAVE_MPG123) {
             }
         }
         while(bytesRead && err == mpg123_errors.MPG123_OK);
-
-        cleanup();
 
         if(err != mpg123_errors.MPG123_DONE || audioBuffersApp.data.empty) {
             return null;
