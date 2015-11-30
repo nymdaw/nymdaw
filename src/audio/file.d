@@ -194,7 +194,7 @@ version(HAVE_MPG123) {
             return null;
         }
 
-        immutable nframes_t estimatedLengthSamples = cast(nframes_t)(mpg123_length(mh));
+        immutable size_t estimatedLengthSamples = mpg123_length(mh);
 
         mpg123_format_none(mh);
         mpg123_format(mh, rate, channels, encoding);
@@ -205,6 +205,10 @@ version(HAVE_MPG123) {
         // allocate contiguous audio buffer
         immutable size_t chunkSize = sampleRate * 10;
         auto audioBuffersApp = appender!(sample_t[][]);
+
+        // counters for updating the progress bar
+        immutable size_t progressIncrement = (estimatedLengthSamples * channels) / LoadState.stepsPerStage;
+        size_t progressCount;
 
         // read the file into the audio buffer
         size_t readTotal;
@@ -223,7 +227,8 @@ version(HAVE_MPG123) {
 
             readTotal += readCount;
 
-            if(progressCallback !is null) {
+            if(progressCallback !is null && readTotal >= progressCount) {
+                progressCount += progressIncrement;
                 if(!progressCallback(LoadState.read, cast(double)(readTotal) / cast(double)(estimatedLengthSamples * channels))) {
                     return null;
                 }
