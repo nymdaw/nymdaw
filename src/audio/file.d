@@ -213,17 +213,13 @@ version(HAVE_MPG123) {
         // read the file into the audio buffer
         size_t readTotal;
         size_t readCount;
-        sample_t[] currentAudioBuffer = new sample_t[](chunkSize);
-        size_t currentPos;
         do {
-            if(currentPos >= currentAudioBuffer.length) {
-                audioBuffersApp.put(currentAudioBuffer);
-                currentAudioBuffer = new sample_t[](chunkSize);
-                currentPos = 0;
-            }
-            err = mpg123_read(mh, cast(ubyte*)(currentAudioBuffer.ptr + currentPos), currentAudioBuffer.length, &bytesRead);
+            sample_t[] currentAudioBuffer = new sample_t[](chunkSize);
+
+            err = mpg123_read(mh, cast(ubyte*)(currentAudioBuffer.ptr), currentAudioBuffer.length, &bytesRead);
             readCount = bytesRead / sample_t.sizeof;
-            currentPos += readCount;
+            currentAudioBuffer.length = readCount;
+            audioBuffersApp.put(currentAudioBuffer);
 
             readTotal += readCount;
 
