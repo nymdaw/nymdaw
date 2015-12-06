@@ -3,7 +3,7 @@
 module audio.types;
 
 version(HAVE_JACK) {
-    import jack.jack;
+    import jack;
 
     /// Representation for a quantity of frames.
     /// Typically a 32-bit unsigned integer
@@ -51,13 +51,6 @@ enum SampleRateConverter {
     medium,
     fastest
 }
-
-/// Delegate for resizing the end of the mixer.
-/// Useful as a callback when adding regions, so that
-/// tracks and regions have no direct dependency on the mixer implementation.
-/// The delegate takes a potential new last frame for the current session,
-/// and returns true if and only if the session's last had to be readjusted.
-alias ResizeDelegate = bool delegate(nframes_t);
 
 /// Class for any exception thrown by the audio module
 class AudioError: Exception {

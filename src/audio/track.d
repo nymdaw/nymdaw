@@ -2,6 +2,7 @@ module audio.track;
 
 public import audio.channel;
 public import audio.region;
+public import audio.timeline;
 public import audio.types;
 
 /// A concrete channel subclass representing a stereo output containing any number of audio regions.
@@ -11,10 +12,10 @@ public:
     /// This will automatically increase the the mixer's last frame, if the added region extends beyond
     /// the current end of the session.
     void addRegion(Region region) {
-        region.resizeDelegate = resizeDelegate;
+        region.timeline = _timeline;
         _regions ~= region;
-        if(resizeDelegate !is null) {
-            resizeDelegate(region.offset + region.nframes);
+        if(_timeline !is null) {
+            _timeline.resizeIfNecessary(region.offset + region.nframes);
         }
     }
 
@@ -23,8 +24,10 @@ public:
 
 package:
     /// This constructor should only be called by the mixer.
-    this(nframes_t sampleRate) {
+    this(nframes_t sampleRate, Timeline timeline) {
         super(sampleRate);
+
+        _timeline = timeline;
     }
 
     /// This function should be called in place of the corresponding
@@ -83,8 +86,6 @@ package:
             processSilence(bufNFrames);
         }
     }
-
-    ResizeDelegate resizeDelegate;
 
 private:
     /// Copy the appropriate samples from all registered regions into an interleaved stereo output buffer,
@@ -254,4 +255,7 @@ private:
 
     /// Array of all regions currently registered with this track
     Region[] _regions;
+
+    /// The timeline for this mixer instance; contains the number of frames and transport
+    Timeline _timeline;
 }

@@ -21,6 +21,7 @@ private import util.progress;
 private import util.scopedarray;
 private import util.sequence;
 
+public import audio.timeline;
 public import audio.types;
 
 /// Progress state for importing audio files from disk
@@ -949,8 +950,8 @@ public:
             if(_sliceEndFrame + delta <= _audioSeq.nframes) {
                 result = ShrinkResult(true, delta);
                 _sliceEndFrame += delta;
-                if(resizeDelegate !is null) {
-                    resizeDelegate(offset + nframes);
+                if(timeline !is null) {
+                    timeline.resizeIfNecessary(offset + nframes);
                 }
             }
             else if(_sliceEndFrame != _audioSeq.nframes) {
@@ -984,8 +985,8 @@ public:
     @property nframes_t sliceEndFrame(nframes_t newSliceEndFrame) {
         _sliceEndFrame = min(newSliceEndFrame, _audioSeq.nframes);
         _updateSlice();
-        if(resizeDelegate !is null) {
-            resizeDelegate(offset + nframes);
+        if(timeline !is null) {
+            timeline.resizeIfNecessary(offset + nframes);
         }        
         return _sliceEndFrame;
     }
@@ -1026,8 +1027,8 @@ package:
         // if more frames were added to the sequence, increase the slice length
         if(newNFrames > prevNFrames) {
             _sliceEndFrame += (newNFrames - prevNFrames);
-            if(resizeDelegate !is null) {
-                resizeDelegate(offset + nframes);
+            if(timeline !is null) {
+                timeline.resizeIfNecessary(offset + nframes);
             }
         }
         // if frames were deleted from the sequence, decrease the slice length
@@ -1040,8 +1041,8 @@ package:
         _updateSlice();
     }
 
-    /// Delegate for resizing the session, if necessary
-    ResizeDelegate resizeDelegate;
+    /// Allows a region to resize the timeline
+    Timeline timeline;
 
 private:
     /// Adjust the gain of an audio buffer.

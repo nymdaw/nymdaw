@@ -331,12 +331,12 @@ public:
         }
 
         void onPlay(MenuItem menuItem) {
-            _mixer.play();
+            _mixer.timeline.play();
             updateMixerMenu();
         }
 
         void onPause(MenuItem menuItem) {
-            _mixer.pause();
+            _mixer.timeline.pause();
             updateMixerMenu();
         }
 
@@ -433,8 +433,8 @@ public:
         /// Updates the mixer menu in the main menu bar.
         /// This should be called whenever the mixer state changes between play/pause
         void updateMixerMenu() {
-            _playMenuItem.setSensitive(!_mixer.playing);
-            _pauseMenuItem.setSensitive(_mixer.playing);
+            _playMenuItem.setSensitive(!_mixer.timeline.playing);
+            _pauseMenuItem.setSensitive(_mixer.timeline.playing);
         }
 
         /// Updates the region menu in the main menu bar.
@@ -3603,7 +3603,7 @@ public:
         /// This allows the meters to smoothly return to -infinity.
         /// Returns: `true` if and only if the meter should be redrawn
         bool refresh() {
-            if(_mixer.playing) {
+            if(_mixer.timeline.playing) {
                 _mixerPlaying = true;
                 _processSilence = false;
                 return true;
@@ -4453,17 +4453,19 @@ public:
             cr.save();
             scope(exit) cr.restore();
 
-            if(_mode == Mode.editRegion && !_mixer.playing) {
+            if(_mode == Mode.editRegion && !_mixer.timeline.playing) {
                 return;
             }
             else if(_action == Action.moveTransport) {
-                _transportPixelsOffset = clamp(_mouseX, 0, (viewOffset + viewWidthSamples > _mixer.lastFrame) ?
-                                               ((_mixer.lastFrame - viewOffset) / samplesPerPixel) :
-                                               viewWidthPixels);
+                _transportPixelsOffset = clamp(_mouseX,
+                                               0,
+                                               (viewOffset + viewWidthSamples > _mixer.timeline.lastFrame) ?
+                                                   ((_mixer.timeline.lastFrame - viewOffset) / samplesPerPixel) :
+                                                   viewWidthPixels);
             }
-            else if(viewOffset <= _mixer.transportOffset + (transportHeadWidth / 2) &&
-                    _mixer.transportOffset <= viewOffset + viewWidthSamples + (transportHeadWidth / 2)) {
-                _transportPixelsOffset = (_mixer.transportOffset - viewOffset) / samplesPerPixel;
+            else if(viewOffset <= _mixer.timeline.transportOffset + (transportHeadWidth / 2) &&
+                    _mixer.timeline.transportOffset <= viewOffset + viewWidthSamples + (transportHeadWidth / 2)) {
+                _transportPixelsOffset = (_mixer.timeline.transportOffset - viewOffset) / samplesPerPixel;
             }
             else {
                 return;
@@ -4552,9 +4554,9 @@ public:
             }
 
             // draw a dotted line at the end of the project, if visible
-            if(_mixer.lastFrame > viewOffset && _mixer.lastFrame <= viewOffset + viewWidthSamples) {
+            if(_mixer.timeline.lastFrame > viewOffset && _mixer.timeline.lastFrame <= viewOffset + viewWidthSamples) {
                 enum dottedLinePixels = 15;
-                pixels_t xOffset = (_mixer.lastFrame - viewOffset) / samplesPerPixel;
+                pixels_t xOffset = (_mixer.timeline.lastFrame - viewOffset) / samplesPerPixel;
 
                 for(auto y = markerYOffset; y < viewHeightPixels; y += dottedLinePixels * 2) {
                     cr.moveTo(xOffset, y);
@@ -4572,9 +4574,9 @@ public:
 
         /// Callback to refresh the transport when the mixer is playing
         bool onRefresh() {
-            if(_mixer.playing) {
-                if(_viewFollowTransport && _mixer.transportOffset >= viewOffset + viewWidthSamples) {
-                    _viewOffset = _mixer.transportOffset;
+            if(_mixer.timeline.playing) {
+                if(_viewFollowTransport && _mixer.timeline.transportOffset >= viewOffset + viewWidthSamples) {
+                    _viewOffset = _mixer.timeline.transportOffset;
                 }
 
                 _mixerPlaying = true;
@@ -4626,9 +4628,9 @@ public:
                     }
                 }
 
-                if(_mixer.looping) {
-                    _mixer.enableLoop(_editRegion.subregionStartFrame + _editRegion.offset,
-                                      _editRegion.subregionEndFrame + _editRegion.offset);
+                if(_mixer.timeline.looping) {
+                    _mixer.timeline.enableLoop(_editRegion.subregionStartFrame + _editRegion.offset,
+                                               _editRegion.subregionEndFrame + _editRegion.offset);
                 }
 
                 redraw();
@@ -4862,8 +4864,8 @@ public:
                     case Action.moveMarker:
                         immutable nframes_t deltaXSamples = abs(_mouseX - prevMouseX) * samplesPerPixel;
                         if(_mouseX > prevMouseX) {
-                            if(_moveMarker.offset + deltaXSamples >= _mixer.lastFrame) {
-                                _moveMarker.offset = _mixer.lastFrame;
+                            if(_moveMarker.offset + deltaXSamples >= _mixer.timeline.lastFrame) {
+                                _moveMarker.offset = _mixer.timeline.lastFrame;
                             }
                             else {
                                 _moveMarker.offset += deltaXSamples;
@@ -5251,7 +5253,7 @@ public:
                         foreach(regionView; _selectedRegions) {
                             if(regionView.offset != regionView.previewOffset) {
                                 regionView.offset = regionView.previewOffset;
-                                _mixer.resizeIfNecessary(regionView.offset + regionView.nframes);
+                                _mixer.timeline.resizeIfNecessary(regionView.offset + regionView.nframes);
                                 regionModified = true;
                             }
 
@@ -5297,8 +5299,10 @@ public:
                                                                  onsetFrameEnd,
                                                                  _editRegion.linkChannels,
                                                                  _moveOnsetChannel,
-                                                                 AudioSequence.AudioPieceTable(onsets[_moveOnsetIndex].leftSource),
-                                                                 AudioSequence.AudioPieceTable(onsets[_moveOnsetIndex].rightSource));
+                                                                 AudioSequence.AudioPieceTable(
+                                                                     onsets[_moveOnsetIndex].leftSource),
+                                                                 AudioSequence.AudioPieceTable(
+                                                                     onsets[_moveOnsetIndex].rightSource));
                         }
                         else {
                             _editRegion.region.stretchThreePoint(onsetFrameStart,
@@ -5312,8 +5316,10 @@ public:
                         if(_moveOnsetFrameDest == onsetFrameStart) {
                             if(_moveOnsetIndex > 0) {
                                 onsets.replace([Onset(onsets[_moveOnsetIndex - 1].onsetFrame,
-                                                      AudioSequence.AudioPieceTable(onsets[_moveOnsetIndex - 1].leftSource),
-                                                      AudioSequence.AudioPieceTable(onsets[_moveOnsetIndex].rightSource))],
+                                                      AudioSequence.AudioPieceTable(
+                                                          onsets[_moveOnsetIndex - 1].leftSource),
+                                                      AudioSequence.AudioPieceTable(
+                                                          onsets[_moveOnsetIndex].rightSource))],
                                                _moveOnsetIndex - 1, _moveOnsetIndex + 1);
                             }
                             else {
@@ -5323,8 +5329,10 @@ public:
                         else if(_moveOnsetFrameDest == onsetFrameEnd) {
                             if(_moveOnsetIndex + 1 < onsets.length) {
                                 onsets.replace([Onset(onsets[_moveOnsetIndex + 1].onsetFrame,
-                                                      AudioSequence.AudioPieceTable(onsets[_moveOnsetIndex].leftSource),
-                                                      AudioSequence.AudioPieceTable(onsets[_moveOnsetIndex + 1].rightSource))],
+                                                      AudioSequence.AudioPieceTable(
+                                                          onsets[_moveOnsetIndex].leftSource),
+                                                      AudioSequence.AudioPieceTable(
+                                                          onsets[_moveOnsetIndex + 1].rightSource))],
                                                _moveOnsetIndex, _moveOnsetIndex + 2);
                             }
                             else {
@@ -5333,8 +5341,10 @@ public:
                         }
                         else {
                             onsets.replace([Onset(_moveOnsetFrameDest,
-                                                  AudioSequence.AudioPieceTable(onsets[_moveOnsetIndex].leftSource),
-                                                  AudioSequence.AudioPieceTable(onsets[_moveOnsetIndex].rightSource))],
+                                                  AudioSequence.AudioPieceTable(
+                                                      onsets[_moveOnsetIndex].leftSource),
+                                                  AudioSequence.AudioPieceTable(
+                                                      onsets[_moveOnsetIndex].rightSource))],
                                            _moveOnsetIndex, _moveOnsetIndex + 1);
                         }
 
@@ -5350,7 +5360,8 @@ public:
 
                     case Action.moveTransport:
                         _setAction(Action.none);
-                        _mixer.transportOffset = viewOffset + (clamp(_mouseX, 0, viewWidthPixels) * samplesPerPixel);
+                        _mixer.timeline.transportOffset =
+                            viewOffset + (clamp(_mouseX, 0, viewWidthPixels) * samplesPerPixel);
                         break;
 
                     default:
@@ -5396,11 +5407,11 @@ public:
                             _zoomIn();
                         }
                         else {
-                            if(_hScroll.stepSamples + viewOffset <= _mixer.lastFrame) {
+                            if(_hScroll.stepSamples + viewOffset <= _mixer.timeline.lastFrame) {
                                 _viewOffset += _hScroll.stepSamples;
                             }
                             else {
-                                _viewOffset = _mixer.lastFrame;
+                                _viewOffset = _mixer.timeline.lastFrame;
                             }
                             _hScroll.update();
                             if(_action == Action.centerView ||
@@ -5450,7 +5461,8 @@ public:
                         _setAction(Action.none);
                         wchar keyval = cast(wchar)(Keymap.keyvalToUnicode(event.key.keyval));
                         if(isAlpha(keyval) || isNumber(keyval)) {
-                            _markers[event.key.keyval] = new Marker(_mixer.transportOffset, to!string(keyval));
+                            _markers[event.key.keyval] = new Marker(_mixer.timeline.transportOffset,
+                                                                    to!string(keyval));
                             redraw();
                         }
                         return false;
@@ -5458,7 +5470,7 @@ public:
                     case Action.jumpToMarker:
                         _setAction(Action.none);
                         try {
-                            _mixer.transportOffset = _markers[event.key.keyval].offset;
+                            _mixer.timeline.transportOffset = _markers[event.key.keyval].offset;
                             redraw();
                         }
                         catch(RangeError) {
@@ -5479,23 +5491,24 @@ public:
                         if(shiftPressed) {
                             if(_mode == Mode.editRegion && _editRegion.subregionSelected) {
                                 // loop the selected subregion
-                                _mixer.transportOffset =
+                                _mixer.timeline.transportOffset =
                                     _editRegion.subregionStartFrame + _editRegion.offset;
-                                _mixer.enableLoop(_editRegion.subregionStartFrame + _editRegion.offset,
-                                                  _editRegion.subregionEndFrame + _editRegion.offset);
-                                _mixer.play();
+                                _mixer.timeline.enableLoop(_editRegion.subregionStartFrame + _editRegion.offset,
+                                                           _editRegion.subregionEndFrame + _editRegion.offset);
+                                _mixer.timeline.play();
                             }
                         }
                         else {
                             // toggle play/pause for the mixer
-                            if(_mixer.playing) {
-                                _mixer.pause();
+                            if(_mixer.timeline.playing) {
+                                _mixer.timeline.pause();
                             }
                             else {
                                 if(_mode == Mode.editRegion) {
-                                    _mixer.transportOffset = _editRegion.editPointOffset + _editRegion.offset;
+                                    _mixer.timeline.transportOffset =
+                                        _editRegion.editPointOffset + _editRegion.offset;
                                 }
-                                _mixer.play();
+                                _mixer.timeline.play();
                             }
                         }
                         _menuBar.updateMixerMenu();
@@ -5515,18 +5528,19 @@ public:
                         Marker* lastMarker;
                         foreach(ref marker; _markers) {
                             if(!lastMarker ||
-                               (marker.offset > lastMarker.offset && marker.offset < _mixer.transportOffset)) {
+                               (marker.offset > lastMarker.offset &&
+                                marker.offset < _mixer.timeline.transportOffset)) {
                                 lastMarker = &marker;
                             }
                         }
-                        _mixer.transportOffset = lastMarker ? lastMarker.offset : 0;
+                        _mixer.timeline.transportOffset = lastMarker ? lastMarker.offset : 0;
                         redraw();
                         break;
 
                     // Shift + Alt + <
                     case GdkKeysyms.GDK_macron:
                         // move the transport and view to the beginning of the project
-                        _mixer.transportOffset = 0;
+                        _mixer.timeline.transportOffset = 0;
                         _viewOffset = viewMinSamples;
                         redraw();
                         break;
@@ -5534,7 +5548,7 @@ public:
                     // Shift + Alt + >
                     case GdkKeysyms.GDK_breve:
                         // move the transport to end of the project and center the view on the transport
-                        _mixer.transportOffset = _mixer.lastFrame;
+                        _mixer.timeline.transportOffset = _mixer.timeline.lastFrame;
                         if(viewMaxSamples >= (viewWidthSamples / 2) * 3) {
                             _viewOffset = viewMaxSamples - (viewWidthSamples / 2) * 3;
                         }
@@ -5544,16 +5558,16 @@ public:
                     // Alt + f
                     case GdkKeysyms.GDK_function:
                         // seek the transport forward (large increment)
-                        _mixer.transportOffset = min(_mixer.lastFrame,
-                                                     _mixer.transportOffset + largeSeekIncrement);
+                        _mixer.timeline.transportOffset = min(_mixer.timeline.lastFrame,
+                                                              _mixer.timeline.transportOffset + largeSeekIncrement);
                         redraw();
                         break;
 
                     // Alt + b
                     case GdkKeysyms.GDK_integral:
                         // seek the transport backward (large increment)
-                        _mixer.transportOffset = _mixer.transportOffset > largeSeekIncrement ?
-                            _mixer.transportOffset - largeSeekIncrement : 0;
+                        _mixer.timeline.transportOffset = _mixer.timeline.transportOffset > largeSeekIncrement ?
+                            _mixer.timeline.transportOffset - largeSeekIncrement : 0;
                         redraw();
                         break;
 
@@ -5583,7 +5597,7 @@ public:
                         if(controlPressed) {
                             // move the transport to the minimum offset of all selected regions
                             if(_earliestSelectedRegion !is null) {
-                                _mixer.transportOffset = _earliestSelectedRegion.offset;
+                                _mixer.timeline.transportOffset = _earliestSelectedRegion.offset;
                                 redraw();
                             }
                         }
@@ -5592,8 +5606,8 @@ public:
                     case GdkKeysyms.GDK_b:
                         if(controlPressed) {
                             // seek the transport backward (small increment)
-                            _mixer.transportOffset = _mixer.transportOffset > smallSeekIncrement ?
-                                _mixer.transportOffset - smallSeekIncrement : 0;
+                            _mixer.timeline.transportOffset = _mixer.timeline.transportOffset > smallSeekIncrement ?
+                                _mixer.timeline.transportOffset - smallSeekIncrement : 0;
                             redraw();
                         }
                         break;
@@ -5621,7 +5635,7 @@ public:
                                 }
                             }
                             if(foundRegion) {
-                                _mixer.transportOffset = maxOffset;
+                                _mixer.timeline.transportOffset = maxOffset;
                                 redraw();
                             }
                         }
@@ -5634,8 +5648,8 @@ public:
                     case GdkKeysyms.GDK_f:
                         if(controlPressed) {
                             // seek the transport forward (small increment)
-                            _mixer.transportOffset = min(_mixer.lastFrame,
-                                                         _mixer.transportOffset + smallSeekIncrement);
+                            _mixer.timeline.transportOffset =
+                                min(_mixer.timeline.lastFrame, _mixer.timeline.transportOffset + smallSeekIncrement);
                             redraw();
                         }
                         break;
@@ -5696,12 +5710,12 @@ public:
                     case GdkKeysyms.GDK_l:
                         // center the view on the transport, emacs-style
                         if(_action == Action.centerViewStart) {
-                            _viewOffset = _mixer.transportOffset;
+                            _viewOffset = _mixer.timeline.transportOffset;
                             _setAction(Action.centerViewEnd);
                         }
                         else if(_action == Action.centerViewEnd) {
-                            if(_mixer.transportOffset > viewWidthSamples) {
-                                _viewOffset = _mixer.transportOffset - viewWidthSamples;
+                            if(_mixer.timeline.transportOffset > viewWidthSamples) {
+                                _viewOffset = _mixer.timeline.transportOffset - viewWidthSamples;
                             }
                             else {
                                 _viewOffset = viewMinSamples;
@@ -5709,14 +5723,14 @@ public:
                             _setAction(Action.centerView);
                         }
                         else {
-                            if(_mixer.transportOffset < viewWidthSamples / 2) {
+                            if(_mixer.timeline.transportOffset < viewWidthSamples / 2) {
                                 _viewOffset = viewMinSamples;
                             }
-                            else if(_mixer.transportOffset > viewMaxSamples - viewWidthSamples / 2) {
+                            else if(_mixer.timeline.transportOffset > viewMaxSamples - viewWidthSamples / 2) {
                                 _viewOffset = viewMaxSamples;
                             }
                             else {
-                                _viewOffset = _mixer.transportOffset - viewWidthSamples / 2;
+                                _viewOffset = _mixer.timeline.transportOffset - viewWidthSamples / 2;
                             }
                             _setAction(Action.centerViewStart);
                         }
@@ -6416,9 +6430,9 @@ public:
 
             // insert the copied regions at the transport offset
             immutable auto earliestOffset = _getEarliestRegion(_copiedRegionStates).offset;
-            immutable auto copyOffset = earliestOffset > _mixer.transportOffset ?
-                earliestOffset - _mixer.transportOffset :
-                _mixer.transportOffset - earliestOffset;
+            immutable auto copyOffset = earliestOffset > _mixer.timeline.transportOffset ?
+                earliestOffset - _mixer.timeline.transportOffset :
+                _mixer.timeline.transportOffset - earliestOffset;
             foreach(regionViewState; _copiedRegionStates) {
                 auto regionView = regionViewState.regionView;
 
@@ -6439,10 +6453,10 @@ public:
                 newRegionView.sliceEndFrame = regionViewState.sliceEndFrame;
                 newRegionView.selected = true;
                 _selectedRegionsApp.put(newRegionView);
-                newRegionView.offset = earliestOffset > _mixer.transportOffset ?
+                newRegionView.offset = earliestOffset > _mixer.timeline.transportOffset ?
                     regionView.offset - copyOffset :
                     regionView.offset + copyOffset;
-                _mixer.resizeIfNecessary(newRegionView.offset + newRegionView.nframes);
+                _mixer.timeline.resizeIfNecessary(newRegionView.offset + newRegionView.nframes);
             }
 
             _computeEarliestSelectedRegion();
@@ -6771,7 +6785,7 @@ public:
     @property nframes_t viewMinSamples() { return 0; }
 
     /// The maximum frame index viewable within the canvas
-    @property nframes_t viewMaxSamples() { return _mixer.lastFrame + viewWidthSamples; }
+    @property nframes_t viewMaxSamples() { return _mixer.timeline.lastFrame + viewWidthSamples; }
 
 private:
     /// Factor to use in calculations of track/region heights when zooming vertically
