@@ -1806,7 +1806,7 @@ public:
 
         /// The relative start frame of the selected subregion, if applicable
         @property nframes_t subregionStartFrame() const {
-            return _subregionStartFrame - sliceStartFrame;
+            return (_subregionStartFrame > sliceStartFrame) ? _subregionStartFrame - sliceStartFrame : 0;
         }
         /// ditto
         @property nframes_t subregionStartFrame(nframes_t newSubregionStartFrame) {
@@ -2335,12 +2335,8 @@ public:
                         cr.setOperator(cairo_operator_t.OVER);
                         cr.setAntialias(cairo_antialias_t.NONE);
 
-                        auto immutable globalSubregionStartFrame = subregionStartFrame + regionOffset;
-                        auto immutable globalSubregionEndFrame = subregionEndFrame + regionOffset;
-                        pixels_t x0 = (viewOffset < globalSubregionStartFrame) ?
-                            (globalSubregionStartFrame - viewOffset) / samplesPerPixel : 0;
-                        pixels_t x1 = (viewOffset < globalSubregionEndFrame) ?
-                            (globalSubregionEndFrame - viewOffset) / samplesPerPixel : 0;
+                        immutable pixels_t x0 = xOffset + subregionStartFrame / samplesPerPixel - pixelsOffset;
+                        immutable pixels_t x1 = xOffset + subregionEndFrame / samplesPerPixel - pixelsOffset;
                         cr.rectangle(x0, yOffset, x1 - x0, headerHeight + height);
                         cr.setSourceRgba(0.0, 1.0, 0.0, 0.5);
                         cr.fill();
