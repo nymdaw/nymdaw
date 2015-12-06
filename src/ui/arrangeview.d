@@ -1243,14 +1243,17 @@ public:
                                          if(_editRegion.showOnsets) {
                                              _editRegion.computeOnsets();
                                          }
-                                         _region.appendEditState(_region.currentEditState(true), "Adjust subregion gain");
+                                         _region.appendEditState(_region.currentEditState(true),
+                                                                 "Adjust subregion gain");
                                      }
                                      else if(entireRegion) {
-                                         _region.region.gain(cast(sample_t)(_gainAdjustment.getValue()), progressCallback);
+                                         _region.region.gain(cast(sample_t)(_gainAdjustment.getValue()),
+                                                             progressCallback);
                                          if(_editRegion.showOnsets) {
                                              _editRegion.computeOnsets();
                                          }
-                                         _region.appendEditState(_region.currentEditState(true), "Adjust region gain");
+                                         _region.appendEditState(_region.currentEditState(true),
+                                                                 "Adjust region gain");
                                      }
                                  });
                 beginProgressTask!(GainState)(newProgressTask);
@@ -1304,20 +1307,24 @@ public:
                                      if(_region.subregionSelected && selectionOnly) {
                                          _region.region.normalize(_region.subregionStartFrame,
                                                                   _region.subregionEndFrame,
-                                                                  cast(sample_t)(_normalizeGainAdjustment.getValue()),
+                                                                  cast(sample_t)(
+                                                                      _normalizeGainAdjustment.getValue()),
                                                                   progressCallback);
                                          if(_editRegion.showOnsets) {
                                              _editRegion.computeOnsets();
                                          }
-                                         _region.appendEditState(_region.currentEditState(true), "Normalize subregion");
+                                         _region.appendEditState(_region.currentEditState(true),
+                                                                 "Normalize subregion");
                                      }
                                      else if(entireRegion) {
-                                         _region.region.normalize(cast(sample_t)(_normalizeGainAdjustment.getValue()),
+                                         _region.region.normalize(cast(sample_t)(
+                                                                      _normalizeGainAdjustment.getValue()),
                                                                   progressCallback);
                                          if(_editRegion.showOnsets) {
                                              _editRegion.computeOnsets();
                                          }
-                                         _region.appendEditState(_region.currentEditState(true), "Normalize region");
+                                         _region.appendEditState(_region.currentEditState(true),
+                                                                 "Normalize region");
                                      }
                                  });
                 beginProgressTask!(NormalizeState)(progressTask);
@@ -1390,9 +1397,10 @@ public:
                                  _onsets = [];
                                  _onsets.reserve(region.nChannels);
                                  for(channels_t channelIndex = 0; channelIndex < region.nChannels; ++channelIndex) {
-                                     _onsets ~= new OnsetSequence(cast(immutable)(region.getOnsetsSingleChannel(onsetParams,
-                                                                                                                channelIndex,
-                                                                                                                progressCallback)));
+                                     _onsets ~= new OnsetSequence(cast(immutable)(
+                                         region.getOnsetsSingleChannel(onsetParams,
+                                                                       channelIndex,
+                                                                       progressCallback)));
                                  }
 
                                  progressCallback(ComputeOnsetsState.complete, 1);
@@ -1409,8 +1417,9 @@ public:
                                  progressCallback(ComputeOnsetsState.computeOnsets, 0);
 
                                  if(region.nChannels > 1) {
-                                     _onsetsLinked = new OnsetSequence(cast(immutable)(region.getOnsetsLinkedChannels(onsetParams,
-                                                                                                                      progressCallback)));
+                                     _onsetsLinked = new OnsetSequence(cast(immutable)(
+                                         region.getOnsetsLinkedChannels(onsetParams,
+                                                                        progressCallback)));
                                  }
 
                                  progressCallback(ComputeOnsetsState.complete, 1);
@@ -3120,7 +3129,7 @@ public:
             Color(0.0, 0.75, 0.0),
             Color(0.0, 0.4, 0.25),
             Color(0.0, 0.1, 0.5)
-            ];
+        ];
 
         /// Decibel marks corresponding to each element in `colorMap`
         static immutable float[] colorMapDb = [0, -2, -6, -12, -25, -float.infinity];
