@@ -1,7 +1,8 @@
 module audio;
 
 public import audio.channel;
-public import audio.file;
+public import audio.exportfile;
+public import audio.importfile;
 public import audio.masterbus;
 public import audio.mixer;
 public import audio.region;

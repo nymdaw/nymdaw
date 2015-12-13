@@ -331,12 +331,12 @@ public:
         }
 
         void onPlay(MenuItem menuItem) {
-            _mixer.timeline.play();
+            _mixer.play();
             updateMixerMenu();
         }
 
         void onPause(MenuItem menuItem) {
-            _mixer.timeline.pause();
+            _mixer.pause();
             updateMixerMenu();
         }
 
@@ -433,8 +433,8 @@ public:
         /// Updates the mixer menu in the main menu bar.
         /// This should be called whenever the mixer state changes between play/pause
         void updateMixerMenu() {
-            _playMenuItem.setSensitive(!_mixer.timeline.playing);
-            _pauseMenuItem.setSensitive(_mixer.timeline.playing);
+            _playMenuItem.setSensitive(!_mixer.playing);
+            _pauseMenuItem.setSensitive(_mixer.playing);
         }
 
         /// Updates the region menu in the main menu bar.
@@ -3603,7 +3603,7 @@ public:
         /// This allows the meters to smoothly return to -infinity.
         /// Returns: `true` if and only if the meter should be redrawn
         bool refresh() {
-            if(_mixer.timeline.playing) {
+            if(_mixer.playing) {
                 _mixerPlaying = true;
                 _processSilence = false;
                 return true;
@@ -4453,7 +4453,7 @@ public:
             cr.save();
             scope(exit) cr.restore();
 
-            if(_mode == Mode.editRegion && !_mixer.timeline.playing) {
+            if(_mode == Mode.editRegion && !_mixer.playing) {
                 return;
             }
             else if(_action == Action.moveTransport) {
@@ -4574,7 +4574,7 @@ public:
 
         /// Callback to refresh the transport when the mixer is playing
         bool onRefresh() {
-            if(_mixer.timeline.playing) {
+            if(_mixer.playing) {
                 if(_viewFollowTransport && _mixer.timeline.transportOffset >= viewOffset + viewWidthSamples) {
                     _viewOffset = _mixer.timeline.transportOffset;
                 }
@@ -4628,9 +4628,9 @@ public:
                     }
                 }
 
-                if(_mixer.timeline.looping) {
-                    _mixer.timeline.enableLoop(_editRegion.subregionStartFrame + _editRegion.offset,
-                                               _editRegion.subregionEndFrame + _editRegion.offset);
+                if(_mixer.looping) {
+                    _mixer.enableLoop(_editRegion.subregionStartFrame + _editRegion.offset,
+                                      _editRegion.subregionEndFrame + _editRegion.offset);
                 }
 
                 redraw();
@@ -5493,22 +5493,22 @@ public:
                                 // loop the selected subregion
                                 _mixer.timeline.transportOffset =
                                     _editRegion.subregionStartFrame + _editRegion.offset;
-                                _mixer.timeline.enableLoop(_editRegion.subregionStartFrame + _editRegion.offset,
-                                                           _editRegion.subregionEndFrame + _editRegion.offset);
-                                _mixer.timeline.play();
+                                _mixer.enableLoop(_editRegion.subregionStartFrame + _editRegion.offset,
+                                                  _editRegion.subregionEndFrame + _editRegion.offset);
+                                _mixer.play();
                             }
                         }
                         else {
                             // toggle play/pause for the mixer
-                            if(_mixer.timeline.playing) {
-                                _mixer.timeline.pause();
+                            if(_mixer.playing) {
+                                _mixer.pause();
                             }
                             else {
                                 if(_mode == Mode.editRegion) {
                                     _mixer.timeline.transportOffset =
                                         _editRegion.editPointOffset + _editRegion.offset;
                                 }
-                                _mixer.timeline.play();
+                                _mixer.play();
                             }
                         }
                         _menuBar.updateMixerMenu();

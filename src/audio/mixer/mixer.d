@@ -1,11 +1,6 @@
 module audio.mixer.mixer;
 
-private import std.file;
-private import std.string;
-
-private import sndfile;
-
-private import util.scopedarray;
+private import core.memory;
 
 public import audio.masterbus;
 public import audio.timeline;
@@ -51,147 +46,15 @@ public:
         onCleanup();
     }
 
-    /// Bounce the entire session to an audio file
-    final void exportSessionToFile(string fileName,
-                                   AudioFileFormat audioFileFormat,
-                                   AudioBitDepth bitDepth,
-                                   SaveState.Callback progressCallback = null) {
-        // default to stereo for exporting
-        enum exportChannels = 2;
-
-        // helper function to remove the partially-written file in the case of an error
-        void removeFile() {
-            try {
-                std.file.remove(fileName);
-            }
-            catch(FileException e) {
-            }
-        }
-
-        SNDFILE* outfile;
-        SF_INFO sfinfo;
-
-        sfinfo.samplerate = sampleRate;
-        sfinfo.frames = _timeline.nframes;
-        sfinfo.channels = exportChannels;
-        switch(audioFileFormat) {
-            case AudioFileFormat.wavFilterName:
-                sfinfo.format = SF_FORMAT_WAV;
-                break;
-
-            case AudioFileFormat.flacFilterName:
-                sfinfo.format = SF_FORMAT_FLAC;
-                break;
-
-            case AudioFileFormat.oggVorbisFilterName:
-                sfinfo.format = SF_FORMAT_OGG | SF_FORMAT_VORBIS;
-                break;
-
-            case AudioFileFormat.aiffFilterName:
-                sfinfo.format = SF_FORMAT_AIFF;
-                break;
-
-            case AudioFileFormat.cafFilterName:
-                sfinfo.format = SF_FORMAT_CAF;
-                break;
-
-            default:
-                if(progressCallback !is null) {
-                    progressCallback(SaveState.complete, 0);
-                    removeFile();
-                }
-                throw new AudioError("Invalid audio file format");
-        }
-
-        if(audioFileFormat == AudioFileFormat.wavFilterName ||
-           audioFileFormat == AudioFileFormat.aiffFilterName ||
-           audioFileFormat == AudioFileFormat.cafFilterName) {
-            if(bitDepth == AudioBitDepth.pcm16Bit) {
-                sfinfo.format |= SF_FORMAT_PCM_16;
-            }
-            else if(bitDepth == AudioBitDepth.pcm24Bit) {
-                sfinfo.format |= SF_FORMAT_PCM_24;
-            }
-        }
-
-        // ensure the constructed sfinfo object is valid
-        if(!sf_format_check(&sfinfo)) {
-            if(progressCallback !is null) {
-                progressCallback(SaveState.complete, 0);
-                removeFile();
-            }
-            throw new AudioError("Invalid output file parameters for " ~ fileName);
-        }
-
-        // attempt to open the specified file
-        outfile = sf_open(fileName.toStringz(), SFM_WRITE, &sfinfo);
-        if(!outfile) {
-            if(progressCallback !is null) {
-                progressCallback(SaveState.complete, 0);
-                removeFile();
-            }
-            throw new AudioError("Could not open file " ~ fileName ~ " for writing");
-        }
-
-        // close the file when leaving this scope
-        scope(exit) sf_close(outfile);
-
-        // reset the bounce transport
-        _bounceTransportOffset = 0;
-
-        // counters for updating the progress bar
-        immutable size_t progressIncrement = (_timeline.nframes * exportChannels) / SaveState.stepsPerStage;
-        size_t progressCount;
-
-        // write all audio data in the current session to the specified file
-        ScopedArray!(sample_t[]) buffer = new sample_t[](maxBufferLength * exportChannels);
-        sf_count_t writeTotal;
-        sf_count_t writeCount;
-        while(writeTotal < _timeline.nframes * exportChannels) {
-            auto immutable processNFrames =
-                writeTotal + maxBufferLength * exportChannels < _timeline.nframes * exportChannels ?
-                maxBufferLength * exportChannels : _timeline.nframes * exportChannels - writeTotal;
-
-            bounceStereoInterleaved(cast(nframes_t)(processNFrames), exportChannels, buffer.ptr);
-
-            static if(is(sample_t == float)) {
-                writeCount = sf_write_float(outfile, buffer.ptr, processNFrames);
-            }
-            else if(is(sample_t == double)) {
-                writeCount = sf_write_double(outfile, buffer.ptr, processNFrames);
-            }
-
-            if(writeCount != processNFrames) {
-                if(progressCallback !is null) {
-                    progressCallback(SaveState.complete, 0);
-                    removeFile();
-                }
-                throw new AudioError("Could not write to file " ~ fileName);
-            }
-
-            writeTotal += writeCount;
-
-            if(progressCallback !is null && writeTotal >= progressCount) {
-                progressCount += progressIncrement;
-                if(!progressCallback(SaveState.write,
-                                     cast(double)(writeTotal) / cast(double)(_timeline.nframes * exportChannels))) {
-                    removeFile();
-                    return;
-                }
-            }
-        }
-
-        if(progressCallback !is null) {
-            if(!progressCallback(SaveState.complete, 1)) {
-                removeFile();
-            }
-        }
-    }
-
     /// Reset the mixer to an empty state. This is useful for starting new sessions.
     final void reset() {
         _tracks = [];
         _soloTrack = false;
+
+        _playing = false;
+        _looping = false;
+        _loopStart = _loopEnd = 0;
+
         _timeline.reset();
     }
 
@@ -227,21 +90,60 @@ public:
     /// ditto
     @property final bool soloTrack(bool enable) @nogc nothrow { return (_soloTrack = enable); }
 
+    /// Indicates whether the mixer is current playing (i.e., moving the transport), or paused.
+    @property bool playing() const @nogc nothrow {
+        return _playing;
+    }
+
+    /// If the mixer is currently paused, begin playing
+    void play() nothrow {
+        GC.disable(); // disable garbage collection while playing
+
+        _playing = true;
+    }
+
+    /// If the mixer is currently playing, pause the mixer
+    void pause() nothrow {
+        disableLoop();
+        _playing = false;
+
+        GC.enable(); // enable garbage collection while paused
+    }
+
+    /// Indicates whether the mixer is currently looping a section of audio specified by the user.
+    @property bool looping() const @nogc nothrow {
+        return _looping;
+    }
+
+    /// Specify a section of audio to loop
+    void enableLoop(nframes_t loopStart, nframes_t loopEnd) @nogc nothrow {
+        _looping = true;
+        _loopStart = loopStart;
+        _loopEnd = loopEnd;
+    }
+
+    /// Disable looping and return to the conventional playback mode
+    void disableLoop() @nogc nothrow {
+        _looping = false;
+    }
+
     /// Mix all registered tracks into an interleaved stereo buffer using a specialized bounce transport.
     /// Params:
+    /// bounceTimeline = A timeline to keep track of a unique transport for this bounce
     /// bufNFrames = The the total length of the inverleaved output buffer, including all channels
     /// nChannels = The total number of interleaved channels in the output buffer (typically two)
     /// mixBuf = The interleaved output buffer
-    final void bounceStereoInterleaved(nframes_t bufNFrames,
+    final void bounceStereoInterleaved(Timeline bounceTimeline,
+                                       nframes_t bufNFrames,
                                        channels_t nChannels,
                                        sample_t* mixBuf) {
         // initialize the buffer to silence
         import core.stdc.string: memset;
         memset(mixBuf, 0, sample_t.sizeof * bufNFrames);
 
-        _bounceTracksStereoInterleaved(_bounceTransportOffset, bufNFrames, nChannels, mixBuf);
+        _bounceTracksStereoInterleaved(bounceTimeline.transportOffset, bufNFrames, nChannels, mixBuf);
 
-        _bounceTransportOffset += bufNFrames / nChannels;
+        bounceTimeline.moveTransport(bufNFrames / nChannels);
     }
 
     /// Mix all registered tracks into an interleaved stereo buffer and update the playback transport
@@ -257,14 +159,14 @@ public:
         memset(mixBuf, 0, sample_t.sizeof * bufNFrames);
 
         // mix all tracks down to stereo
-        if(_timeline.playing) {
+        if(playing) {
             _mixTracksStereoInterleaved(_timeline.transportOffset, bufNFrames, nChannels, mixBuf);
 
             if(_masterBus !is null) {
                 _masterBus.processStereoInterleaved(mixBuf, bufNFrames, nChannels);
             }
 
-            _timeline.moveTransport(bufNFrames / nChannels);
+            _moveTransport(bufNFrames / nChannels);
         }
     }
 
@@ -282,14 +184,14 @@ public:
         memset(mixBuf2, 0, sample_t.sizeof * bufNFrames);
 
         // mix all tracks down to stereo
-        if(_timeline.playing) {
+        if(playing) {
             _mixTracksStereoNonInterleaved(_timeline.transportOffset, bufNFrames, mixBuf1, mixBuf2);
 
             if(_masterBus !is null) {
                 _masterBus.processStereoNonInterleaved(mixBuf1, mixBuf2, bufNFrames);
             }
 
-            _timeline.moveTransport(bufNFrames);
+            _moveTransport(bufNFrames);
         }
     }
 
@@ -301,6 +203,29 @@ protected:
     void onCleanup() nothrow;
 
 private:
+    /// Move the transport offset forward, and update the playing and looping status.
+    void _moveTransport(nframes_t framesPlayed) @nogc nothrow {
+        _timeline.moveTransport(framesPlayed);
+
+        _checkTransportFinished();
+        _updateLooping();
+    }
+
+    /// Stop playing if the transport has moved past the end of the session
+    void _checkTransportFinished() @nogc nothrow {
+        if(_playing && _timeline.transportOffset >= _timeline.lastFrame) {
+            _playing = _looping; // don't stop playing if currently looping
+            _timeline.transportOffset = _timeline.lastFrame;
+        }
+    }
+
+    /// Update the transport if currently looping
+    void _updateLooping() @nogc nothrow {
+        if(looping && _timeline.transportOffset >= _loopEnd) {
+            _timeline.transportOffset = _loopStart;
+        }
+    }
+
     /// Template function to mix down all registered tracks to a single buffer,
     /// with interleaved stereo channels.
     /// At this time, the template argument should either be "mixStereoInterleaved" or
@@ -347,9 +272,6 @@ private:
     /// mixer is bouncing the session to a file instead of playing it back on an audio device.
     alias _bounceTracksStereoInterleaved = _mixTracksStereoInterleaved!"bounceStereoInterleaved";
 
-    /// A separate transport offset used for bouncing the session offline.
-    nframes_t _bounceTransportOffset;
-
     /// The application name, typically one word, lower case, useful for identifying
     /// the applicatin e.g. to the JACK router
     string _appName;
@@ -366,4 +288,16 @@ private:
 
     /// Indicates whether there are any tracks for which "solo" mode is enabled.
     bool _soloTrack;
+
+    /// Indicates whether the mixer is current playing (i.e., moving the transport), or paused.
+    bool _playing;
+
+    /// Indicates whether the mixer is currently looping a section of audio specified by the user.
+    bool _looping;
+
+    /// The start frame of the currently looping section, as specified by the user.
+    nframes_t _loopStart;
+
+    /// The end frame of the currently looping section, as specified by the user.
+    nframes_t _loopEnd;
 }
