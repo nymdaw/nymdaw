@@ -1,19 +1,19 @@
-# dhippo
-dhippo is an audio editor/workstation hybrid implemented in the D programming language.
+# nymdaw
+nymdaw is an audio editor/workstation hybrid implemented in the D programming language.
 It supports editing audio in two modes: "arrange" and "edit". Arrange mode allows the user to move audio regions across time; this is the conventional mode of operation for most audio workstations. Edit mode allows the user to modify an individual region at the sample-level; some examples of edit operations include copy/cut/paste arbitrary sections of audio, time-stretch, and normalization.
 
 Operations such as play/pause and copy/cut/paste work intuitively in both arrange and edit modes. Additionally, basic channel strips (including a gain fader and peak meters) are available, along with conventional track-wide operations such as mute/solo. The leftmost channel strip visible in the main window corresponds to the currently selected track, and the rightmost channel strip corresponds to the master stereo bus.
 
-When in edit mode, dhippo can detect the onsets (i.e., attacks) of the current region, with adjustable detection parameters. The user can then click and drag onsets to move them across time, and dhippo will stretch the surrounding audio accordingly.
+When in edit mode, nymdaw can detect the onsets (i.e., attacks) of the current region, with adjustable detection parameters. The user can then click and drag onsets to move them across time, and nymdaw will stretch the surrounding audio accordingly.
 
 Audio regions can be copied in "hard" mode or "soft" mode. A hard copy makes an independent copy of the audio data for the copied regions. A soft copy keeps a link between the copied region and its source region; all edits made in one are reflected in the other. These links, along with full undo history information for each region, can be viewed in the "Sequence Browser" window.
 
 # Implementation
-The basic unit of audio in dhippo is referred to as a "sequence". This is an implementation of the eponymous data structure described in-depth by Charles Crowley in "Data Structures For Text Sequences" (available at https://www.cs.unm.edu/~crowley/papers/sds/sds.html), specialized for digital audio instead of textual data. This data structure yields excellent performance when editing audio data, and also facilitates the undo/redo system.
+The basic unit of audio in nymdaw is referred to as a "sequence". This is an implementation of the eponymous data structure described in-depth by Charles Crowley in "Data Structures For Text Sequences" (available at https://www.cs.unm.edu/~crowley/papers/sds/sds.html), specialized for digital audio instead of textual data. This data structure yields excellent performance when editing audio data, and also facilitates the undo/redo system.
 
-Currently, dhippo performs all operations in-memory. Since most modern machines have in excess of 4-8 GB of RAM, the need to stream audio from disk, especially for smaller projects, is almost completely mitigated. Import/export are currently supported via libsndfile; a native project format has not yet been implemented.
+Currently, nymdaw performs all operations in-memory. Since most modern machines have in excess of 4-8 GB of RAM, the need to stream audio from disk, especially for smaller projects, is almost completely mitigated. Import/export are currently supported via libsndfile; a native project format has not yet been implemented.
 
-When the user imports an audio file, dhippo first creates a new sequence from an in-memory copy of the file's raw audio data. Next, it will create a new track and region linked to that sequence. All edits made in edit mode to that region are stored in the audio sequence. Soft copies of that region (made in arrange mode) will be linked to the same sequence, whereas hard copies will clone the sequence.
+When the user imports an audio file, nymdaw first creates a new sequence from an in-memory copy of the file's raw audio data. Next, it will create a new track and region linked to that sequence. All edits made in edit mode to that region are stored in the audio sequence. Soft copies of that region (made in arrange mode) will be linked to the same sequence, whereas hard copies will clone the sequence.
 
 Three audio backends are currently supported: JACK, PortAudio, and CoreAudio (OSX only).
 
@@ -32,11 +32,11 @@ Install the D apt repository (as described at http://d-apt.sourceforge.net/):
 Install the dependencies, then build via waf:
 
     sudo apt-get install dmd-bin libphobos2-dev libgtkd3-dev portaudio19-dev libsndfile-dev libsamplerate-dev librubberband-dev libaubio-dev libmpg123-dev
-    git clone https://github.com/dhippo/dhippo
-    cd dhippo
+    git clone https://github.com/nymdaw/nymdaw
+    cd nymdaw
     ./waf configure
     ./waf build
-    ./build/dhippo
+    ./build/nymdaw
 
 # Compiling on OSX
 
@@ -55,15 +55,15 @@ Install GTK (without X11, sourced from http://balintreczey.hu/blog/beautiful-wir
     # compile the rest of GTK+ 3 related libraries
     brew install --build-from-source at-spi2-core at-spi2-atk cairo harfbuzz pango gtk+3 gtk+ librsvg gnome-icon-theme --without-x --without-x11 --with-gtk+3
 
-Install the dhippo dependencies:
+Install the nymdaw dependencies:
 
     brew install dmd libsndfile libsamplerate aubio mpg123
     brew install http://tuohela.net/irc/vamp-plugin-sdk.rb http://tuohela.net/irc/rubberband.rb
 
-Build dhippo:
+Build nymdaw:
 
-    git clone https://github.com/dhippo/dhippo
-    cd dhippo
+    git clone https://github.com/nymdaw/nymdaw
+    cd nymdaw
     ./waf configure
     ./waf build
-    ./build/dhippo
+    ./build/nymdaw

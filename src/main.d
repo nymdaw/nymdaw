@@ -13,7 +13,7 @@ private import ui.mainwindow;
 
 /// Applicatin entry point
 void main(string[] args) {
-    string appName = "dhippo";
+    string appName = "nymdaw";
 
     // populate a list of all available audio drivers
     string[] availableAudioDrivers;

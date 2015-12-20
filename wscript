@@ -10,7 +10,7 @@
 from waflib import Options
 import sys, os
 
-APPNAME = "dhippo"
+APPNAME = "nymdaw"
 VERSION = "0.0.1"
 
 top = "."
