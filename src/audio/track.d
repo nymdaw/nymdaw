@@ -1,5 +1,7 @@
 module audio.track;
 
+private import std.algorithm;
+
 public import audio.channel;
 public import audio.region;
 public import audio.timeline;
@@ -11,12 +13,19 @@ public:
     /// Register a region object with this track.
     /// This will automatically increase the the mixer's last frame, if the added region extends beyond
     /// the current end of the session.
-    void addRegion(Region region) {
+    void registerRegion(Region region) {
         region.timeline = _timeline;
         _regions ~= region;
         if(_timeline !is null) {
             _timeline.resizeIfNecessary(region.offset + region.nframes);
         }
+    }
+
+    /// Unregister a region object with this track.
+    /// This is useful if a region is moved from this track to another.
+    void unregisterRegion(Region region) {
+        zeroBuffer();
+        _regions = remove!(r => r is region)(_regions);
     }
 
     /// Returns: An array of all region objects currently registered with this track.

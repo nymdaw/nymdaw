@@ -129,6 +129,12 @@ protected:
     /// Derived classes may fill this buffer with audio data, then pass its pointer to `processMeter`.
     sample_t[maxBufferLength][2] buffer;
 
+    /// Initialize the audio buffer for this channel to silence
+    void zeroBuffer() @nogc nothrow {
+        import core.stdc.string: memset;
+        memset(buffer.ptr, 0, sample_t.sizeof * (maxBufferLength * 2));
+    }
+
     /// Returns: The fader gain, as a raw sample factor (not in dBFS)
     @property sample_t faderGain() const @nogc nothrow { return _faderGain; }
 

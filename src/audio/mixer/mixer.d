@@ -263,8 +263,10 @@ private:
                 }
             }
         }
-        foreach(t; _tracks) {
-            t.mixStereoNonInterleaved(offset, bufNFrames, mixBuf1, mixBuf2);
+        else {
+            foreach(t; _tracks) {
+                t.mixStereoNonInterleaved(offset, bufNFrames, mixBuf1, mixBuf2);
+            }
         }
     }
 

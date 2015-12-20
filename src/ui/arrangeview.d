@@ -1744,10 +1744,13 @@ public:
 
         /// The `TrackView` object representing the parent track of this region
         @property TrackView trackView() { return _trackView; }
-        /// ditto
-        @property TrackView trackView(TrackView newTrackView) {
-            _recomputeRegionGradient = true;
-            return (_trackView = newTrackView);
+
+        /// Move this region to another track, handling all requisite registering/unregistering
+        void moveToTrack(TrackView trackView) {
+            _trackView.unregisterRegion(this);
+            trackView.registerRegion(this);
+
+            _trackView = trackView;
         }
 
         /// Slice start frame, relative to start of sequence
@@ -1885,8 +1888,10 @@ public:
     private:
         /// This constructor should only be called by a parent track when registering a new region
         this(TrackView trackView, Region region) {
-            this.trackView = trackView;
             this.region = region;
+
+            _trackView = trackView;
+            _recomputeRegionGradient = true;
 
             _arrangeStateHistory = new StateHistory!ArrangeState(ArrangeState.emptyState());
             _editStateHistory = new StateHistory!EditState(EditState());
@@ -2783,16 +2788,16 @@ public:
         /// Params:
         /// region = The region to associate with the new `RegionView`
         /// addSoftLink = Whether to add a soft link to `region` to the source audio sequence
-        RegionView addRegion(Region region, bool addSoftLink = true) {
+        RegionView createRegion(Region region, bool addSoftLink = true) {
             auto newRegionView = new RegionView(this, region);
             if(addSoftLink) {
                 newRegionView.addSoftLinkToSequence();
             }
 
-            _track.addRegion(newRegionView.region);
+            _track.registerRegion(newRegionView.region);
 
             if(newRegionView.trackView !is this) {
-                newRegionView.trackView = this;
+                newRegionView._trackView = this;
             }
             _regionViews ~= newRegionView;
             this.outer._regionViews ~= newRegionView;
@@ -2801,6 +2806,16 @@ public:
             _vScroll.reconfigure();
 
             return newRegionView;
+        }
+
+        /// Register a region (via its view) with the underlying track object.
+        void registerRegion(RegionView regionView) {
+            _track.registerRegion(regionView.region);
+        }
+
+        /// Unregister a region (via its view) with the underlying track object.
+        void unregisterRegion(RegionView regionView) {
+            _track.unregisterRegion(regionView.region);
         }
 
         /// Draw all regions registered with this track
@@ -5260,7 +5275,7 @@ public:
                             if(regionView.previewTrackIndex >= 0 &&
                                regionView.previewTrackIndex < _trackViews.length &&
                                regionView.previewTrackIndex != _trackIndex(regionView.trackView)) {
-                                regionView.trackView = _trackViews[regionView.previewTrackIndex];
+                                regionView.moveToTrack(_trackViews[regionView.previewTrackIndex]);
                                 tracksModified = true;
                             }
                         }
@@ -5928,7 +5943,7 @@ public:
     /// region = A region to immediately add to the new track
     void createTrackView(string trackName, Region region) {
         auto newTrackView = _createTrackView(trackName);
-        newTrackView.addRegion(region);
+        newTrackView.createRegion(region);
         appendArrangeState(currentArrangeState!(ArrangeStateType.tracksEdit), true);
     }
 
@@ -6448,7 +6463,7 @@ public:
                         _audioSequencesApp.put(newRegion.audioSequence);
                         break;
                 }
-                auto newRegionView = trackView.addRegion(newRegion);
+                auto newRegionView = trackView.createRegion(newRegion);
                 newRegionView.sliceStartFrame = regionViewState.sliceStartFrame;
                 newRegionView.sliceEndFrame = regionViewState.sliceEndFrame;
                 newRegionView.selected = true;
