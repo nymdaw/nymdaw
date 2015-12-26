@@ -49,16 +49,23 @@ def configure( ctx ):
 
     # Currently only support dmd
     from waflib.Tools.compiler_d import d_compiler
-    d_compiler[ "default" ] = [ "dmd" ]
+    d_compiler[ "default" ] = [ "ldc2", "dmd" ]
 
     # Configure the D compiler
     ctx.load( "compiler_d" )
+    if "ldc2" == map(os.path.basename, ctx.env.D)[0]:
+        d_compiler = "ldc2"
+        version_flag_prefix = "-d-"
+    else:
+        d_compiler = "dmd"
+        version_flag_prefix = "-"
+
     ctx.env.append_value( "DFLAGS", "-w" )
 
     if opts.debug:
-        ctx.env.append_value( "DFLAGS", [ "-gc", "-debug" ] )
+        ctx.env.append_value( "DFLAGS", [ "-g" ] )
     else:
-        ctx.env.append_value( "DFLAGS", [ "-O", "-release", "-inline", "-boundscheck=off" ] )
+        ctx.env.append_value( "DFLAGS", [ "-O", "-release", "-boundscheck=off" ] )
 
     if opts.unittest:
         ctx.env.append_value( "DFLAGS", "-unittest" )
@@ -75,7 +82,7 @@ def configure( ctx ):
                       uselib_store = "jack",
                       mandatory = False ):
         ctx.define( "HAVE_JACK", 1 )
-        ctx.env.DFLAGS.append( "-version=HAVE_JACK" )
+        ctx.env.DFLAGS.append( version_flag_prefix + "version=HAVE_JACK" )
         found_audio_driver = True
 
     # Configure CoreAudio on OSX
@@ -84,7 +91,7 @@ def configure( ctx ):
             ctx.check_cc( framework_name = "AudioUnit", mandatory = False )):
             # Pass OSX frameworks to DMD
             ctx.env.LINKFLAGS_dprogram.extend( [ "-L-framework", "-LCoreAudio", "-L-framework", "-LAudioUnit" ] )
-            ctx.env.DFLAGS.append( "-version=HAVE_COREAUDIO" )
+            ctx.env.DFLAGS.append( version_flag_prefix + "version=HAVE_COREAUDIO" )
             found_audio_driver = True
 
     # Check for portaudio
@@ -93,7 +100,7 @@ def configure( ctx ):
                       uselib_store = "portaudio",
                       mandatory = not found_audio_driver ):
         ctx.define( "HAVE_PORTAUDIO", 1 )
-        ctx.env.DFLAGS.append( "-version=HAVE_PORTAUDIO" )
+        ctx.env.DFLAGS.append( version_flag_prefix + "version=HAVE_PORTAUDIO" )
         # remove -pthread flag
         if "-pthread" in ctx.env.LIB_portaudio:
             ctx.env.LIB_portaudio.remove( "-pthread" )
@@ -112,7 +119,7 @@ def configure( ctx ):
                       uselib_store = "mpg123",
                       mandatory = False ):
         ctx.define( "HAVE_MPG123", 1 )
-        ctx.env.DFLAGS.append( "-version=HAVE_MPG123" )
+        ctx.env.DFLAGS.append( version_flag_prefix + "version=HAVE_MPG123" )
 
     # Check for libsamplerate
     ctx.check_cfg( package = "samplerate",

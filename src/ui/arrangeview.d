@@ -6744,6 +6744,7 @@ public:
                     return true;
                 }
             }
+            return false;
         }
 
         this(T)(ArrangeStateType stateType, T stateData) if(isValidStateData!T) {
