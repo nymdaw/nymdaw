@@ -3,7 +3,6 @@
 module audio.region;
 
 private import std.algorithm;
-private import std.container.dlist;
 private import std.conv;
 private import std.math;
 private import std.path;
@@ -13,241 +12,17 @@ private import std.traits;
 private import std.typecons;
 
 private import core.atomic;
-private import core.sync.mutex;
 
 private import aubio;
 private import rubberband;
 private import samplerate;
 
-private import util.progress;
 private import util.scopedarray;
-private import util.sequence;
 
+public import audio.sequence;
 public import audio.timeline;
 public import audio.types;
-
-/// Progress state for importing audio files from disk
-alias LoadState = ProgressState!(StageDesc("read", "Loading file"),
-                                 StageDesc("resample", "Resampling"),
-                                 StageDesc("computeOverview", "Computing overview"));
-
-/// Progress state for computing audio onsets for a region
-alias ComputeOnsetsState = ProgressState!(StageDesc("computeOnsets", "Computing onsets"));
-
-/// Progress state for adjusting the gain of a region or slice of a region
-alias GainState = ProgressState!(StageDesc("gain", "Adjusting gain"));
-
-/// Progress state for normalizing a region or a slice of a region
-alias NormalizeState = ProgressState!(StageDesc("normalize", "Normalizing"));
-
-/// Progress state for exporting data to a file on disk
-alias SaveState = ProgressState!(StageDesc("write", "Writing file"));
-
-/// A wrapper structure around a buffer of raw, interleaved audio data.
-/// Stores the audio data, the number of channels, and its corresponding waveform cache.
-struct AudioSegment {
-    /// Initialize this segment and compute the waveform cache
-    this(immutable(sample_t[]) audioBuffer, channels_t nChannels) {
-        this.audioBuffer = audioBuffer;
-        this.nChannels = nChannels;
-        waveformCache = new WaveformCache(audioBuffer, nChannels);
-    }
-
-    @disable this();
-    @disable this(sample_t[]);
-
-    /// Returns: The length of the audio buffer corresponding to this segment.
-    @property size_t length() const @nogc nothrow {
-        return audioBuffer.length;
-    }
-
-    alias opDollar = length;
-
-    /// Params:
-    /// index = An array index relative to the audio buffer corresponding to this segment.
-    /// Returns: The audio sample at the specified index
-    sample_t opIndex(size_t index) const @nogc nothrow {
-        return audioBuffer[index];
-    }
-
-    /// Returns: A new AudioSegment corresponding to the specified slice.
-    immutable(AudioSegment) opSlice(size_t startIndex, size_t endIndex) const {
-        return cast(immutable)(AudioSegment(audioBuffer[startIndex .. endIndex],
-                                            nChannels,
-                                            waveformCache[startIndex / nChannels .. endIndex / nChannels]));
-    }
-
-    /// Raw, interleaved audio data
-    immutable(sample_t[]) audioBuffer;
-
-    /// The number of channels in the audio buffer
-    channels_t nChannels;
-
-    /// The waveform cache corresponding to the audio buffer
-    WaveformCache waveformCache;
-
-private:
-    /// This copy constructor should only be used by this structure's implementation.
-    this(immutable(sample_t[]) audioBuffer, channels_t nChannels, WaveformCache waveformCache) {
-        this.audioBuffer = audioBuffer;
-        this.nChannels = nChannels;
-        this.waveformCache = waveformCache;
-    }
-}
-
-/// A wrapper around a generic sequence, specific to audio regions.
-/// Stores a list of registered region "links", which are typically referred to as "soft copies" in the UI.
-/// This allows edits to a sequence to be immediatley reflected in all regions "linked" to the that sequence.
-final class AudioSequence {
-public:
-    /// Polymorphic base class for implementing links
-    static class Link {
-        this(Region region) {
-            this.region = region;
-        }
-
-        string name() {
-            return region.name;
-        }
-
-        /// The region object associated with this link
-        Region region;
-    }
-
-    /// Params:
-    /// originalBuffer = Raw, interleaved audio data from which to initialize this sequence
-    /// sampleRate = The sampling rate, in samples per second, of the audio data
-    /// nChannels = The number of channels in the audio data
-    /// name = The name of sequence. This is ypically the name of the file from which the audio data was read.
-    this(immutable(AudioSegment) originalBuffer, nframes_t sampleRate, channels_t nChannels, string name) {
-        sequence = new Sequence!(AudioSegment)(originalBuffer);
-
-        _mutex = new Mutex;
-
-        _sampleRate = sampleRate;
-        _nChannels = nChannels;
-        _name = name;
-    }
-
-    /// Params:
-    /// originalPieceTable = A precomputed piece table with which to initialize this sequence
-    /// sampleRate = The sampling rate, in samples per second, of the audio data
-    /// nChannels = The number of channels in the audio data
-    /// name = The name of sequence. This is ypically the name of the file from which the audio data was read.
-    this(AudioPieceTable originalPieceTable, nframes_t sampleRate, channels_t nChannels, string name) {
-        sequence = new Sequence!(AudioSegment)(originalPieceTable);
-
-        _mutex = new Mutex;
-
-        _sampleRate = sampleRate;
-        _nChannels = nChannels;
-        _name = name;
-    }
-
-    /// Copy constructor for creating a hard copy based on the current state of this sequence
-    this(AudioSequence other) {
-        this(cast(immutable)(AudioSegment(cast(immutable)(other.sequence[].toArray()), other.nChannels)),
-             other.sampleRate, other.nChannels, other.name ~ " (copy)");
-    }
-
-    /// The sequence implementation
-    Sequence!(AudioSegment) sequence;
-    alias sequence this;
-
-    /// The piece table type for the sequence implementation
-    alias AudioPieceTable = Sequence!(AudioSegment).PieceTable;
-
-    /// The piece entry type for hte sequence implementation
-    alias AudioPieceEntry = Sequence!(AudioSegment).PieceEntry;
-
-    /// Registers a soft link with this sequence
-    void addSoftLink(Link link) {
-        synchronized(_mutex) {
-            _softLinks.insertBack(link);
-        }
-    }
-
-    /// Removes a soft link that was previoulsy registered with this sequence
-    /// Params:
-    /// link = The soft link object to remove
-    /// equal = An equality predicate for comparing currently registered links with the link to be removed
-    void removeSoftLink(T)(T link, bool function(T x, T y) equal = function bool(T x, T y) { return x is y; })
-        if(is(T : Link)) {
-            synchronized(_mutex) {
-                auto softLinkRange = _softLinks[];
-                for(; !softLinkRange.empty; softLinkRange.popFront()) {
-                    auto front = cast(T)(softLinkRange.front);
-                    if(front !is null && equal(front, link)) {
-                        _softLinks.linearRemove(take(softLinkRange, 1));
-                        break;
-                    }
-                }
-            }
-        }
-
-    /// Call this function when a region is edited.
-    /// This will reflect the edits to that region to all other regions linked to the
-    /// sequence corresponding to the edited region.
-    void updateSoftLinks(nframes_t prevNFrames, nframes_t newNFrames) {
-        synchronized(_mutex) {
-            auto softLinkRange = _softLinks[];
-            for(; !softLinkRange.empty; softLinkRange.popFront()) {
-                softLinkRange.front.region.updateSliceEnd(prevNFrames, newNFrames);
-            }
-        }
-    }
-
-    /// Returns: A forward range of consisting of all links registered with this sequence.
-    @property auto softLinks() { return _softLinks[]; }
-
-    /// The total number of frames in the sequence
-    @property nframes_t nframes() { return cast(nframes_t)(sequence.length / nChannels); }
-
-    /// The sampling rate of the sequence, in samples per second
-    @property nframes_t sampleRate() const { return _sampleRate; }
-
-    /// The number of interleaved channels in the sequence's audio buffers
-    @property channels_t nChannels() const { return _nChannels; }
-
-    /// The name of the sequence. This is typically the name of the file from which the audio data was read.
-    @property string name() const { return _name; }
-
-private:
-    Mutex _mutex;
-    DList!Link _softLinks;
-
-    nframes_t _sampleRate;
-    channels_t _nChannels;
-    string _name;
-}
-
-/// Structure representing an audio onset (i.e., a transient or attack)
-struct Onset {
-    /// Index representing the relative frame of the onset from the start of the sequence
-    nframes_t onsetFrame;
-
-    /// The slice of audio directly to the left of this onset.
-    /// It extends from the previous onset (or the beginning of the sequence) to this onset.
-    AudioSequence.AudioPieceTable leftSource;
-
-    /// The slice of audio directly to the right of this onset
-    /// It extends from this onset to the next onset (or the end of the sequence).
-    AudioSequence.AudioPieceTable rightSource;
-}
-
-/// Structure containing the parameters for detecting the onsets in an audio sequence
-struct OnsetParams {
-    enum onsetThresholdMin = 0.0;
-    enum onsetThresholdMax = 1.0;
-    sample_t onsetThreshold = 0.3;
-
-    enum silenceThresholdMin = -90;
-    enum silenceThresholdMax = 0.0;
-    sample_t silenceThreshold = -90;
-}
-
-/// Sequence class instantiation for representing a series of onsets detected in an audio sequence
-alias OnsetSequence = Sequence!(Onset[]);
+public import audio.waveform;
 
 /// Class for an audio region that implements functionality for various audio editing operations.
 /// A region corresponds to an audio sequence, which may be linked to any number of other regions.
@@ -427,11 +202,11 @@ public:
             }
         }
 
-        auto immutable prevNFrames = _audioSeq.nframes;
+        immutable auto prevNFrames = _audioSeq.nframes;
         _audioSeq.replace(cast(immutable)(AudioSegment(cast(immutable)(subregionOutput), nChannels)),
                           (_sliceStartFrame + localStartFrame) * nChannels,
                           (_sliceStartFrame + localEndFrame) * nChannels);
-        auto immutable newNFrames = _audioSeq.nframes;
+        immutable auto newNFrames = _audioSeq.nframes;
         _audioSeq.updateSoftLinks(prevNFrames, newNFrames);
 
         return localStartFrame + subregionOutputLength;
@@ -457,10 +232,10 @@ public:
         immutable channels_t stretchNChannels = linkChannels ? nChannels : 1;
         immutable bool useSource = leftSource && rightSource;
 
-        auto immutable removeStartIndex = clamp((_sliceStartFrame + localStartFrame) * nChannels,
+        immutable auto removeStartIndex = clamp((_sliceStartFrame + localStartFrame) * nChannels,
                                                 0,
                                                 _audioSeq.length);
-        auto immutable removeEndIndex = clamp((_sliceStartFrame + localEndFrame) * nChannels,
+        immutable auto removeEndIndex = clamp((_sliceStartFrame + localEndFrame) * nChannels,
                                               removeStartIndex,
                                               _audioSeq.length);
 
@@ -629,10 +404,10 @@ public:
             }
         }
 
-        auto immutable prevNFrames = _audioSeq.nframes;
+        immutable auto prevNFrames = _audioSeq.nframes;
         _audioSeq.replace(cast(immutable)(AudioSegment(cast(immutable)(outputBuffer), nChannels)),
                           removeStartIndex, removeEndIndex);
-        auto immutable newNFrames = _audioSeq.nframes;
+        immutable auto newNFrames = _audioSeq.nframes;
         _audioSeq.updateSoftLinks(prevNFrames, newNFrames);
     }
 
@@ -649,11 +424,11 @@ public:
         _gainBuffer(audioBuffer, gainDB);
 
         // write the gain-adjusted buffer to the audio sequence
-        auto immutable prevNFrames = _audioSeq.nframes;
+        immutable auto prevNFrames = _audioSeq.nframes;
         _audioSeq.replace(cast(immutable)(AudioSegment(cast(immutable)(audioBuffer), nChannels)),
                           (_sliceStartFrame + localStartFrame) * nChannels,
                           (_sliceStartFrame + localEndFrame) * nChannels);
-        auto immutable newNFrames = _audioSeq.nframes;
+        immutable auto newNFrames = _audioSeq.nframes;
         _audioSeq.updateSoftLinks(prevNFrames, newNFrames);
 
         if(progressCallback !is null) {
@@ -671,10 +446,10 @@ public:
         _gainBuffer(audioBuffer, gainDB);
 
         // write the gain-adjusted region to the audio sequence
-        auto immutable prevNFrames = _audioSeq.nframes;
+        immutable auto prevNFrames = _audioSeq.nframes;
         _audioSeq.replace(cast(immutable)(AudioSegment(cast(immutable)(audioBuffer), nChannels)),
                           0, _audioSeq.length);
-        auto immutable newNFrames = _audioSeq.nframes;
+        immutable auto newNFrames = _audioSeq.nframes;
         _audioSeq.updateSoftLinks(prevNFrames, newNFrames);
 
         if(progressCallback !is null) {
@@ -695,11 +470,11 @@ public:
         _normalizeBuffer(audioBuffer, maxGainDB);
 
         // write the normalized buffer to the audio sequence
-        auto immutable prevNFrames = _audioSeq.nframes;
+        immutable auto prevNFrames = _audioSeq.nframes;
         _audioSeq.replace(cast(immutable)(AudioSegment(cast(immutable)(audioBuffer), nChannels)),
                           (_sliceStartFrame + localStartFrame) * nChannels,
                           (_sliceStartFrame + localEndFrame) * nChannels);
-        auto immutable newNFrames = _audioSeq.nframes;
+        immutable auto newNFrames = _audioSeq.nframes;
         _audioSeq.updateSoftLinks(prevNFrames, newNFrames);
 
         if(progressCallback !is null) {
@@ -717,9 +492,11 @@ public:
         _normalizeBuffer(audioBuffer, maxGainDB);
 
         // write the normalized region to the audio sequence
-        auto immutable prevNFrames = _audioSeq.nframes;
-        _audioSeq.replace(cast(immutable)(AudioSegment(cast(immutable)(audioBuffer), nChannels)), 0, _audioSeq.length);
-        auto immutable newNFrames = _audioSeq.nframes;
+        immutable auto prevNFrames = _audioSeq.nframes;
+        _audioSeq.replace(cast(immutable)(AudioSegment(cast(immutable)(audioBuffer), nChannels)),
+                          0,
+                          _audioSeq.length);
+        immutable auto newNFrames = _audioSeq.nframes;
         _audioSeq.updateSoftLinks(prevNFrames, newNFrames);
 
         if(progressCallback !is null) {
@@ -733,11 +510,11 @@ public:
         std.algorithm.reverse(audioBuffer);
 
         // write the reversed buffer to the audio sequence
-        auto immutable prevNFrames = _audioSeq.nframes;
+        immutable auto prevNFrames = _audioSeq.nframes;
         _audioSeq.replace(cast(immutable)(AudioSegment(cast(immutable)(audioBuffer), nChannels)),
                           (_sliceStartFrame + localStartFrame) * nChannels,
                           (_sliceStartFrame + localEndFrame) * nChannels);
-        auto immutable newNFrames = _audioSeq.nframes;
+        immutable auto newNFrames = _audioSeq.nframes;
         _audioSeq.updateSoftLinks(prevNFrames, newNFrames);
     }
 
@@ -747,11 +524,11 @@ public:
         _fadeInBuffer(audioBuffer);
 
         // write the faded buffer to the audio sequence
-        auto immutable prevNFrames = _audioSeq.nframes;
+        immutable auto prevNFrames = _audioSeq.nframes;
         _audioSeq.replace(cast(immutable)(AudioSegment(cast(immutable)(audioBuffer), nChannels)),
                           (_sliceStartFrame + localStartFrame) * nChannels,
                           (_sliceStartFrame + localEndFrame) * nChannels);
-        auto immutable newNFrames = _audioSeq.nframes;
+        immutable auto newNFrames = _audioSeq.nframes;
         _audioSeq.updateSoftLinks(prevNFrames, newNFrames);
     }
 
@@ -761,11 +538,11 @@ public:
         _fadeOutBuffer(audioBuffer);
 
         // write the faded buffer to the audio sequence
-        auto immutable prevNFrames = _audioSeq.nframes;
+        immutable auto prevNFrames = _audioSeq.nframes;
         _audioSeq.replace(cast(immutable)(AudioSegment(cast(immutable)(audioBuffer), nChannels)),
                           (_sliceStartFrame + localStartFrame) * nChannels,
                           (_sliceStartFrame + localEndFrame) * nChannels);
-        auto immutable newNFrames = _audioSeq.nframes;
+        immutable auto newNFrames = _audioSeq.nframes;
         _audioSeq.updateSoftLinks(prevNFrames, newNFrames);
     }
 
@@ -787,10 +564,10 @@ public:
                     size_t cacheIndex,
                     nframes_t binSize,
                     nframes_t sampleOffset) {
-        auto immutable cacheSize = WaveformCache.cacheBinSizes[cacheIndex];
+        immutable auto cacheSize = WaveformCache.cacheBinSizes[cacheIndex];
         foreach(piece; _audioSlice.table) {
-            auto immutable logicalStart = piece.logicalOffset / nChannels;
-            auto immutable logicalEnd = (piece.logicalOffset + piece.length) / nChannels;
+            immutable auto logicalStart = piece.logicalOffset / nChannels;
+            immutable auto logicalEnd = (piece.logicalOffset + piece.length) / nChannels;
             if(sampleOffset * binSize >= logicalStart && sampleOffset * binSize < logicalEnd) {
                 return sliceMin(piece.buffer.waveformCache.getWaveformBinned(channelIndex, cacheIndex).minValues
                                 [(sampleOffset * binSize - logicalStart) / cacheSize..
@@ -806,10 +583,10 @@ public:
                     size_t cacheIndex,
                     nframes_t binSize,
                     nframes_t sampleOffset) {
-        auto immutable cacheSize = WaveformCache.cacheBinSizes[cacheIndex];
+        immutable auto cacheSize = WaveformCache.cacheBinSizes[cacheIndex];
         foreach(piece; _audioSlice.table) {
-            auto immutable logicalStart = piece.logicalOffset / nChannels;
-            auto immutable logicalEnd = (piece.logicalOffset + piece.length) / nChannels;
+            immutable auto logicalStart = piece.logicalOffset / nChannels;
+            immutable auto logicalEnd = (piece.logicalOffset + piece.length) / nChannels;
             if(sampleOffset * binSize >= logicalStart && sampleOffset * binSize < logicalEnd) {
                 return sliceMax(piece.buffer.waveformCache.getWaveformBinned(channelIndex, cacheIndex).maxValues
                                 [(sampleOffset * binSize - logicalStart) / cacheSize ..
@@ -834,9 +611,9 @@ public:
     /// Does nothing if the offset is not within this region.
     void insertLocal(AudioSequence.AudioPieceTable insertSlice, nframes_t localFrameOffset) {
         if(localFrameOffset >= 0 && localFrameOffset < nframes) {
-            auto immutable prevNFrames = _audioSeq.nframes;
+            immutable auto prevNFrames = _audioSeq.nframes;
             _audioSeq.insert(insertSlice, (_sliceStartFrame + localFrameOffset) * nChannels);
-            auto immutable newNFrames = _audioSeq.nframes;
+            immutable auto newNFrames = _audioSeq.nframes;
             _audioSeq.updateSoftLinks(prevNFrames, newNFrames);
         }
     }
@@ -847,27 +624,27 @@ public:
         if(localFrameStart < localFrameEnd &&
            localFrameStart >= 0 && localFrameStart < nframes &&
            localFrameEnd >= 0 && localFrameEnd < nframes) {
-            auto immutable prevNFrames = _audioSeq.nframes;
+            immutable auto prevNFrames = _audioSeq.nframes;
             _audioSeq.remove((_sliceStartFrame + localFrameStart) * nChannels,
                              (_sliceStartFrame + localFrameEnd) * nChannels);
-            auto immutable newNFrames = _audioSeq.nframes;
+            immutable auto newNFrames = _audioSeq.nframes;
             _audioSeq.updateSoftLinks(prevNFrames, newNFrames);
         }
     }
 
     /// Undo the last edit operation
     void undoEdit() {
-        auto immutable prevNFrames = _audioSeq.nframes;
+        immutable auto prevNFrames = _audioSeq.nframes;
         _audioSeq.undo();
-        auto immutable newNFrames = _audioSeq.nframes;
+        immutable auto newNFrames = _audioSeq.nframes;
         _audioSeq.updateSoftLinks(prevNFrames, newNFrames);
     }
 
     /// Redo the last edit operation
     void redoEdit() {
-        auto immutable prevNFrames = _audioSeq.nframes;
+        immutable auto prevNFrames = _audioSeq.nframes;
         _audioSeq.redo();
-        auto immutable newNFrames = _audioSeq.nframes;
+        immutable auto newNFrames = _audioSeq.nframes;
         _audioSeq.updateSoftLinks(prevNFrames, newNFrames);
     }
 
@@ -887,7 +664,7 @@ public:
         ShrinkResult result;
 
         if(newStartFrameGlobal < offset) {
-            auto immutable delta = offset - newStartFrameGlobal;
+            immutable auto delta = offset - newStartFrameGlobal;
             if(delta < _sliceStartFrame) {
                 result = ShrinkResult(true, delta);
                 _offset -= delta;
@@ -903,7 +680,7 @@ public:
             }
         }
         else if(newStartFrameGlobal > offset) {
-            auto immutable delta = newStartFrameGlobal - offset;
+            immutable auto delta = newStartFrameGlobal - offset;
             if(_sliceStartFrame + delta < _sliceEndFrame) {
                 result = ShrinkResult(true, delta);
                 _offset += delta;
@@ -932,9 +709,9 @@ public:
         // by default, the result should indicate the operation was unsuccessful
         ShrinkResult result;
 
-        auto immutable endFrameGlobal = _offset + cast(nframes_t)(_audioSlice.length / nChannels);
+        immutable auto endFrameGlobal = _offset + cast(nframes_t)(_audioSlice.length / nChannels);
         if(newEndFrameGlobal < endFrameGlobal) {
-            auto immutable delta = endFrameGlobal - newEndFrameGlobal;
+            immutable auto delta = endFrameGlobal - newEndFrameGlobal;
             if(_sliceEndFrame > _sliceStartFrame + delta) {
                 result = ShrinkResult(true, delta);
                 _sliceEndFrame -= delta;
@@ -948,7 +725,7 @@ public:
             }
         }
         else if(newEndFrameGlobal > endFrameGlobal) {
-            auto immutable delta = newEndFrameGlobal - endFrameGlobal;
+            immutable auto delta = newEndFrameGlobal - endFrameGlobal;
             if(_sliceEndFrame + delta <= _audioSeq.nframes) {
                 result = ShrinkResult(true, delta);
                 _sliceEndFrame += delta;
@@ -1295,198 +1072,6 @@ private auto sliceMax(T)(T sourceData) if(isIterable!T && isNumeric!(typeof(sour
     return maxSample;
 }
 
-/// Stores the min/max sample values of a single-channel waveform at a specified binning size
-private final class WaveformBinned {
-public:
-    /// Compute this cache via raw audio data. The cache is for a single channel only.
-    /// Params:
-    /// binSize = The number of consecutive samples to bin for this cache
-    /// audioBuffer = The buffer of audio data to bin
-    /// nChannels = The number of interleaved channels in the audio buffer
-    /// channelIndex = The channel index to use for this cache
-    this(nframes_t binSize, immutable(sample_t[]) audioBuffer, channels_t nChannels, channels_t channelIndex) {
-        assert(binSize > 0);
-
-        _binSize = binSize;
-        auto immutable cacheLength = (audioBuffer.length / nChannels) / binSize;
-
-        sample_t[] minValues = new sample_t[](cacheLength);
-        sample_t[] maxValues = new sample_t[](cacheLength);
-
-        for(auto i = 0, j = 0; i < audioBuffer.length && j < cacheLength; i += binSize * nChannels, ++j) {
-            auto audioSlice = audioBuffer[i .. i + binSize * nChannels];
-            minValues[j] = 1;
-            maxValues[j] = -1;
-
-            for(auto k = channelIndex; k < audioSlice.length; k += nChannels) {
-                if(audioSlice[k] > maxValues[j]) maxValues[j] = audioSlice[k];
-                if(audioSlice[k] < minValues[j]) minValues[j] = audioSlice[k];
-            }
-        }
-
-        _minValues = cast(immutable)(minValues);
-        _maxValues = cast(immutable)(maxValues);
-    }
-
-    /// Compute this cache via another cache. The cache is for a single channel only.
-    /// Params:
-    /// binSize = The number of consecutive samples (with respect to the original audio buffer)
-    ///           to bin for this cache.
-    /// other = The source cache from which to compute this cache.
-    this(nframes_t binSize, in WaveformBinned other) {
-        assert(binSize > 0);
-
-        auto immutable binScale = binSize / other.binSize;
-        _binSize = binSize;
-
-        immutable size_t srcCount = min(other.minValues.length, other.maxValues.length);
-        immutable size_t destCount = srcCount / binScale;
-        
-        sample_t[] minValues = new sample_t[](destCount);
-        sample_t[] maxValues = new sample_t[](destCount);
-
-        for(auto i = 0, j = 0; i < srcCount && j < destCount; i += binScale, ++j) {
-            for(auto k = 0; k < binScale; ++k) {
-                minValues[j] = 1;
-                maxValues[j] = -1;
-                if(other.minValues[i + k] < minValues[j]) {
-                    minValues[j] = other.minValues[i + k];
-                }
-                if(other.maxValues[i + k] > maxValues[j]) {
-                    maxValues[j] = other.maxValues[i + k];
-                }
-            }
-        }
-
-        _minValues = cast(immutable)(minValues);
-        _maxValues = cast(immutable)(maxValues);
-    }
-
-    /// This constructor is for initializing this cache from a slice of a previously computed cache.
-    /// No binning occurs; the newly constructed cache will be identical to the source cache.
-    this(nframes_t binSize, immutable(sample_t[]) minValues, immutable(sample_t[]) maxValues) {
-        _binSize = binSize;
-        _minValues = minValues;
-        _maxValues = maxValues;
-    }
-
-    /// The number of consecutive samples (with respect to the original audio buffer)
-    @property nframes_t binSize() const { return _binSize; }
-
-    /// An array of binned cache values.
-    /// Each element represents the minimum sample value found over the binning length.
-    @property const(sample_t[]) minValues() const { return _minValues; }
-
-    /// An array of binned cache values.
-    /// Each element represents the maximum sample value found over the binning length.
-    @property const(sample_t[]) maxValues() const { return _maxValues; }
-
-    /// Returns: A new binned waveform for the specified slice.
-    WaveformBinned opSlice(size_t startIndex, size_t endIndex) const {
-        return new WaveformBinned(_binSize, _minValues[startIndex .. endIndex], _maxValues[startIndex .. endIndex]);
-    }
-
-private:
-    nframes_t _binSize;
-    immutable(sample_t[]) _minValues;
-    immutable(sample_t[]) _maxValues;
-}
-
-/// Waveform cache object for a region.
-/// Stores caches for all channels at various binning sizes for a specific region.
-private final class WaveformCache {
-public:
-    /// Static array of all cache binning sizes computed for all waveforms
-    static immutable nframes_t[] cacheBinSizes = [10, 20, 50, 100];
-    static assert(cacheBinSizes.length > 0);
-
-    /// Returns: `null` if the specified binning size was not found in the cache;
-    ///          otherwise, returns the cache index corresponding to the specified binning size.
-    static Nullable!size_t getCacheIndex(nframes_t binSize) {
-        Nullable!size_t cacheIndex;
-        foreach(i, cacheBinSize; cacheBinSizes) {
-            if(binSize == cacheBinSize) {
-                cacheIndex = i;
-                break;
-            }
-        }
-        return cacheIndex;
-    }
-
-    /// Computes the cache for all channels and binning sizes.
-    /// Params:
-    /// audioBuffer = The raw, interleaved audio data
-    /// nChannels = The number of interleaved channels in the audio data
-    this(immutable(sample_t[]) audioBuffer, channels_t nChannels) {
-        // initialize the cache
-        _waveformBinnedChannels = null;
-        _waveformBinnedChannels.reserve(nChannels);
-        for(channels_t channelIndex = 0; channelIndex < nChannels; ++channelIndex) {
-            WaveformBinned[] channelsBinned;
-            channelsBinned.reserve(cacheBinSizes.length);
-
-            // compute the first cache from the raw audio data
-            channelsBinned ~= new WaveformBinned(cacheBinSizes[0], audioBuffer, nChannels, channelIndex);
-
-            // compute the subsequent caches from previously computed caches
-            foreach(binIndex, binSize; cacheBinSizes[1 .. $]) {
-                // find a suitable cache from which to compute the next cache
-                Nullable!WaveformBinned prevWaveformBinned;
-                foreach(waveformBinned; retro(channelsBinned)) {
-                    if(binSize % waveformBinned.binSize == 0) {
-                        prevWaveformBinned = waveformBinned;
-                        break;
-                    }
-                }
-
-                if(prevWaveformBinned.isNull()) {
-                    channelsBinned ~= new WaveformBinned(binSize, audioBuffer, nChannels, channelIndex);
-                }
-                else {
-                    channelsBinned ~= new WaveformBinned(binSize, prevWaveformBinned);
-                }
-            }
-            _waveformBinnedChannels ~= channelsBinned;
-        }
-    }
-
-    /// Returns: A new waveform cache for the specified slice
-    WaveformCache opSlice(size_t startIndex, size_t endIndex) const {
-        WaveformBinned[][] result;
-        result.reserve(_waveformBinnedChannels.length);
-        foreach(channelsBinned; _waveformBinnedChannels) {
-            WaveformBinned[] resultChannelsBinned;
-            resultChannelsBinned.reserve(channelsBinned.length);
-            foreach(waveformBinned; channelsBinned) {
-                resultChannelsBinned ~= waveformBinned[startIndex / waveformBinned.binSize ..
-                                                       endIndex / waveformBinned.binSize];
-            }
-            result ~= resultChannelsBinned;
-        }
-        return new WaveformCache(result);
-    }
-
-    /// Params:
-    /// channelIndex = The channel for which to return a previoulsy computed binned waveform
-    /// cacheIndex = The index (computed from the `getCacheIndex` member function) for which
-    ///              to return a previously computed binned waveform.
-    ///              Each index corresponds to a specific binning size.
-    /// Returns: A previously computed binned waveform
-    const(WaveformBinned) getWaveformBinned(channels_t channelIndex, size_t cacheIndex) const {
-        return _waveformBinnedChannels[channelIndex][cacheIndex];
-    }
-
-private:
-    /// Constructor for copying the waveform cache.
-    /// This should only be used by this class's implementation.
-    this(WaveformBinned[][] waveformBinnedChannels) {
-        _waveformBinnedChannels = waveformBinnedChannels;
-    }
-
-    /// The cache of binned waveforms, indexed as [channel][waveformBinned]
-    WaveformBinned[][] _waveformBinnedChannels;
-}
-
 /// Resample audio in the given buffer
 sample_t[] convertSampleRate(sample_t[] audioBuffer,
                              channels_t nChannels,
@@ -1530,7 +1115,7 @@ sample_t[] convertSampleRate(sample_t[] audioBuffer,
         SRC_DATA srcData;
         srcData.data_in = dataIn.ptr;
         srcData.data_out = dataOut.ptr;
-        auto immutable nframes = audioBuffer.length / nChannels;
+        immutable auto nframes = audioBuffer.length / nChannels;
         srcData.input_frames = cast(typeof(srcData.input_frames))(nframes);
         srcData.output_frames = cast(typeof(srcData.output_frames))(ceil(nframes * srcRatio));
         srcData.src_ratio = srcRatio;

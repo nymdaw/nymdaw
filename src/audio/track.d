@@ -75,7 +75,7 @@ package:
         }
     }
 
-    /// Mix all registered regions into a non-interleaved stereo buffer and upate the meters
+    /// Mix all registered regions into a non-interleaved stereo buffer and update the meters
     /// Params:
     /// offset = The absolute frame index of playback, from the start of the session
     /// bufNFrames = The individual length of each output buffer
