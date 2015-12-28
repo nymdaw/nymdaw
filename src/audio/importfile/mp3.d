@@ -6,7 +6,9 @@ private import std.string;
 private import util.scopedarray;
 
 public import audio.importfile.resamplecallback;
+public import audio.progress;
 public import audio.region;
+public import audio.sequence;
 public import audio.types;
 
 version(HAVE_MPG123) {

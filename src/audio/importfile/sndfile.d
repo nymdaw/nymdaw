@@ -9,7 +9,9 @@ private import sndfile;
 private import samplerate;
 
 public import audio.importfile.resamplecallback;
+public import audio.progress;
 public import audio.region;
+public import audio.sequence;
 public import audio.types;
 
 /// Load an audio file via libsndfile

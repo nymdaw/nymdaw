@@ -1,24 +1,21 @@
-/// Collection of classes implementing audio sequences and audio regions
-
-module audio.region;
+module audio.region.region;
 
 private import std.algorithm;
 private import std.conv;
 private import std.math;
 private import std.path;
-private import std.range;
-private import std.string;
 private import std.traits;
 private import std.typecons;
 
 private import core.atomic;
 
-private import aubio;
-private import rubberband;
-private import samplerate;
-
 private import util.scopedarray;
 
+public import audio.onset;
+public import audio.progress;
+public import audio.region.effects;
+public import audio.region.samplerate;
+public import audio.region.stretch;
 public import audio.sequence;
 public import audio.timeline;
 public import audio.types;
@@ -79,15 +76,15 @@ public:
     /// Params:
     /// params = Parameter structure for the onset detection algorithm
     /// Returns: An array of frames at which an onset occurs, with frames given locally for this region
-    Onset[] getOnsetsLinkedChannels(ref const(OnsetParams) params,
-                                    ComputeOnsetsState.Callback progressCallback = null) {
-        return _getOnsets(params,
-                          _audioSlice,
-                          sampleRate,
-                          nChannels,
-                          0,
-                          true,
-                          progressCallback);
+    Onset[] computeOnsetsLinkedChannels(ref const(OnsetParams) params,
+                                        ComputeOnsetsState.Callback progressCallback = null) {
+        return computeOnsets(params,
+                             _audioSlice,
+                             sampleRate,
+                             nChannels,
+                             0,
+                             true,
+                             progressCallback);
     }
 
     /// Compute the onsets for a single channel.
@@ -95,121 +92,35 @@ public:
     /// params = Parameter structure for the onset detection algorithm
     /// channelIndex = The channel for which to detect onsets
     /// Returns: An array of frames at which an onset occurs, with frames given locally for this region
-    Onset[] getOnsetsSingleChannel(ref const(OnsetParams) params,
-                                   channels_t channelIndex,
-                                   ComputeOnsetsState.Callback progressCallback = null) {
-        return _getOnsets(params,
-                          _audioSlice,
-                          sampleRate,
-                          nChannels,
-                          channelIndex,
-                          false,
-                          progressCallback);
-    }
-
-    /// Compute the onsets for both channels of a given audio sequence slice.
-    /// All channels are summed before onset detection.
-    /// Params:
-    /// params = Parameter structure for the onset detection algorithm
-    /// pieceTable = The audio sequence slice for which to detect onsets
-    /// sampleRate = The sampling rate, in samples per second, of the given audio sequence slice
-    /// nChannels = The number of channels in the given audio sequence slice
-    /// Returns: An array of frames at which an onset occurs in a given piece table,
-    ///          with frames given locally
-    static Onset[] getOnsetsLinkedChannels(ref const(OnsetParams) params,
-                                           AudioSequence.AudioPieceTable pieceTable,
-                                           nframes_t sampleRate,
-                                           channels_t nChannels,
-                                           ComputeOnsetsState.Callback progressCallback = null) {
-        return _getOnsets(params,
-                          pieceTable,
-                          sampleRate,
-                          nChannels,
-                          0,
-                          true,
-                          progressCallback);
-    }
-
-    /// Compute the onsets for a single channel of a given audio sequence slice.
-    /// Params:
-    /// params = Parameter structure for the onset detection algorithm
-    /// pieceTable = The audio sequence slice for which to detect onsets
-    /// sampleRate = The sampling rate, in samples per second, of the given audio sequence slice
-    /// nChannels = The number of channels in the given audio sequence slice
-    /// channelIndex = The channel for which to detect onsets
-    /// Returns: An array of frames at which an onset occurs in a given piece table, with frames given locally
-    static Onset[] getOnsetsSingleChannel(ref const(OnsetParams) params,
-                                          AudioSequence.AudioPieceTable pieceTable,
-                                          nframes_t sampleRate,
-                                          channels_t nChannels,
-                                          channels_t channelIndex,
-                                          ComputeOnsetsState.Callback progressCallback = null) {
-        return _getOnsets(params,
-                          pieceTable,
-                          sampleRate,
-                          nChannels,
-                          channelIndex,
-                          false,
-                          progressCallback);
+    Onset[] computeOnsetsSingleChannel(ref const(OnsetParams) params,
+                                       channels_t channelIndex,
+                                       ComputeOnsetsState.Callback progressCallback = null) {
+        return computeOnsets(params,
+                             _audioSlice,
+                             sampleRate,
+                             nChannels,
+                             channelIndex,
+                             false,
+                             progressCallback);
     }
 
     /// Stretches the subregion between the given local indices according to stretchRatio
     /// Returns: The local end frame of the stretch
     nframes_t stretchSubregion(nframes_t localStartFrame, nframes_t localEndFrame, double stretchRatio) {
-        immutable channels_t nChannels = this.nChannels;
-
-        uint subregionLength = cast(uint)(localEndFrame - localStartFrame);
-        ScopedArray!(float[][]) subregionChannels = new float[][](nChannels);
-        ScopedArray!(float*[]) subregionPtr = new float*[](nChannels);
-        for(auto i = 0; i < nChannels; ++i) {
-            float[] subregion = new float[](subregionLength);
-            subregionChannels[i] = subregion;
-            subregionPtr[i] = subregion.ptr;
-        }
-
-        foreach(channels_t channelIndex, channel; subregionChannels) {
-            foreach(i, ref sample; channel) {
-                sample = _audioSlice[(localStartFrame + i) * this.nChannels + channelIndex];
-            }
-        }
-
-        uint subregionOutputLength = cast(uint)(subregionLength * stretchRatio);
-        ScopedArray!(float[][]) subregionOutputChannels = new float[][](nChannels);
-        ScopedArray!(float*[]) subregionOutputPtr = new float*[](nChannels);
-        for(auto i = 0; i < nChannels; ++i) {
-            float[] subregionOutput = new float[](subregionOutputLength);
-            subregionOutputChannels[i] = subregionOutput;
-            subregionOutputPtr[i] = subregionOutput.ptr;
-        }
-
-        RubberBandState rState = rubberband_new(sampleRate,
-                                                nChannels,
-                                                RubberBandOption.RubberBandOptionProcessOffline,
-                                                stretchRatio,
-                                                1.0);
-        rubberband_set_max_process_size(rState, subregionLength);
-        rubberband_set_expected_input_duration(rState, subregionLength);
-        rubberband_study(rState, subregionPtr.ptr, subregionLength, 1);
-        rubberband_process(rState, subregionPtr.ptr, subregionLength, 1);
-        while(rubberband_available(rState) < subregionOutputLength) {}
-        rubberband_retrieve(rState, subregionOutputPtr.ptr, subregionOutputLength);
-        rubberband_delete(rState);
-
-        sample_t[] subregionOutput = new sample_t[](subregionOutputLength * nChannels);
-        foreach(channels_t channelIndex, channel; subregionOutputChannels) {
-            foreach(i, sample; channel) {
-                subregionOutput[i * nChannels + channelIndex] = sample;
-            }
-        }
+        sample_t[] subregionOutputBuffer = stretchSubregionBuffer(_audioSlice[localStartFrame * nChannels ..
+                                                                              localEndFrame * nChannels],
+                                                                  nChannels,
+                                                                  sampleRate,
+                                                                  stretchRatio);
 
         immutable auto prevNFrames = _audioSeq.nframes;
-        _audioSeq.replace(cast(immutable)(AudioSegment(cast(immutable)(subregionOutput), nChannels)),
+        _audioSeq.replace(cast(immutable)(AudioSegment(cast(immutable)(subregionOutputBuffer), nChannels)),
                           (_sliceStartFrame + localStartFrame) * nChannels,
                           (_sliceStartFrame + localEndFrame) * nChannels);
         immutable auto newNFrames = _audioSeq.nframes;
         _audioSeq.updateSoftLinks(prevNFrames, newNFrames);
 
-        return localStartFrame + subregionOutputLength;
+        return cast(nframes_t)(localStartFrame + subregionOutputBuffer.length / nChannels);
     }
 
     /// Stretch the audio between `localStartFrame` and `localEndFrame`,
@@ -229,9 +140,6 @@ public:
                            channels_t singleChannelIndex = 0,
                            AudioSequence.AudioPieceTable leftSource = AudioSequence.AudioPieceTable.init,
                            AudioSequence.AudioPieceTable rightSource = AudioSequence.AudioPieceTable.init) {
-        immutable channels_t stretchNChannels = linkChannels ? nChannels : 1;
-        immutable bool useSource = leftSource && rightSource;
-
         immutable auto removeStartIndex = clamp((_sliceStartFrame + localStartFrame) * nChannels,
                                                 0,
                                                 _audioSeq.length);
@@ -239,173 +147,22 @@ public:
                                               removeStartIndex,
                                               _audioSeq.length);
 
-        immutable double firstScaleFactor = (localSrcFrame > localStartFrame) ?
-            (cast(double)(localDestFrame - localStartFrame) /
-             cast(double)(useSource ? leftSource.length / nChannels : localSrcFrame - localStartFrame)) : 0;
-        immutable double secondScaleFactor = (localEndFrame > localSrcFrame) ?
-            (cast(double)(localEndFrame - localDestFrame) /
-             cast(double)(useSource ? rightSource.length / nChannels : localEndFrame - localSrcFrame)) : 0;
-
-        if(useSource) {
-            localStartFrame = 0;
-            localSrcFrame = (localStartFrame < localSrcFrame) ? localSrcFrame - localStartFrame : 0;
-            localDestFrame = (localStartFrame < localDestFrame) ? localDestFrame - localStartFrame : 0;
-            localEndFrame = (localStartFrame < localEndFrame) ? localEndFrame - localStartFrame : 0;
-        }
-
-        uint firstHalfLength = cast(uint)(useSource ?
-                                          leftSource.length / nChannels :
-                                          localSrcFrame - localStartFrame);
-        uint secondHalfLength = cast(uint)(useSource ?
-                                           rightSource.length / nChannels :
-                                           localEndFrame - localSrcFrame);
-        ScopedArray!(float[][]) firstHalfChannels = new float[][](stretchNChannels);
-        ScopedArray!(float[][]) secondHalfChannels = new float[][](stretchNChannels);
-        ScopedArray!(float*[]) firstHalfPtr = new float*[](stretchNChannels);
-        ScopedArray!(float*[]) secondHalfPtr = new float*[](stretchNChannels);
-        for(auto i = 0; i < stretchNChannels; ++i) {
-            float[] firstHalf = new float[](firstHalfLength);
-            float[] secondHalf = new float[](secondHalfLength);
-            firstHalfChannels[i] = firstHalf;
-            secondHalfChannels[i] = secondHalf;
-            firstHalfPtr[i] = firstHalf.ptr;
-            secondHalfPtr[i] = secondHalf.ptr;
-        }
-
-        if(useSource) {
-            if(linkChannels) {
-                foreach(channels_t channelIndex, channel; firstHalfChannels) {
-                    foreach(i, ref sample; channel) {
-                        sample = leftSource[i * nChannels + channelIndex];
-                    }
-                }
-                foreach(channels_t channelIndex, channel; secondHalfChannels) {
-                    foreach(i, ref sample; channel) {
-                        sample = rightSource[i * nChannels + channelIndex];
-                    }
-                }
-            }
-            else {
-                foreach(i, ref sample; firstHalfChannels[0]) {
-                    sample = leftSource[i * nChannels + singleChannelIndex];
-                }
-                foreach(i, ref sample; secondHalfChannels[0]) {
-                    sample = rightSource[i * nChannels + singleChannelIndex];
-                }
-            }
-        }
-        else {
-            if(linkChannels) {
-                foreach(channels_t channelIndex, channel; firstHalfChannels) {
-                    foreach(i, ref sample; channel) {
-                        sample = _audioSlice[(localStartFrame + i) * nChannels + channelIndex];
-                    }
-                }
-                foreach(channels_t channelIndex, channel; secondHalfChannels) {
-                    foreach(i, ref sample; channel) {
-                        sample = _audioSlice[(localSrcFrame + i) * nChannels + channelIndex];
-                    }
-                }
-            }
-            else {
-                foreach(i, ref sample; firstHalfChannels[0]) {
-                    sample = _audioSlice[(localStartFrame + i) * nChannels + singleChannelIndex];
-                }
-                foreach(i, ref sample; secondHalfChannels[0]) {
-                    sample = _audioSlice[(localSrcFrame + i) * nChannels + singleChannelIndex];
-                }
-            }
-        }
-
-        uint firstHalfOutputLength = cast(uint)(firstHalfLength * firstScaleFactor);
-        uint secondHalfOutputLength = cast(uint)(secondHalfLength * secondScaleFactor);
-        ScopedArray!(float[][]) firstHalfOutputChannels = new float[][](stretchNChannels);
-        ScopedArray!(float[][]) secondHalfOutputChannels = new float[][](stretchNChannels);
-        ScopedArray!(float*[]) firstHalfOutputPtr = new float*[](stretchNChannels);
-        ScopedArray!(float*[]) secondHalfOutputPtr = new float*[](stretchNChannels);
-        for(auto i = 0; i < stretchNChannels; ++i) {
-            float[] firstHalfOutput = new float[](firstHalfOutputLength);
-            float[] secondHalfOutput = new float[](secondHalfOutputLength);
-            firstHalfOutputChannels[i] = firstHalfOutput;
-            secondHalfOutputChannels[i] = secondHalfOutput;
-            firstHalfOutputPtr[i] = firstHalfOutput.ptr;
-            secondHalfOutputPtr[i] = secondHalfOutput.ptr;
-        }
-
-        if(firstScaleFactor > 0) {
-            RubberBandState rState = rubberband_new(sampleRate,
-                                                    stretchNChannels,
-                                                    RubberBandOption.RubberBandOptionProcessOffline,
-                                                    firstScaleFactor,
-                                                    1.0);
-            rubberband_set_max_process_size(rState, firstHalfLength);
-            rubberband_set_expected_input_duration(rState, firstHalfLength);
-            rubberband_study(rState, firstHalfPtr.ptr, firstHalfLength, 1);
-            rubberband_process(rState, firstHalfPtr.ptr, firstHalfLength, 1);
-            while(rubberband_available(rState) < firstHalfOutputLength) {}
-            rubberband_retrieve(rState, firstHalfOutputPtr.ptr, firstHalfOutputLength);
-            rubberband_delete(rState);
-        }
-
-        if(secondScaleFactor > 0) {
-            RubberBandState rState = rubberband_new(sampleRate,
-                                                    stretchNChannels,
-                                                    RubberBandOption.RubberBandOptionProcessOffline,
-                                                    secondScaleFactor,
-                                                    1.0);
-            rubberband_set_max_process_size(rState, secondHalfLength);
-            rubberband_set_expected_input_duration(rState, secondHalfLength);
-            rubberband_study(rState, secondHalfPtr.ptr, secondHalfLength, 1);
-            rubberband_process(rState, secondHalfPtr.ptr, secondHalfLength, 1);
-            while(rubberband_available(rState) < secondHalfOutputLength) {}
-            rubberband_retrieve(rState, secondHalfOutputPtr.ptr, secondHalfOutputLength);
-            rubberband_delete(rState);
-        }
-
-        sample_t[] outputBuffer = new sample_t[]((firstHalfOutputLength + secondHalfOutputLength) * nChannels);
-        if(linkChannels) {
-            foreach(channels_t channelIndex, channel; firstHalfOutputChannels) {
-                foreach(i, sample; channel) {
-                    outputBuffer[i * nChannels + channelIndex] = sample;
-                }
-            }
-            auto secondHalfOffset = firstHalfOutputLength * nChannels;
-            foreach(channels_t channelIndex, channel; secondHalfOutputChannels) {
-                foreach(i, sample; channel) {
-                    outputBuffer[secondHalfOffset + i * nChannels + channelIndex] = sample;
-                }
-            }
-        }
-        else {
-            auto firstHalfSourceOffset = removeStartIndex;
-            foreach(i, sample; firstHalfOutputChannels[0]) {
-                for(channels_t channelIndex = 0; channelIndex < nChannels; ++channelIndex) {
-                    if(channelIndex == singleChannelIndex) {
-                        outputBuffer[i * nChannels + channelIndex] = sample;
-                    }
-                    else {
-                        outputBuffer[i * nChannels + channelIndex] =
-                            _audioSeq[firstHalfSourceOffset + i * nChannels + channelIndex];
-                    }
-                }
-            }
-            auto secondHalfOutputOffset = firstHalfOutputLength * nChannels;
-            auto secondHalfSourceOffset = firstHalfSourceOffset + secondHalfOutputOffset;
-            foreach(i, sample; secondHalfOutputChannels[0]) {
-                for(channels_t channelIndex = 0; channelIndex < nChannels; ++channelIndex) {
-                    if(channelIndex == singleChannelIndex) {
-                        outputBuffer[secondHalfOutputOffset + i * nChannels + channelIndex] = sample;
-                    }
-                    else {
-                        outputBuffer[secondHalfOutputOffset + i * nChannels + channelIndex] =
-                            _audioSeq[secondHalfSourceOffset + i * nChannels + channelIndex];
-                    }
-                }
-            }
-        }
+        sample_t[] subregionOutputBuffer = stretchThreePointBuffer(_audioSeq,
+                                                                   _audioSlice,
+                                                                   removeStartIndex,
+                                                                   nChannels,
+                                                                   sampleRate,
+                                                                   localStartFrame,
+                                                                   localSrcFrame,
+                                                                   localDestFrame,
+                                                                   localEndFrame,
+                                                                   linkChannels,
+                                                                   singleChannelIndex,
+                                                                   leftSource,
+                                                                   rightSource);
 
         immutable auto prevNFrames = _audioSeq.nframes;
-        _audioSeq.replace(cast(immutable)(AudioSegment(cast(immutable)(outputBuffer), nChannels)),
+        _audioSeq.replace(cast(immutable)(AudioSegment(cast(immutable)(subregionOutputBuffer), nChannels)),
                           removeStartIndex, removeEndIndex);
         immutable auto newNFrames = _audioSeq.nframes;
         _audioSeq.updateSoftLinks(prevNFrames, newNFrames);
@@ -421,7 +178,7 @@ public:
         }
 
         sample_t[] audioBuffer = _audioSlice[localStartFrame * nChannels .. localEndFrame * nChannels].toArray();
-        _gainBuffer(audioBuffer, gainDB);
+        gainBuffer(audioBuffer, gainDB);
 
         // write the gain-adjusted buffer to the audio sequence
         immutable auto prevNFrames = _audioSeq.nframes;
@@ -433,7 +190,7 @@ public:
 
         if(progressCallback !is null) {
             progressCallback(GainState.complete, 1);
-        }        
+        }
     }
 
     /// Adjust the gain, in dBFS, of the entire region
@@ -443,7 +200,7 @@ public:
         }
 
         sample_t[] audioBuffer = _audioSeq[].toArray();
-        _gainBuffer(audioBuffer, gainDB);
+        gainBuffer(audioBuffer, gainDB);
 
         // write the gain-adjusted region to the audio sequence
         immutable auto prevNFrames = _audioSeq.nframes;
@@ -467,7 +224,7 @@ public:
         }
 
         sample_t[] audioBuffer = _audioSlice[localStartFrame * nChannels .. localEndFrame * nChannels].toArray();
-        _normalizeBuffer(audioBuffer, maxGainDB);
+        normalizeBuffer(audioBuffer, maxGainDB);
 
         // write the normalized buffer to the audio sequence
         immutable auto prevNFrames = _audioSeq.nframes;
@@ -489,7 +246,7 @@ public:
         }
 
         sample_t[] audioBuffer = _audioSeq[].toArray();
-        _normalizeBuffer(audioBuffer, maxGainDB);
+        normalizeBuffer(audioBuffer, maxGainDB);
 
         // write the normalized region to the audio sequence
         immutable auto prevNFrames = _audioSeq.nframes;
@@ -521,7 +278,7 @@ public:
     /// Linearly fade in a subregion from `localStartFrame` to `localEndFrame`
     void fadeIn(nframes_t localStartFrame, nframes_t localEndFrame) {
         sample_t[] audioBuffer = _audioSlice[localStartFrame * nChannels .. localEndFrame * nChannels].toArray();
-        _fadeInBuffer(audioBuffer);
+        fadeInBuffer(audioBuffer);
 
         // write the faded buffer to the audio sequence
         immutable auto prevNFrames = _audioSeq.nframes;
@@ -535,7 +292,7 @@ public:
     /// Linearly fade out a subregion from `localStartFrame` to `localEndFrame`
     void fadeOut(nframes_t localStartFrame, nframes_t localEndFrame) {
         sample_t[] audioBuffer = _audioSlice[localStartFrame * nChannels .. localEndFrame * nChannels].toArray();
-        _fadeOutBuffer(audioBuffer);
+        fadeOutBuffer(audioBuffer);
 
         // write the faded buffer to the audio sequence
         immutable auto prevNFrames = _audioSeq.nframes;
@@ -602,7 +359,7 @@ public:
             (frame < offset + nframes ? _audioSlice[(frame - offset) * nChannels + channelIndex] : 0) : 0;
     }
 
-    /// Returns: A slice of the internal audio sequence, using local indexes as input
+    /// Returns: A slice of the internal audio sequence, using local indices as input
     AudioSequence.AudioPieceTable getSliceLocal(nframes_t localFrameStart, nframes_t localFrameEnd) {
         return _audioSlice[localFrameStart * nChannels .. localFrameEnd * nChannels];
     }
@@ -766,7 +523,7 @@ public:
         _updateSlice();
         if(timeline !is null) {
             timeline.resizeIfNecessary(offset + nframes);
-        }        
+        }
         return _sliceEndFrame;
     }
 
@@ -798,7 +555,6 @@ public:
     /// ditto
     @property string name(string newName) { return (_name = newName); }
 
-package:
     /// The arguments are the total number of frames in the audio sequence before/after a modification.
     /// This function adjusts the ending frame of this region's slice accordingly.
     /// It also updates the internal audio slice cache for this region.
@@ -824,164 +580,6 @@ package:
     Timeline timeline;
 
 private:
-    /// Adjust the gain of an audio buffer.
-    /// Note that this does not send a progress completion message.
-    static void _gainBuffer(sample_t[] audioBuffer,
-                            sample_t gainDB,
-                            GainState.Callback progressCallback = null) {
-        sample_t sampleFactor = pow(10, gainDB / 20);
-        foreach(i, ref s; audioBuffer) {
-            s *= sampleFactor;
-
-            if(progressCallback !is null && i % (audioBuffer.length / GainState.stepsPerStage) == 0) {
-                progressCallback(GainState.gain, cast(double)(i) / cast(double)(audioBuffer.length));
-            }
-        }
-    }
-
-    /// Normalize an audio buffer.
-    /// Note that this does not send a progress completion message.
-    static void _normalizeBuffer(sample_t[] audioBuffer,
-                                 sample_t maxGainDB = 0.1f,
-                                 NormalizeState.Callback progressCallback = null) {
-        // calculate the maximum sample
-        sample_t minSample = 1;
-        sample_t maxSample = -1;
-        foreach(s; audioBuffer) {
-            if(s > maxSample) maxSample = s;
-            if(s < minSample) minSample = s;
-        }
-        maxSample = max(abs(minSample), abs(maxSample));
-
-        // normalize the buffer
-        sample_t sampleFactor = pow(10, (maxGainDB > 0 ? 0 : maxGainDB) / 20) / maxSample;
-        foreach(i, ref s; audioBuffer) {
-            s *= sampleFactor;
-
-            if(progressCallback !is null && i % (audioBuffer.length / NormalizeState.stepsPerStage) == 0) {
-                progressCallback(NormalizeState.normalize, cast(double)(i) / cast(double)(audioBuffer.length));
-            }
-        }
-    }
-
-    /// Linearly fade in an audio buffer, in-place
-    static void _fadeInBuffer(sample_t[] audioBuffer) {
-        immutable sample_t bufferLength = cast(sample_t)(audioBuffer.length);
-        foreach(i, ref s; audioBuffer) {
-            s *= cast(sample_t)(i) / bufferLength;
-        }
-    }
-
-    /// Linearly fade out an audio buffer, in-place
-    static void _fadeOutBuffer(sample_t[] audioBuffer) {
-        immutable sample_t bufferLength = cast(sample_t)(audioBuffer.length);
-        foreach(i, ref s; audioBuffer) {
-            s *= 1 - cast(sample_t)(i) / bufferLength;
-        }
-    }
-
-    /// Implementation of the onset detection functionality.
-    /// Note that `ChannelIndex` is ignored when `linkChannels` is `true`.
-    static Onset[] _getOnsets(ref const(OnsetParams) params,
-                              AudioSequence.AudioPieceTable pieceTable,
-                              nframes_t sampleRate,
-                              channels_t nChannels,
-                              channels_t channelIndex,
-                              bool linkChannels,
-                              ComputeOnsetsState.Callback progressCallback = null) {
-        immutable nframes_t nframes = cast(nframes_t)(pieceTable.length / nChannels);
-        immutable nframes_t framesPerProgressStep =
-            (nframes / ComputeOnsetsState.stepsPerStage) * (linkChannels ? 1 : nChannels);
-        nframes_t progressStep;
-
-        immutable uint windowSize = 512;
-        immutable uint hopSize = 256;
-        string onsetMethod = "default";
-
-        auto onsetThreshold = clamp(params.onsetThreshold,
-                                    OnsetParams.onsetThresholdMin,
-                                    OnsetParams.onsetThresholdMax);
-        auto silenceThreshold = clamp(params.silenceThreshold,
-                                      OnsetParams.silenceThresholdMin,
-                                      OnsetParams.silenceThresholdMax);
-
-        fvec_t* onsetBuffer = new_fvec(1);
-        fvec_t* hopBuffer = new_fvec(hopSize);
-
-        auto onsetsApp = appender!(Onset[]);
-        aubio_onset_t* o = new_aubio_onset(cast(char*)(onsetMethod.toStringz()), windowSize, hopSize, sampleRate);
-        aubio_onset_set_threshold(o, onsetThreshold);
-        aubio_onset_set_silence(o, silenceThreshold);
-        for(nframes_t samplesRead = 0; samplesRead < nframes; samplesRead += hopSize) {
-            uint hopSizeLimit;
-            if(((hopSize - 1 + samplesRead) * nChannels + channelIndex) > pieceTable.length) {
-                hopSizeLimit = nframes - samplesRead;
-                fvec_zeros(hopBuffer);
-            }
-            else {
-                hopSizeLimit = hopSize;
-            }
-
-            if(linkChannels) {
-                for(auto sample = 0; sample < hopSizeLimit; ++sample) {
-                    hopBuffer.data[sample] = 0;
-                    for(channels_t i = 0; i < nChannels; ++i) {
-                        hopBuffer.data[sample] += pieceTable[(sample + samplesRead) * nChannels + i];
-                    }
-                }
-            }
-            else {
-                for(auto sample = 0; sample < hopSizeLimit; ++sample) {
-                    hopBuffer.data[sample] = pieceTable[(sample + samplesRead) * nChannels + channelIndex];
-                }
-            }
-
-            aubio_onset_do(o, hopBuffer, onsetBuffer);
-            if(onsetBuffer.data[0] != 0) {
-                auto lastOnset = aubio_onset_get_last(o);
-                if(lastOnset != 0) {
-                    if(onsetsApp.data.length > 0) {
-                        // compute the right source for the previous onset
-                        onsetsApp.data[$ - 1].rightSource =
-                            pieceTable[onsetsApp.data[$ - 1].onsetFrame * nChannels .. lastOnset * nChannels];
-                        // append the current onset and its left source
-                        onsetsApp.put(Onset(lastOnset, pieceTable[onsetsApp.data[$ - 1].onsetFrame * nChannels ..
-                                                                  lastOnset * nChannels]));
-                    }
-                    else {
-                        // append the leftmost onset
-                        onsetsApp.put(Onset(lastOnset, pieceTable[0 .. lastOnset * nChannels]));
-                    }
-                }
-            }
-            // compute the right source for the last onset
-            if(onsetsApp.data.length > 0) {
-                onsetsApp.data[$ - 1].rightSource =
-                    pieceTable[onsetsApp.data[$ - 1].onsetFrame * nChannels .. pieceTable.length];
-            }
-
-            if((samplesRead > progressStep) && progressCallback) {
-                progressStep = samplesRead + framesPerProgressStep;
-                if(linkChannels) {
-                    progressCallback(ComputeOnsetsState.computeOnsets,
-                                     cast(double)(samplesRead) / cast(double)(nframes));
-                }
-                else {
-                    progressCallback(ComputeOnsetsState.computeOnsets,
-                                     cast(double)(samplesRead + nframes * channelIndex) /
-                                     cast(double)(nframes * nChannels));
-                }
-            }
-        }
-        del_aubio_onset(o);
-
-        del_fvec(onsetBuffer);
-        del_fvec(hopBuffer);
-        aubio_cleanup();
-
-        return onsetsApp.data;
-    }
-
     /// Recompute the current audio slice from the source audio sequence of this region
     void _updateSlice() {
         _audioSlice = _audioSeq[_sliceStartFrame * nChannels .. _sliceEndFrame * nChannels];
@@ -1070,69 +668,4 @@ private auto sliceMax(T)(T sourceData) if(isIterable!T && isNumeric!(typeof(sour
         if(s > maxSample) maxSample = s;
     }
     return maxSample;
-}
-
-/// Resample audio in the given buffer
-sample_t[] convertSampleRate(sample_t[] audioBuffer,
-                             channels_t nChannels,
-                             nframes_t oldSampleRate,
-                             nframes_t newSampleRate,
-                             SampleRateConverter sampleRateConverter,
-                             LoadState.Callback progressCallback = null) {
-    if(newSampleRate != oldSampleRate && newSampleRate > 0) {
-        if(progressCallback !is null) {
-            progressCallback(LoadState.resample, 0);
-        }
-
-        // select the algorithm to use for sample rate conversion
-        int converterType;
-        final switch(sampleRateConverter) {
-            case SampleRateConverter.best:
-                converterType = SRC_SINC_BEST_QUALITY;
-                break;
-
-            case SampleRateConverter.medium:
-                converterType = SRC_SINC_MEDIUM_QUALITY;
-                break;
-
-            case SampleRateConverter.fastest:
-                converterType = SRC_SINC_FASTEST;
-                break;
-        }
-
-        // libsamplerate requires floats
-        static assert(is(sample_t == float));
-
-        // allocate audio buffers for input/output
-        ScopedArray!(float[]) dataIn = audioBuffer;
-        float[] dataOut = new float[](audioBuffer.length);
-
-        // compute the parameters for libsamplerate
-        double srcRatio = (1.0 * newSampleRate) / oldSampleRate;
-        if(!src_is_valid_ratio(srcRatio)) {
-            throw new AudioError("Invalid sample rate requested: " ~ to!string(newSampleRate));
-        }
-        SRC_DATA srcData;
-        srcData.data_in = dataIn.ptr;
-        srcData.data_out = dataOut.ptr;
-        immutable auto nframes = audioBuffer.length / nChannels;
-        srcData.input_frames = cast(typeof(srcData.input_frames))(nframes);
-        srcData.output_frames = cast(typeof(srcData.output_frames))(ceil(nframes * srcRatio));
-        srcData.src_ratio = srcRatio;
-
-        // compute the sample rate conversion
-        int error = src_simple(&srcData, converterType, cast(int)(nChannels));
-        if(error) {
-            throw new AudioError("Sample rate conversion failed: " ~ to!string(src_strerror(error)));
-        }
-        dataOut.length = cast(size_t)(srcData.output_frames_gen);
-
-        if(progressCallback !is null) {
-            progressCallback(LoadState.resample, 1);
-        }
-
-        return dataOut;
-    }
-
-    return audioBuffer;
 }

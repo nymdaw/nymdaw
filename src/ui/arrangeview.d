@@ -1398,9 +1398,9 @@ public:
                                  _onsets.reserve(region.nChannels);
                                  for(channels_t channelIndex = 0; channelIndex < region.nChannels; ++channelIndex) {
                                      _onsets ~= new OnsetSequence(cast(immutable)(
-                                         region.getOnsetsSingleChannel(onsetParams,
-                                                                       channelIndex,
-                                                                       progressCallback)));
+                                         region.computeOnsetsSingleChannel(onsetParams,
+                                                                           channelIndex,
+                                                                           progressCallback)));
                                  }
 
                                  progressCallback(ComputeOnsetsState.complete, 1);
@@ -1418,8 +1418,8 @@ public:
 
                                  if(region.nChannels > 1) {
                                      _onsetsLinked = new OnsetSequence(cast(immutable)(
-                                         region.getOnsetsLinkedChannels(onsetParams,
-                                                                        progressCallback)));
+                                         region.computeOnsetsLinkedChannels(onsetParams,
+                                                                            progressCallback)));
                                  }
 
                                  progressCallback(ComputeOnsetsState.complete, 1);

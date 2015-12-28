@@ -4,7 +4,9 @@ private import std.container.dlist;
 
 private import util.sequence;
 
-private import audio.region;
+public import audio.region;
+public import audio.sequence.segment;
+public import audio.types;
 
 /// A wrapper around a generic sequence, specific to audio regions.
 /// Stores a list of registered region "links", which are typically referred to as "soft copies" in the UI.

@@ -7,7 +7,9 @@ private import sndfile;
 
 private import util.scopedarray;
 
+public import audio.exportfile.format;
 public import audio.mixer;
+public import audio.progress;
 public import audio.region;
 public import audio.timeline;
 public import audio.types;
