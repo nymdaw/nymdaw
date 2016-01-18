@@ -118,7 +118,7 @@ public:
 private:
     DList!Link _softLinks;
 
-    nframes_t _sampleRate;
-    channels_t _nChannels;
-    string _name;
+    immutable nframes_t _sampleRate;
+    immutable channels_t _nChannels;
+    immutable string _name;
 }

@@ -4,7 +4,6 @@ private import std.algorithm;
 private import std.conv;
 private import std.math;
 private import std.path;
-private import std.traits;
 private import std.typecons;
 
 private import core.atomic;
@@ -16,6 +15,7 @@ public import audio.progress;
 public import audio.region.effects;
 public import audio.region.samplerate;
 public import audio.region.stretch;
+public import audio.region.util;
 public import audio.sequence;
 public import audio.timeline;
 public import audio.types;
@@ -634,38 +634,4 @@ private:
 
     /// Name for this region
     string _name;
-}
-
-/// Find the minimum audio sample value in a given slice
-private auto sliceMin(T)(T sourceData) if(isIterable!T && isNumeric!(typeof(sourceData[size_t.init]))) {
-    alias BaseSampleType = typeof(sourceData[size_t.init]);
-    static if(is(BaseSampleType == const(U), U)) {
-        alias SampleType = U;
-    }
-    else {
-        alias SampleType = BaseSampleType;
-    }
-
-    SampleType minSample = 1;
-    foreach(s; sourceData) {
-        if(s < minSample) minSample = s;
-    }
-    return minSample;
-}
-
-/// Find the maximum audio sample value in a given slice
-private auto sliceMax(T)(T sourceData) if(isIterable!T && isNumeric!(typeof(sourceData[size_t.init]))) {
-    alias BaseSampleType = typeof(sourceData[size_t.init]);
-    static if(is(BaseSampleType == const(U), U)) {
-        alias SampleType = U;
-    }
-    else {
-        alias SampleType = BaseSampleType;
-    }
-
-    SampleType maxSample = -1;
-    foreach(s; sourceData) {
-        if(s > maxSample) maxSample = s;
-    }
-    return maxSample;
 }

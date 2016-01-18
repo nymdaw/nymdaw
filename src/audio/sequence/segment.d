@@ -10,7 +10,7 @@ struct AudioSegment {
     this(immutable(sample_t[]) audioBuffer, channels_t nChannels) {
         this.audioBuffer = audioBuffer;
         this.nChannels = nChannels;
-        waveformCache = new WaveformCache(audioBuffer, nChannels);
+        this.waveformCache = cast(immutable)(new WaveformCache(audioBuffer, nChannels));
     }
 
     @disable this();
@@ -34,21 +34,22 @@ struct AudioSegment {
     immutable(AudioSegment) opSlice(size_t startIndex, size_t endIndex) const {
         return cast(immutable)(AudioSegment(audioBuffer[startIndex .. endIndex],
                                             nChannels,
-                                            waveformCache[startIndex / nChannels .. endIndex / nChannels]));
+                                            cast(immutable)(waveformCache[startIndex / nChannels ..
+                                                                          endIndex / nChannels])));
     }
 
     /// Raw, interleaved audio data
     immutable(sample_t[]) audioBuffer;
 
     /// The number of channels in the audio buffer
-    channels_t nChannels;
+    immutable channels_t nChannels;
 
     /// The waveform cache corresponding to the audio buffer
-    WaveformCache waveformCache;
+    immutable WaveformCache waveformCache;
 
 private:
     /// This copy constructor should only be used by this structure's implementation.
-    this(immutable(sample_t[]) audioBuffer, channels_t nChannels, WaveformCache waveformCache) {
+    this(immutable(sample_t[]) audioBuffer, channels_t nChannels, immutable(WaveformCache) waveformCache) {
         this.audioBuffer = audioBuffer;
         this.nChannels = nChannels;
         this.waveformCache = waveformCache;

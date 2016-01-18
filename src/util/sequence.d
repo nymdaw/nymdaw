@@ -135,7 +135,7 @@ public:
         }
 
         /// Copy constructor
-        this(immutable(PieceTable) pieceTable) {
+        this(const PieceTable pieceTable) {
             this.table = pieceTable.table.dup;
         }
 
@@ -153,7 +153,7 @@ public:
         }
 
         /// Insert a new buffer at logicalOffset
-        PieceTable insert(T)(T buffer, size_t logicalOffset)
+        PieceTable insert(T)(T buffer, size_t logicalOffset) const
             if(is(T == Buffer) || is(T == immutable(Buffer)) || is(T == PieceTable)) {
                 if(logicalOffset > logicalLength) {
                     // TODO implement logger
@@ -229,12 +229,12 @@ public:
             }
 
         /// Insert a new buffer at the ending offset
-        PieceTable append(T)(T buffer) {
+        PieceTable append(T)(T buffer) const {
             return insert(buffer, length);
         }
 
         /// Delete all indices in the range [`logicalStart`, `logicalEnd`)
-        PieceTable remove(size_t logicalStart, size_t logicalEnd) {
+        PieceTable remove(size_t logicalStart, size_t logicalEnd) const {
             // degenerate case
             if(logicalStart == logicalEnd) {
                 return PieceTable();
@@ -341,7 +341,7 @@ public:
         }
 
         // Returns: A new piece table, with similar semantics to built-in array slicing
-        PieceTable opSlice(size_t logicalStart, size_t logicalEnd) {
+        PieceTable opSlice(size_t logicalStart, size_t logicalEnd) const {
             // degenerate case
             if(logicalStart == logicalEnd) {
                 return PieceTable();
@@ -410,8 +410,8 @@ public:
         }
 
         /// Copy this piece table
-        PieceTable opSlice() {
-            return this;
+        PieceTable opSlice() const {
+            return PieceTable(this);
         }
 
         /// Returns the logical length of the piece table.
@@ -450,12 +450,12 @@ public:
 
         /// This function allows this class to be used as a Forward Range.
         /// It simply copies the piece table object.
-        @property auto save() {
-            return this;
+        @property auto save() const {
+            return PieceTable(this);
         }
 
         /// Copies all elements in the piece table, in logical order, into a new array
-        Element[] toArray() {
+        Element[] toArray() const {
             auto result = appender!(Element[]);
             foreach(piece; table) {
                 for(auto i = 0; i < piece.length; ++i) {
@@ -467,7 +467,7 @@ public:
 
         /// Formats all elements in the piece table, in logical order, into a string.
         /// This is only practically useful as a debugging aid.
-        string toString() {
+        string toString() const {
             return to!string(toArray);
         }
 
