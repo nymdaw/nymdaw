@@ -4620,8 +4620,9 @@ public:
         void onSelectSubregion() {
             if(_editRegion !is null) {
                 immutable nframes_t mouseFrame =
-                    clamp(_mouseX, _editRegion.boundingBox.x0, _editRegion.boundingBox.x1) * samplesPerPixel +
-                    viewOffset;
+                    clamp(max(0, _mouseX) * samplesPerPixel + viewOffset,
+                          _editRegion.offset,
+                          _editRegion.offset + _editRegion.nframes);
                 if(mouseFrame < _editRegion.subregionStartFrame + _editRegion.offset) {
                     _editRegion.subregionStartFrame = mouseFrame - _editRegion.offset;
                     _editRegion.subregionEndFrame = _editRegion.editPointOffset;
