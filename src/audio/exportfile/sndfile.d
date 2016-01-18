@@ -2,6 +2,7 @@ module audio.exportfile.sndfile;
 
 private import std.file;
 private import std.string;
+private import std.typecons;
 
 private import sndfile;
 
@@ -101,7 +102,7 @@ void exportSessionToFile(Mixer mixer,
     scope(exit) sf_close(outfile);
 
     // initialize a temporary timeline for this bounce
-    Timeline bounceTimeline = new Timeline();
+    auto bounceTimeline = scoped!Timeline();
     bounceTimeline.nframes = mixer.timeline.nframes;
 
     // counters for updating the progress bar

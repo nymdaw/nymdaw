@@ -80,7 +80,8 @@ version(HAVE_MPG123) {
 
             if(progressCallback !is null && readTotal >= progressCount) {
                 progressCount += progressIncrement;
-                if(!progressCallback(LoadState.read, cast(double)(readTotal) / cast(double)(estimatedLengthSamples * channels))) {
+                if(!progressCallback(LoadState.read,
+                                     cast(double)(readTotal) / cast(double)(estimatedLengthSamples * channels))) {
                     return null;
                 }
             }
@@ -93,7 +94,8 @@ version(HAVE_MPG123) {
 
         AudioSequence.AudioPieceTable audioPieceTable;
         foreach(audioBuffer; audioBuffersApp.data) {
-            audioPieceTable = audioPieceTable.append(AudioSegment(cast(immutable)(audioBuffer), cast(channels_t)(channels)));
+            audioPieceTable = audioPieceTable.append(AudioSegment(cast(immutable)(audioBuffer),
+                                                                  cast(channels_t)(channels)));
         }
 
         auto newSequence = new AudioSequence(audioPieceTable,
