@@ -44,12 +44,20 @@ def options( ctx ):
                     default = False,
                     dest = "doc" )
 
+    ctx.add_option( "--compiler",
+                    type = "string",
+                    help = ( "D compiler to use" ),
+                    dest = "compiler")
+
 def configure( ctx ):
     opts = Options.options
 
     # Currently only support dmd
     from waflib.Tools.compiler_d import d_compiler
-    d_compiler[ "default" ] = [ "ldc2", "dmd" ]
+    if opts.compiler:
+        d_compiler[ "default" ] = [ opts.compiler ]
+    else:
+        d_compiler[ "default" ] = [ "ldc2", "dmd" ]
 
     # Configure the D compiler
     ctx.load( "compiler_d" )
