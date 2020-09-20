@@ -22,16 +22,13 @@ Most of the UI rendering code makes heavy use of cairo. To render the waveforms,
 The application code is located in the "src" directory, and the D wrappers around the necessary 3rd-party libraries are located in the "deps" directory.
 The application code is separated into "ui" and "audio" modules. The UI module depends on the audio module, but there is no UI dependency within the audio module itself. Various generic types are located in the "util" module, such as the generic sequence and state history classes.
 
-# Compiling on Linux (Ubuntu)
-
-Install the D apt repository (as described at http://d-apt.sourceforge.net/):
-
-    sudo wget http://master.dl.sourceforge.net/project/d-apt/files/d-apt.list -O /etc/apt/sources.list.d/d-apt.list
-    sudo apt-get update && sudo apt-get -y --allow-unauthenticated install --reinstall d-apt-keyring && sudo apt-get update
+# Compiling on Linux (Ubuntu 20.04)
 
 Install the dependencies, then build via waf:
 
-    sudo apt-get install dmd-bin libphobos2-dev libgtkd3-dev portaudio19-dev libsndfile-dev libsamplerate-dev librubberband-dev libaubio-dev libmpg123-dev
+    sudo snap install dmd --classic
+    sudo apt-get install libgtkd-3-dev libgtk-3-dev librsvg2-dev portaudio19-dev libsndfile-dev libsamplerate-dev librubberband-dev libaubio-dev libmpg123-dev
+    export PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig
     git clone https://github.com/nymdaw/nymdaw
     cd nymdaw
     ./waf configure
